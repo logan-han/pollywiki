@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.astro/
+.cache/
+.store/
+.env
+.DS_Store
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/tfplan

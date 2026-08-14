@@ -1,0 +1,35 @@
+---
+import Base from '../../layouts/Base.astro'
+import { parties, seatTotal } from '../../lib/data'
+---
+
+<Base title="Parties" description="Parliamentary groups of the 48th Parliament and their seat counts.">
+  <h1>Parties</h1>
+  <p>
+    Parliamentary groups of the 48th Parliament. Grouping follows the official record;
+    Coalition members sit as one parliamentary group.
+  </p>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Group</th><th class="num">House</th><th class="num">Senate</th><th class="num">Total</th></tr>
+      </thead>
+      <tbody>
+        {parties.map((p) => (
+          <tr>
+            <td>
+              <a class="group-chip" href={`/parties/${p.slug}/`}>
+                <span class="dot" style={`background:${p.colour ?? '#6e7b74'}`} aria-hidden="true"></span>
+                {p.name}
+              </a>
+            </td>
+            <td class="num">{p.seats?.representatives ?? 0}</td>
+            <td class="num">{p.seats?.senate ?? 0}</td>
+            <td class="num">{seatTotal(p)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</Base>

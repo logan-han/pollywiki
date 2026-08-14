@@ -1,0 +1,85 @@
+name: ingest
+
+on:
+  schedule:
+    # 12:30 UTC is 22:30 AEST, after sitting days wrap up.
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: Comma-separated sources (wikidata,aph,tvfy,aec)
+        default: wikidata,aph,tvfy
+      event:
+        description: AEC event id (aec source only)
+        default: '31496'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ingest
+
+jobs:
+  ingest:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INGEST_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - name: Sync sources and derive bundles
+        env:
+          POLLYWIKI_DATA_BUCKET: ${{ vars.DATA_BUCKET }}
+          TVFY_API_KEY: ${{ secrets.TVFY_API_KEY }}
+        run: |
+          pnpm --filter @pollywiki/ingest cli all \
+            --store s3 \
+            --sources "${{ inputs.sources || 'wikidata,aph,tvfy' }}" \
+            --event "${{ inputs.event || '31496' }}"
+
+      # The stamp commit keeps the scheduled workflow from being auto-disabled
+      # after 60 days of repo inactivity and records sync history in git.
+      - name: Commit sync stamp
+        id: stamp
+        run: |
+          mkdir -p data/state
+          aws s3 cp "s3://${{ vars.DATA_BUCKET }}/state/sync-manifest.json" data/state/sync-stamp.json
+          git add data/state/sync-stamp.json
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name "pollywiki-ingest"
+            git config user.email "ingest@users.noreply.github.com"
+            git commit -m "data: sync stamp $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Pushes made with GITHUB_TOKEN never trigger other workflows,
+      # so kick the deploy explicitly when data moved.
+      - name: Trigger deploy
+        if: steps.stamp.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main

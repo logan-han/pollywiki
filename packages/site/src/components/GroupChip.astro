@@ -1,0 +1,28 @@
+---
+import { partyBySlug } from '../lib/data'
+
+interface Props {
+  groupSlug: string
+  group: string
+  link?: boolean
+}
+
+const { groupSlug, group, link = true } = Astro.props
+const party = partyBySlug(groupSlug)
+const colour = party?.colour ?? '#6e7b74'
+const label = party?.name ?? group
+---
+
+{
+  link ? (
+    <a class="group-chip" href={`/parties/${groupSlug}/`}>
+      <span class="dot" style={`background:${colour}`} aria-hidden="true" />
+      {label}
+    </a>
+  ) : (
+    <span class="group-chip">
+      <span class="dot" style={`background:${colour}`} aria-hidden="true" />
+      {label}
+    </span>
+  )
+}

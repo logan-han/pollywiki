@@ -1,0 +1,13 @@
+---
+import type { House } from '@pollywiki/schema'
+
+interface Props {
+  house: House
+}
+
+const { house } = Astro.props
+---
+
+<span class:list={['chip', house === 'senate' ? 'senate' : 'house']}>
+  {house === 'senate' ? 'Senate' : 'House'}
+</span>

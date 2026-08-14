@@ -1,0 +1,131 @@
+---
+import Base from '../../../layouts/Base.astro'
+import ChamberChip from '../../../components/ChamberChip.astro'
+import VoteBar from '../../../components/VoteBar.astro'
+import {
+  divisionKey,
+  divisions,
+  formatDate,
+  groupBreakdown,
+  personBySlug,
+  billById,
+} from '../../../lib/data'
+
+export function getStaticPaths() {
+  return divisions.map((division) => ({
+    params: { house: division.house, key: divisionKey(division) },
+    props: { division },
+  }))
+}
+
+const { division } = Astro.props
+const breakdown = groupBreakdown(division)
+const ayes = division.votes.filter((v) => v.vote === 'aye')
+const noes = division.votes.filter((v) => v.vote === 'no')
+const relatedBills = division.billIds.map((id) => billById(id)).filter(Boolean)
+
+const nameFor = (slug: string) => personBySlug(slug)?.name ?? slug.replace(/-/g, ' ')
+---
+
+<Base
+  title={division.name}
+  description={`Division in the ${division.house === 'senate' ? 'Senate' : 'House of Representatives'}, ${formatDate(division.date)}: ${division.ayes} ayes, ${division.noes} noes.`}
+>
+  <article data-pagefind-body>
+    <div class="masthead" style="padding: 2.2rem 0 1.6rem;">
+      <div class="meta-line" style="margin-bottom:.6rem">
+        <ChamberChip house={division.house} />
+        <span class="note">Division {division.number} · {formatDate(division.date)}</span>
+      </div>
+      <h1 data-pagefind-meta="title">{division.name}</h1>
+      {division.clarifiedName && (
+        <p class="motto">
+          {division.clarifiedName}
+          <span class="note"> (motion description via They Vote For You)</span>
+        </p>
+      )}
+      <p style="max-width: 20rem; margin-top: 1rem;">
+        <strong>{division.result === 'passed' ? 'Passed' : 'Not passed'}</strong>
+        <VoteBar ayes={division.ayes} noes={division.noes} />
+      </p>
+    </div>
+
+    {relatedBills.length > 0 && (
+      <>
+        <h2>Related bills</h2>
+        <ul>
+          {relatedBills.map((bill) => (
+            <li><a href={`/bills/${bill!.id}/`}>{bill!.title}</a></li>
+          ))}
+        </ul>
+      </>
+    )}
+
+    <h2>By party</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Party</th><th class="num">Aye</th><th class="num">No</th></tr>
+        </thead>
+        <tbody>
+          {breakdown.map((row) => (
+            <tr>
+              <td>
+                <span class="group-chip">
+                  <span class="dot" style={`background:${row.party?.colour ?? '#6e7b74'}`} aria-hidden="true"></span>
+                  {row.party?.name ?? row.group}
+                </span>
+              </td>
+              <td class="num">{row.aye}</td>
+              <td class="num">{row.no}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Every vote</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Aye ({ayes.length})</th>
+            <th>No ({noes.length})</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: Math.max(ayes.length, noes.length) }).map((_, i) => (
+            <tr>
+              <td>
+                {ayes[i] && (
+                  <a href={`/people/${ayes[i]!.personSlug}/`}>
+                    {nameFor(ayes[i]!.personSlug)}
+                  </a>
+                )}
+                {ayes[i]?.againstGroupMajority && <span class="note"> · crossed</span>}
+              </td>
+              <td>
+                {noes[i] && (
+                  <a href={`/people/${noes[i]!.personSlug}/`}>
+                    {nameFor(noes[i]!.personSlug)}
+                  </a>
+                )}
+                {noes[i]?.againstGroupMajority && <span class="note"> · crossed</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <p class="attribution">
+      {division.links.tvfy && (
+        <>Record via <a href={division.links.tvfy}>They Vote For You</a> (ODbL). </>
+      )}
+      {division.links.hansard && (
+        <>Official transcript: <a href={division.links.hansard}>Hansard</a>. </>
+      )}
+      "Crossed" marks a vote against the majority of the member's own party in this division.
+    </p>
+  </article>
+</Base>

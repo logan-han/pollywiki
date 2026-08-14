@@ -1,0 +1,93 @@
+---
+import Base from '../../layouts/Base.astro'
+import PersonCard from '../../components/PersonCard.astro'
+import {
+  STATE_NAMES,
+  electionForElectorate,
+  electorates,
+  personBySlug,
+} from '../../lib/data'
+
+export function getStaticPaths() {
+  return electorates.map((electorate) => ({
+    params: { slug: electorate.slug },
+    props: { electorate },
+  }))
+}
+
+const { electorate } = Astro.props
+const member = electorate.memberSlug ? personBySlug(electorate.memberSlug) : undefined
+const result = electionForElectorate(electorate.slug)
+const tcp = result?.tcp ?? []
+const tcpTotal = tcp.reduce((sum, c) => sum + c.votes, 0)
+---
+
+<Base
+  title={`${electorate.name} (${electorate.state})`}
+  description={`Federal electorate of ${electorate.name}, ${STATE_NAMES[electorate.state]}: member and election results.`}
+>
+  <article data-pagefind-body>
+    <div class="masthead" style="padding: 2.2rem 0 1.6rem;">
+      <h1 data-pagefind-meta="title">{electorate.name}</h1>
+      <p class="motto">Federal electorate · {STATE_NAMES[electorate.state] ?? electorate.state}</p>
+    </div>
+
+    {member && (
+      <>
+        <h2>Current member</h2>
+        <div style="max-width: 24rem">
+          <PersonCard person={member} />
+        </div>
+      </>
+    )}
+
+    {result && tcp.length === 2 && (
+      <>
+        <h2>{result.eventName}: two-candidate preferred</h2>
+        <div class="table-scroll">
+          <table>
+            <tbody>
+              {tcp.map((c) => (
+                <tr>
+                  <td>{c.name}{c.elected ? ' ✓' : ''}</td>
+                  <td>{c.party}</td>
+                  <td class="num">{c.votes.toLocaleString('en-AU')}</td>
+                  <td class="num">{tcpTotal > 0 ? ((c.votes / tcpTotal) * 100).toFixed(2) : '0'}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )}
+
+    {result && result.firstPrefs.length > 0 && (
+      <>
+        <h2>{result.eventName}: first preferences</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Candidate</th><th>Party</th><th class="num">Votes</th><th class="num">%</th><th class="num">Swing</th></tr>
+            </thead>
+            <tbody>
+              {result.firstPrefs.map((c) => (
+                <tr>
+                  <td>{c.name}{c.elected ? ' ✓' : ''}</td>
+                  <td>{c.party}</td>
+                  <td class="num">{c.votes.toLocaleString('en-AU')}</td>
+                  <td class="num">{c.pct.toFixed(2)}</td>
+                  <td class="num">{c.swing !== undefined ? `${c.swing > 0 ? '+' : ''}${c.swing.toFixed(2)}` : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )}
+
+    <p class="attribution">
+      Election figures © Commonwealth of Australia (Australian Electoral Commission),
+      licensed CC BY 4.0. ✓ marks the elected candidate.
+    </p>
+  </article>
+</Base>

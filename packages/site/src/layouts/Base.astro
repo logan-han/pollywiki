@@ -1,0 +1,158 @@
+---
+import '@fontsource-variable/newsreader'
+import '@fontsource/ibm-plex-sans/400.css'
+import '@fontsource/ibm-plex-sans/500.css'
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
+import '../styles/global.css'
+import { meta, formatDate } from '../lib/data'
+
+interface Props {
+  title: string
+  description?: string
+}
+
+const { title, description = 'The Australian federal record, unedited. Parliamentarians, divisions, bills and election results generated from official sources.' } = Astro.props
+
+const nav = [
+  ['People', '/people/'],
+  ['Divisions', '/divisions/'],
+  ['Bills', '/bills/'],
+  ['Electorates', '/electorates/'],
+  ['Parties', '/parties/'],
+  ['Search', '/search/'],
+] as const
+
+const current = Astro.url.pathname
+const sourceLabels: Record<string, string> = {
+  wikidata: 'Wikidata',
+  aec: 'AEC',
+  tvfy: 'They Vote For You',
+  'aph-bills': 'APH bills',
+}
+---
+
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title === 'pollywiki' ? title : `${title} · pollywiki`}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="generator" content={Astro.generator} />
+  </head>
+  <body>
+    {meta.sample && (
+      <div class="sample-banner">
+        Sample data only. This build is not showing the parliamentary record.
+      </div>
+    )}
+    <header class="site-header">
+      <div class="wrap">
+        <a class="wordmark" href="/">polly<span class="tld">wiki</span></a>
+        <nav class="site-nav" aria-label="Primary">
+          {nav.map(([label, href]) => (
+            <a href={href} aria-current={current.startsWith(href) ? 'page' : undefined}>{label}</a>
+          ))}
+        </nav>
+        <div class="quick-search">
+          <input
+            type="search"
+            id="quick-search-input"
+            placeholder="Find a person or electorate"
+            autocomplete="off"
+            aria-label="Find a person or electorate"
+          />
+          <ul id="quick-search-results" hidden></ul>
+        </div>
+      </div>
+    </header>
+    <main class="wrap">
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <div class="wrap">
+        <p class="disclaimer">
+          This service does not evaluate politicians or laws. Every page is generated
+          from official records, reproduced faithfully and linked to their source.
+        </p>
+        <div class="freshness">
+          {Object.entries(meta.sources).map(([name, s]) => (
+            <span class={s.ok ? 'ok' : 'stale'}>
+              {sourceLabels[name] ?? name} · {formatDate(s.lastSync.slice(0, 10))}
+            </span>
+          ))}
+          <span>built {formatDate(meta.generatedAt.slice(0, 10))}</span>
+        </div>
+        <nav aria-label="About">
+          <a href="/about/">About</a>
+          <a href="/about/data-sources/">Data sources</a>
+          <a href="/about/methodology/">Methodology</a>
+          <a href="/about/corrections/">Corrections</a>
+          <a href="https://github.com/logan-han/pollywiki">Source code</a>
+        </nav>
+        <p style="margin-top: 1rem;">
+          Voting data © <a href="https://theyvoteforyou.org.au">They Vote For You</a> (ODbL).
+          Election data © Australian Electoral Commission (CC BY 4.0).
+          Photos via Wikimedia Commons, credited on each page.
+        </p>
+      </div>
+    </footer>
+    <script>
+      const input = document.getElementById('quick-search-input') as HTMLInputElement | null
+      const list = document.getElementById('quick-search-results') as HTMLUListElement | null
+      let entries: Array<{ t: string; slug: string; name: string; sub: string }> | null = null
+
+      async function ensureEntries() {
+        if (!entries) {
+          const res = await fetch('/quick-search.json')
+          entries = res.ok ? await res.json() : []
+        }
+        return entries!
+      }
+
+      function hrefFor(e: { t: string; slug: string }) {
+        return e.t === 'electorate' ? `/electorates/${e.slug}/` : `/people/${e.slug}/`
+      }
+
+      input?.addEventListener('input', async () => {
+        const q = input.value.trim().toLowerCase()
+        if (!list) return
+        if (q.length < 2) {
+          list.hidden = true
+          list.innerHTML = ''
+          return
+        }
+        const all = await ensureEntries()
+        const hits = all.filter((e) => e.name.toLowerCase().includes(q)).slice(0, 8)
+        list.innerHTML = hits
+          .map(
+            (e) =>
+              `<li><a href="${hrefFor(e)}">${e.name}<span class="sub">${e.sub}</span></a></li>`,
+          )
+          .join('')
+        list.hidden = hits.length === 0
+      })
+
+      input?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape' && list) {
+          list.hidden = true
+        }
+        if (ev.key === 'Enter') {
+          const first = list?.querySelector('a')
+          if (first) location.href = (first as HTMLAnchorElement).href
+        }
+      })
+
+      document.addEventListener('click', (ev) => {
+        if (list && !list.hidden && !(ev.target as Element).closest('.quick-search')) {
+          list.hidden = true
+        }
+      })
+    </script>
+  </body>
+</html>

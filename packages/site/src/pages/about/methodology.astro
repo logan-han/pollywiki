@@ -1,0 +1,53 @@
+---
+import Base from '../../layouts/Base.astro'
+---
+
+<Base title="Methodology" description="How every derived figure on pollywiki is computed, and what the official record cannot tell you.">
+  <h1>Methodology</h1>
+  <p>
+    pollywiki publishes official records verbatim plus simple arithmetic. This page
+    defines every derived figure that appears on the site.
+  </p>
+
+  <h2>Divisions voted</h2>
+  <p>
+    "Voted in <em>n</em> of <em>m</em> divisions" counts the divisions in the member's
+    own chamber during this parliament (<em>m</em>) and the divisions where their name
+    appears in the ayes or noes (<em>n</em>).
+  </p>
+  <p>
+    <strong>Absence is not abstention.</strong> The official record does not
+    distinguish pairing arrangements, approved leave, ministerial or committee duties,
+    or illness from any other reason for not voting. A low attendance figure is not,
+    by itself, evidence of anything. This caveat is shown wherever the figure appears.
+  </p>
+
+  <h2>Votes against party majority ("crossed")</h2>
+  <p>
+    For each division, each parliamentary group's majority position is the side (aye
+    or no) with more of that group's votes. A member's vote is marked "crossed" when
+    it lands on the other side. Groups that split evenly have no majority position, so
+    no vote in that division is marked. Independents have no group majority and are
+    never marked.
+  </p>
+
+  <h2>Chamber composition</h2>
+  <p>
+    Seat counts group members by parliamentary group as recorded on Wikidata, which
+    follows the official record: Coalition members are shown as one group. Counts
+    reflect current sitting members, not the election result.
+  </p>
+
+  <h2>Election percentages</h2>
+  <p>
+    First preference and two-candidate-preferred percentages are computed from AEC
+    final totals per electorate. Swing figures are the AEC's own published swings.
+  </p>
+
+  <h2>What this site never does</h2>
+  <p>
+    No scoring, no ranking, no summarising of speeches, no inference of positions from
+    votes. Where They Vote For You provides a plain-English description of a motion,
+    it is shown with explicit attribution to them.
+  </p>
+</Base>

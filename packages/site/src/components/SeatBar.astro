@@ -1,0 +1,35 @@
+---
+import type { House } from '@pollywiki/schema'
+import { parties, houseLabel } from '../lib/data'
+
+interface Props {
+  house: House
+}
+
+const { house } = Astro.props
+const rows = parties
+  .map((p) => ({ party: p, seats: p.seats?.[house] ?? 0 }))
+  .filter((r) => r.seats > 0)
+  .sort((a, b) => b.seats - a.seats)
+const total = rows.reduce((sum, r) => sum + r.seats, 0)
+---
+
+<div class="seat-bar">
+  <div class="label">
+    <span>{house === 'senate' ? 'Senate' : 'House of Representatives'}</span>
+    <span>{total} seats</span>
+  </div>
+  <div class="bar" role="img" aria-label={`${houseLabel(house)} composition: ${rows.map((r) => `${r.party.name} ${r.seats}`).join(', ')}`}>
+    {rows.map((r) => (
+      <span
+        style={`width:${(r.seats / Math.max(total, 1)) * 100}%;background:${r.party.colour ?? '#6e7b74'}`}
+        title={`${r.party.name}: ${r.seats}`}
+      />
+    ))}
+  </div>
+  <div class="key">
+    {rows.map((r) => (
+      <span>{r.party.code ?? r.party.name} {r.seats}</span>
+    ))}
+  </div>
+</div>

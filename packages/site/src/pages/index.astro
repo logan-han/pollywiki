@@ -1,0 +1,67 @@
+---
+import Base from '../layouts/Base.astro'
+import LedgerRow from '../components/LedgerRow.astro'
+import SeatBar from '../components/SeatBar.astro'
+import { bills, divisions, people } from '../lib/data'
+
+const latestDivisions = divisions.slice(0, 8)
+const recentBills = bills.slice(0, 8)
+---
+
+<Base title="pollywiki">
+  <div class="masthead">
+    <h1>What federal parliament actually did.</h1>
+    <p class="motto">
+      Decisions that change people's lives should stay on the record. pollywiki keeps
+      the record of Australia's federal parliament: who sits in it, how they voted,
+      and what became law, straight from official sources, with no commentary.
+    </p>
+  </div>
+
+  <h2>Composition of the 48th Parliament</h2>
+  <p class="note">{people.length} sitting parliamentarians, grouped by parliamentary group.</p>
+  <SeatBar house="representatives" />
+  <SeatBar house="senate" />
+
+  <div class="section-head">
+    <h2>Latest divisions</h2>
+    <a href="/divisions/">All divisions →</a>
+  </div>
+  {latestDivisions.length > 0 ? (
+    <ul class="ledger">
+      {latestDivisions.map((d) => (
+        <LedgerRow division={d} />
+      ))}
+    </ul>
+  ) : (
+    <p class="note">
+      No division records loaded yet. Votes appear here once the They Vote For You
+      sync runs.
+    </p>
+  )}
+
+  <div class="section-head">
+    <h2>Bills before parliament</h2>
+    <a href="/bills/">All bills →</a>
+  </div>
+  {recentBills.length > 0 ? (
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Bill</th><th>Chamber</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {recentBills.map((b) => (
+            <tr>
+              <td><a href={`/bills/${b.id}/`}>{b.title}</a></td>
+              <td>{b.chamber === 'senate' ? 'Senate' : 'House'}</td>
+              <td>{b.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  ) : (
+    <p class="note">No bill records loaded yet.</p>
+  )}
+</Base>

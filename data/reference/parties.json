@@ -1,0 +1,15 @@
+{
+  "australian-labor-party": { "name": "Australian Labor Party", "code": "ALP", "colour": "#B5303A" },
+  "liberal-national-coalition": { "name": "Liberal–National Coalition", "code": "LNP", "colour": "#1C4F9C" },
+  "liberal-party-of-australia": { "name": "Liberal Party of Australia", "code": "LIB", "colour": "#1C4F9C" },
+  "national-party-of-australia": { "name": "National Party of Australia", "code": "NAT", "colour": "#00693C" },
+  "australian-greens": { "name": "Australian Greens", "code": "GRN", "colour": "#3A8A3E" },
+  "pauline-hansons-one-nation": { "name": "Pauline Hanson's One Nation", "code": "ON", "colour": "#C46A1F" },
+  "jacqui-lambie-network": { "name": "Jacqui Lambie Network", "code": "JLN", "colour": "#2E7E8A" },
+  "centre-alliance": { "name": "Centre Alliance", "code": "CA", "colour": "#C77A2B" },
+  "katters-australian-party": { "name": "Katter's Australian Party", "code": "KAP", "colour": "#8B0000" },
+  "united-australia-party": { "name": "United Australia Party", "code": "UAP", "colour": "#B8A000" },
+  "australias-voice": { "name": "Australia's Voice", "code": "AV", "colour": "#5A4E8C" },
+  "trumpet-of-patriots": { "name": "Trumpet of Patriots", "code": "TOP", "colour": "#8A6D3B" },
+  "independent": { "name": "Independent", "code": "IND", "colour": "#6E7B74" }
+}

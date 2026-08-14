@@ -1,0 +1,53 @@
+---
+import Base from '../../layouts/Base.astro'
+import PersonCard from '../../components/PersonCard.astro'
+import { membersOfParty, parties } from '../../lib/data'
+
+export function getStaticPaths() {
+  return parties.map((party) => ({ params: { slug: party.slug }, props: { party } }))
+}
+
+const { party } = Astro.props
+const members = membersOfParty(party.slug)
+const reps = members.filter((m) => m.house === 'representatives').sort((a, b) => a.name.localeCompare(b.name))
+const senators = members.filter((m) => m.house === 'senate').sort((a, b) => a.name.localeCompare(b.name))
+---
+
+<Base title={party.name} description={`${party.name}: members in the 48th federal parliament.`}>
+  <article data-pagefind-body>
+    <div class="masthead" style="padding: 2.2rem 0 1.6rem;">
+      <h1 data-pagefind-meta="title">
+        <span class="group-chip" style="font-size: inherit; gap: .7rem;">
+          <span class="dot" style={`background:${party.colour ?? '#6e7b74'}; width:.9rem; height:.9rem;`} aria-hidden="true"></span>
+          {party.name}
+        </span>
+      </h1>
+      <p class="motto">
+        {party.seats?.representatives ?? 0} House {(party.seats?.representatives ?? 0) === 1 ? 'seat' : 'seats'} ·
+        {party.seats?.senate ?? 0} Senate {(party.seats?.senate ?? 0) === 1 ? 'seat' : 'seats'}
+      </p>
+    </div>
+
+    {reps.length > 0 && (
+      <>
+        <h2>House of Representatives</h2>
+        <div class="person-grid">
+          {reps.map((p) => (
+            <PersonCard person={p} />
+          ))}
+        </div>
+      </>
+    )}
+
+    {senators.length > 0 && (
+      <>
+        <h2>Senate</h2>
+        <div class="person-grid">
+          {senators.map((p) => (
+            <PersonCard person={p} />
+          ))}
+        </div>
+      </>
+    )}
+  </article>
+</Base>

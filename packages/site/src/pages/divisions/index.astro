@@ -1,0 +1,46 @@
+---
+import Base from '../../layouts/Base.astro'
+import LedgerRow from '../../components/LedgerRow.astro'
+import { divisions } from '../../lib/data'
+---
+
+<Base title="Divisions" description="Recorded votes of the Australian House of Representatives and Senate.">
+  <h1>Divisions</h1>
+  <p>
+    A division is a formally recorded vote. {divisions.length} recorded in the 48th
+    Parliament so far, newest first.
+  </p>
+
+  <div class="filter-bar">
+    <select id="division-house" aria-label="Filter by chamber">
+      <option value="">Both chambers</option>
+      <option value="representatives">House</option>
+      <option value="senate">Senate</option>
+    </select>
+  </div>
+
+  {divisions.length > 0 ? (
+    <ul class="ledger" id="division-list">
+      {divisions.map((d) => (
+        <LedgerRow division={d} />
+      ))}
+    </ul>
+  ) : (
+    <p class="note">
+      No division records loaded yet. They appear once the They Vote For You sync runs.
+    </p>
+  )}
+
+  <script>
+    const select = document.getElementById('division-house') as HTMLSelectElement
+    const rows = [...document.querySelectorAll<HTMLElement>('#division-list > li')]
+    select?.addEventListener('input', () => {
+      for (const row of rows) {
+        const chip = row.querySelector('.chip')
+        const isSenate = chip?.classList.contains('senate') ?? false
+        const house = isSenate ? 'senate' : 'representatives'
+        row.style.display = !select.value || select.value === house ? '' : 'none'
+      }
+    })
+  </script>
+</Base>

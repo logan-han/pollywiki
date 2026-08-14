@@ -1,0 +1,67 @@
+---
+import Base from '../../layouts/Base.astro'
+import LedgerRow from '../../components/LedgerRow.astro'
+import ChamberChip from '../../components/ChamberChip.astro'
+import { bills, divisionById, formatDate } from '../../lib/data'
+
+export function getStaticPaths() {
+  return bills.map((bill) => ({ params: { id: bill.id }, props: { bill } }))
+}
+
+const { bill } = Astro.props
+const related = bill.divisionIds.map((id) => divisionById(id)).filter(Boolean)
+---
+
+<Base title={bill.title} description={`${bill.status}. Progress of this bill through the federal parliament.`}>
+  <article data-pagefind-body>
+    <div class="masthead" style="padding: 2.2rem 0 1.6rem;">
+      <div class="meta-line" style="margin-bottom:.6rem">
+        <ChamberChip house={bill.chamber} />
+        {bill.type && <span class="note">{bill.type}</span>}
+      </div>
+      <h1 data-pagefind-meta="title">{bill.title}</h1>
+      <div class="meta-line" style="margin-top:.6rem">
+        <span><strong>Status:</strong> {bill.status}</span>
+        {bill.portfolio && <span><strong>Portfolio:</strong> {bill.portfolio}</span>}
+        {bill.sponsor && <span><strong>Sponsor:</strong> {bill.sponsor}</span>}
+      </div>
+    </div>
+
+    {bill.timeline.length > 0 && (
+      <>
+        <h2>Progress</h2>
+        <div class="table-scroll">
+          <table>
+            <tbody>
+              {bill.timeline.map((step) => (
+                <tr>
+                  <td class="num">{formatDate(step.date)}</td>
+                  <td>{step.event}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )}
+
+    {related.length > 0 && (
+      <>
+        <h2>Divisions on this bill</h2>
+        <ul class="ledger">
+          {related.map((d) => (
+            <LedgerRow division={d!} />
+          ))}
+        </ul>
+      </>
+    )}
+
+    <p class="attribution">
+      {bill.links.aph ? (
+        <>Official record: <a href={bill.links.aph}>bill homepage at aph.gov.au</a>.</>
+      ) : (
+        <>Source: Parliament of Australia.</>
+      )}
+    </p>
+  </article>
+</Base>

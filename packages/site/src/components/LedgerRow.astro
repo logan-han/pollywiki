@@ -1,0 +1,24 @@
+---
+import type { Division } from '@pollywiki/schema'
+import { divisionKey, formatDate } from '../lib/data'
+import ChamberChip from './ChamberChip.astro'
+import VoteBar from './VoteBar.astro'
+
+interface Props {
+  division: Division
+}
+
+const { division } = Astro.props
+const href = `/divisions/${division.house}/${divisionKey(division)}/`
+---
+
+<li>
+  <span class="when">{formatDate(division.date)}</span>
+  <span class="what">
+    <a href={href}>{division.name}</a>
+    <ChamberChip house={division.house} />
+  </span>
+  <span class="tally">
+    <VoteBar ayes={division.ayes} noes={division.noes} />
+  </span>
+</li>

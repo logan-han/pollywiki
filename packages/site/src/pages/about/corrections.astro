@@ -1,0 +1,35 @@
+---
+import Base from '../../layouts/Base.astro'
+---
+
+<Base title="Corrections" description="How to report an error on pollywiki and what happens next.">
+  <h1>Corrections</h1>
+  <p>
+    Every page here is generated from official sources, but pipelines have bugs and
+    sources have errors. If anything on this site is wrong, incomplete or misleading,
+    report it and it will be fixed or taken down quickly.
+  </p>
+
+  <h2>How to report</h2>
+  <p>
+    Open an issue at
+    <a href="https://github.com/logan-han/pollywiki/issues">github.com/logan-han/pollywiki/issues</a>
+    with a link to the affected page and, if you can, a link to the official record
+    that shows the correct information.
+  </p>
+
+  <h2>What happens</h2>
+  <p>
+    Reports about a person are treated with priority. If a claim about a person cannot
+    be verified against the official source promptly, the content is removed while it
+    is checked. Corrections are applied at the data pipeline level so they cannot
+    regress on the next sync.
+  </p>
+
+  <h2>Upstream errors</h2>
+  <p>
+    Where the error is in the source itself (Hansard, the AEC, Wikidata or They Vote
+    For You), it needs fixing there; this site will pick up the fix on the next sync.
+    Reports are forwarded upstream where possible.
+  </p>
+</Base>

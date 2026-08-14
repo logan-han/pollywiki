@@ -1,0 +1,26 @@
+---
+import type { Person } from '@pollywiki/schema'
+import { electorateBySlug, partyBySlug } from '../lib/data'
+import Avatar from './Avatar.astro'
+
+interface Props {
+  person: Person
+}
+
+const { person } = Astro.props
+const seat =
+  person.house === 'senate'
+    ? `Senator for ${person.state ?? ''}`
+    : electorateBySlug(person.electorate ?? '')?.name ?? ''
+const party = partyBySlug(person.groupSlug)
+---
+
+<a class="person-card" href={`/people/${person.slug}/`}>
+  <Avatar person={person} />
+  <span>
+    <span class="name">{person.name}</span>
+    <span class="sub">
+      {seat}{party ? ` · ${party.code ?? party.name}` : ''}
+    </span>
+  </span>
+</a>

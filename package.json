@@ -1,0 +1,17 @@
+{
+  "name": "pollywiki",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The Australian federal record, unedited. Parliamentarians, divisions, bills and election results generated from official sources.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter @pollywiki/site build",
+    "dev": "pnpm --filter @pollywiki/site dev",
+    "ingest": "pnpm --filter @pollywiki/ingest cli",
+    "test": "pnpm --filter @pollywiki/ingest test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

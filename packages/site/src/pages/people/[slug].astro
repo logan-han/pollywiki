@@ -1,0 +1,114 @@
+---
+import Base from '../../layouts/Base.astro'
+import Avatar from '../../components/Avatar.astro'
+import ChamberChip from '../../components/ChamberChip.astro'
+import GroupChip from '../../components/GroupChip.astro'
+import {
+  STATE_NAMES,
+  divisionKey,
+  electorateBySlug,
+  formatDate,
+  people,
+  votesForPerson,
+} from '../../lib/data'
+
+export function getStaticPaths() {
+  return people.map((person) => ({ params: { slug: person.slug }, props: { person } }))
+}
+
+const { person } = Astro.props
+const electorate = person.electorate ? electorateBySlug(person.electorate) : undefined
+const seat =
+  person.house === 'senate'
+    ? `Senator for ${STATE_NAMES[person.state ?? ''] ?? person.state ?? ''}`
+    : `Member for ${electorate?.name ?? ''}`
+const votes = votesForPerson(person.slug)
+const stats = person.stats
+---
+
+<Base title={person.name} description={`${seat}. Voting record and service details from official sources.`}>
+  <article data-pagefind-body>
+    <div class="profile-head">
+      <Avatar person={person} large />
+      <div>
+        <h1 data-pagefind-meta="title">{person.name}</h1>
+        <div class="meta-line">
+          <ChamberChip house={person.house} />
+          <span data-pagefind-filter="chamber">{seat}</span>
+          {electorate && <a href={`/electorates/${electorate.slug}/`}>Electorate profile</a>}
+          <GroupChip groupSlug={person.groupSlug} group={person.group} />
+          {person.since && <span>In parliament since {formatDate(person.since)}</span>}
+        </div>
+        <div class="meta-line" style="margin-top:.4rem">
+          {person.links.wikipedia && <a href={person.links.wikipedia}>Wikipedia</a>}
+          {person.ids.tvfy && (
+            <a href={`https://theyvoteforyou.org.au/people/${person.house}/${person.electorate ?? ''}`}>
+              They Vote For You
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+
+    {stats && stats.divisionsEligible > 0 && (
+      <div class="stat-strip">
+        <div class="stat">
+          <span class="n">{stats.divisionsVoted} / {stats.divisionsEligible}</span>
+          <span class="l">divisions voted in this parliament</span>
+        </div>
+        <div class="stat">
+          <span class="n">{stats.againstGroupMajority}</span>
+          <span class="l">votes against their party's majority position</span>
+        </div>
+      </div>
+    )}
+    {stats && stats.divisionsEligible > 0 && (
+      <p class="note">
+        Absence from a division is not abstention: pairing arrangements, leave and
+        parliamentary duties are not distinguished in the official record.
+        <a href="/about/methodology/">How these figures are computed.</a>
+      </p>
+    )}
+
+    <h2>Voting record</h2>
+    {votes.length > 0 ? (
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Division</th><th>Vote</th></tr>
+          </thead>
+          <tbody>
+            {votes.map(({ division, vote, againstGroupMajority }) => (
+              <tr>
+                <td class="num">{formatDate(division.date)}</td>
+                <td>
+                  <a href={`/divisions/${division.house}/${divisionKey(division)}/`}>{division.name}</a>
+                </td>
+                <td>
+                  <span class:list={['vote-chip', vote, { rebel: againstGroupMajority }]}>
+                    {vote === 'aye' ? 'Aye' : 'No'}{againstGroupMajority ? ' · crossed' : ''}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    ) : (
+      <p class="note">
+        No division votes recorded yet for this parliament. Voting records appear once
+        the They Vote For You sync runs.
+      </p>
+    )}
+
+    {person.photo && (
+      <p class="attribution">
+        Photo: {person.photo.attribution} ({person.photo.licence}), via Wikimedia Commons.
+      </p>
+    )}
+    <p class="attribution">
+      Sources: Wikidata{votes.length > 0 ? ', They Vote For You (ODbL)' : ''}. Errors?
+      <a href="/about/corrections/">Request a correction.</a>
+    </p>
+  </article>
+</Base>

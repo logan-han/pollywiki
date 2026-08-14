@@ -1,0 +1,71 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - name: Pull data bundles
+        if: vars.DATA_BUCKET != ''
+        run: aws s3 sync "s3://${{ vars.DATA_BUCKET }}/bundles" .cache/bundles --exact-timestamps
+
+      - name: Build site
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          if [ -d .cache/bundles ] && [ -s .cache/bundles/people.jsonl ]; then
+            export BUNDLES_DIR="$GITHUB_WORKSPACE/.cache/bundles"
+            echo "building from live bundles"
+          else
+            echo "building from sample bundles"
+          fi
+          pnpm --filter @pollywiki/site build
+
+      - name: Sync to S3
+        run: |
+          aws s3 sync packages/site/dist "s3://${{ vars.SITE_BUCKET }}" \
+            --delete
+
+      # Without this the pages sit in S3 while CloudFront serves the old copy
+      # until the default TTL expires. Skipped until the variable is set.
+      - name: Invalidate CloudFront
+        if: vars.CLOUDFRONT_DISTRIBUTION_ID != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/*"

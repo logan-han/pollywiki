@@ -1,0 +1,46 @@
+---
+import Base from '../../layouts/Base.astro'
+import { STATE_NAMES, electorates, personBySlug } from '../../lib/data'
+
+const sorted = [...electorates].sort((a, b) => a.name.localeCompare(b.name))
+---
+
+<Base title="Electorates" description="All 150 federal electorates and their members.">
+  <h1>Electorates</h1>
+  <p>{electorates.length} House of Representatives seats.</p>
+
+  <div class="filter-bar">
+    <input type="search" id="electorate-filter" placeholder="Filter by name or state" aria-label="Filter electorates" />
+  </div>
+
+  <div class="table-scroll">
+    <table id="electorate-table">
+      <thead>
+        <tr><th>Electorate</th><th>State</th><th>Member</th></tr>
+      </thead>
+      <tbody>
+        {sorted.map((e) => {
+          const member = e.memberSlug ? personBySlug(e.memberSlug) : undefined
+          return (
+            <tr data-text={`${e.name} ${e.state} ${STATE_NAMES[e.state] ?? ''} ${member?.name ?? ''}`.toLowerCase()}>
+              <td><a href={`/electorates/${e.slug}/`}>{e.name}</a></td>
+              <td>{e.state}</td>
+              <td>{member ? <a href={`/people/${member.slug}/`}>{member.name}</a> : ''}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    const input = document.getElementById('electorate-filter') as HTMLInputElement
+    const rows = [...document.querySelectorAll<HTMLElement>('#electorate-table tbody tr')]
+    input?.addEventListener('input', () => {
+      const q = input.value.trim().toLowerCase()
+      for (const row of rows) {
+        row.style.display = !q || (row.dataset.text ?? '').includes(q) ? '' : 'none'
+      }
+    })
+  </script>
+</Base>

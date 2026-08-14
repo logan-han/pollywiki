@@ -1,0 +1,33 @@
+---
+import type { Person } from '@pollywiki/schema'
+
+interface Props {
+  person: Person
+  large?: boolean
+}
+
+const { person, large = false } = Astro.props
+const initials = person.name
+  .split(/\s+/)
+  .map((part) => part[0])
+  .filter(Boolean)
+  .slice(0, 2)
+  .join('')
+---
+
+{
+  person.photo ? (
+    <img
+      class:list={['avatar', { large }]}
+      src={person.photo.url}
+      alt={`Portrait of ${person.name}`}
+      loading="lazy"
+      width={large ? 102 : 48}
+      height={large ? 102 : 48}
+    />
+  ) : (
+    <span class:list={['avatar', 'initials', { large }]} aria-hidden="true">
+      {initials}
+    </span>
+  )
+}

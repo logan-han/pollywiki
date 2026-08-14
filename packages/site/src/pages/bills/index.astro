@@ -1,0 +1,46 @@
+---
+import Base from '../../layouts/Base.astro'
+import { bills } from '../../lib/data'
+---
+
+<Base title="Bills" description="Bills before the Australian federal parliament and their progress.">
+  <h1>Bills</h1>
+  <p>{bills.length} bills of the 48th Parliament, from the official APH record.</p>
+
+  <div class="filter-bar">
+    <input type="search" id="bill-filter" placeholder="Filter by title or portfolio" aria-label="Filter bills" />
+  </div>
+
+  {bills.length > 0 ? (
+    <div class="table-scroll">
+      <table id="bill-table">
+        <thead>
+          <tr><th>Bill</th><th>Chamber</th><th>Portfolio</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {bills.map((b) => (
+            <tr data-text={`${b.title} ${b.portfolio ?? ''}`.toLowerCase()}>
+              <td><a href={`/bills/${b.id}/`}>{b.title}</a></td>
+              <td>{b.chamber === 'senate' ? 'Senate' : 'House'}</td>
+              <td>{b.portfolio ?? ''}</td>
+              <td>{b.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  ) : (
+    <p class="note">No bill records loaded yet. They appear once the APH bills sync runs.</p>
+  )}
+
+  <script>
+    const input = document.getElementById('bill-filter') as HTMLInputElement
+    const rows = [...document.querySelectorAll<HTMLElement>('#bill-table tbody tr')]
+    input?.addEventListener('input', () => {
+      const q = input.value.trim().toLowerCase()
+      for (const row of rows) {
+        row.style.display = !q || (row.dataset.text ?? '').includes(q) ? '' : 'none'
+      }
+    })
+  </script>
+</Base>

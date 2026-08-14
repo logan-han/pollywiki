@@ -1,0 +1,81 @@
+---
+import Base from '../../layouts/Base.astro'
+import { formatDate, meta } from '../../lib/data'
+
+const sources = [
+  {
+    key: 'wikidata',
+    name: 'Wikidata & Wikimedia Commons',
+    what: 'Current members of both chambers, parliamentary groups, seats, photos.',
+    licence: 'CC0 (data); photos individually licensed and credited on each page',
+    link: 'https://www.wikidata.org',
+  },
+  {
+    key: 'tvfy',
+    name: 'They Vote For You (OpenAustralia Foundation)',
+    what: 'Divisions and every individual vote, derived from the official Hansard.',
+    licence: 'Open Database Licence (ODbL) 1.0',
+    link: 'https://theyvoteforyou.org.au',
+  },
+  {
+    key: 'aph-bills',
+    name: 'Parliament of Australia',
+    what: 'Bills before parliament and their progress.',
+    licence: 'Commonwealth of Australia; reproduced fairly and accurately with acknowledgement',
+    link: 'https://www.aph.gov.au',
+  },
+  {
+    key: 'aec',
+    name: 'Australian Electoral Commission',
+    what: 'Federal election results by electorate (2025 federal election, event 31496).',
+    licence: 'CC BY 4.0 © Commonwealth of Australia',
+    link: 'https://results.aec.gov.au',
+  },
+]
+---
+
+<Base title="Data sources" description="Where every figure on pollywiki comes from, its licence and when it last synced.">
+  <h1>Data sources</h1>
+  <p>
+    Everything on this site is generated from the sources below. Nothing is written
+    by hand and nothing is edited after ingestion.
+  </p>
+
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr><th>Source</th><th>Used for</th><th>Licence</th><th>Last synced</th></tr>
+      </thead>
+      <tbody>
+        {sources.map((s) => {
+          const status = meta.sources[s.key]
+          return (
+            <tr>
+              <td><a href={s.link}>{s.name}</a></td>
+              <td>{s.what}</td>
+              <td>{s.licence}</td>
+              <td class="num">
+                {status ? `${formatDate(status.lastSync.slice(0, 10))}${status.ok ? '' : ' (failed)'}` : 'not yet'}
+              </td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Attribution and reuse</h2>
+  <p>
+    Voting data is used under the ODbL: it is attributed on every page where it
+    appears and derived data remains open. Election figures are © Commonwealth of
+    Australia (AEC), CC BY 4.0, and this site does not use AEC branding. Parliamentary
+    material is reproduced fairly and accurately with acknowledgement and without any
+    implication of parliamentary endorsement. Photos come only from Wikimedia Commons
+    under free licences, with the photographer credited on the page where the photo
+    appears.
+  </p>
+  <p>
+    The site's own code is open source at
+    <a href="https://github.com/logan-han/pollywiki">github.com/logan-han/pollywiki</a>.
+  </p>
+</Base>

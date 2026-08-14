@@ -1,0 +1,4 @@
+{"slug":"alex-paterson","name":"Alex Paterson","house":"representatives","state":"VIC","electorate":"sampleford","group":"Example Party","groupSlug":"example-party","since":"2025-05-03","ids":{},"links":{},"stats":{"divisionsEligible":2,"divisionsVoted":2,"againstGroupMajority":1}}
+{"slug":"jordan-nguyen","name":"Jordan Nguyen","house":"representatives","state":"NSW","electorate":"placeholder-bay","group":"Placeholder Alliance","groupSlug":"placeholder-alliance","since":"2022-05-21","ids":{},"links":{},"stats":{"divisionsEligible":2,"divisionsVoted":1,"againstGroupMajority":0}}
+{"slug":"sam-kelly","name":"Sam Kelly","house":"senate","state":"QLD","group":"Example Party","groupSlug":"example-party","since":"2025-07-01","ids":{},"links":{}}
+{"slug":"morgan-rossi","name":"Morgan Rossi","house":"senate","state":"TAS","group":"Independent","groupSlug":"independent","since":"2022-07-01","ids":{},"links":{}}

@@ -1,0 +1,23 @@
+---
+interface Props {
+  ayes: number
+  noes: number
+  showFigures?: boolean
+}
+
+const { ayes, noes, showFigures = true } = Astro.props
+const total = Math.max(ayes + noes, 1)
+---
+
+<span class="vote-bar" role="img" aria-label={`${ayes} ayes, ${noes} noes`}>
+  {showFigures && (
+    <span class="figures">
+      <span class="ayes">{ayes} aye</span>
+      <span class="noes">{noes} no</span>
+    </span>
+  )}
+  <span class="bar">
+    <span class="a" style={`width:${(ayes / total) * 100}%`}></span>
+    <span class="n" style={`width:${(noes / total) * 100}%`}></span>
+  </span>
+</span>

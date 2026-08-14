@@ -1,0 +1,60 @@
+---
+import Base from '../../layouts/Base.astro'
+import PersonCard from '../../components/PersonCard.astro'
+import { parties, people } from '../../lib/data'
+
+const sorted = [...people].sort((a, b) => a.name.localeCompare(b.name))
+---
+
+<Base title="People" description="Every sitting member of the Australian House of Representatives and Senate.">
+  <h1>People</h1>
+  <p>{people.length} sitting parliamentarians in the 48th Parliament.</p>
+
+  <div class="filter-bar">
+    <input type="search" id="people-filter" placeholder="Filter by name, electorate or state" aria-label="Filter people" />
+    <select id="house-filter" aria-label="Filter by chamber">
+      <option value="">Both chambers</option>
+      <option value="representatives">House</option>
+      <option value="senate">Senate</option>
+    </select>
+    <select id="group-filter" aria-label="Filter by party">
+      <option value="">All parties</option>
+      {parties.map((p) => (
+        <option value={p.slug}>{p.name}</option>
+      ))}
+    </select>
+  </div>
+
+  <div class="person-grid" id="person-grid">
+    {sorted.map((person) => (
+      <div
+        class="person-cell"
+        data-name={`${person.name} ${person.electorate ?? ''} ${person.state ?? ''}`.toLowerCase()}
+        data-house={person.house}
+        data-group={person.groupSlug}
+      >
+        <PersonCard person={person} />
+      </div>
+    ))}
+  </div>
+
+  <script>
+    const text = document.getElementById('people-filter') as HTMLInputElement
+    const house = document.getElementById('house-filter') as HTMLSelectElement
+    const group = document.getElementById('group-filter') as HTMLSelectElement
+    const cells = [...document.querySelectorAll<HTMLElement>('.person-cell')]
+
+    function apply() {
+      const q = text.value.trim().toLowerCase()
+      for (const cell of cells) {
+        const show =
+          (!q || (cell.dataset.name ?? '').includes(q)) &&
+          (!house.value || cell.dataset.house === house.value) &&
+          (!group.value || cell.dataset.group === group.value)
+        cell.style.display = show ? '' : 'none'
+      }
+    }
+
+    for (const el of [text, house, group]) el.addEventListener('input', apply)
+  </script>
+</Base>
