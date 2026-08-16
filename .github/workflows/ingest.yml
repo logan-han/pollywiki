@@ -1,0 +1,145 @@
+name: ingest
+
+on:
+  schedule:
+    # 12:30 UTC is 22:30 AEST, after sitting days wrap up.
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: Comma-separated sources for the main job (wikidata,aec-profiles,aec)
+        default: wikidata,aec-profiles
+      event:
+        description: AEC event id(s), comma-separated (aec source only)
+        default: '31496'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ingest
+
+jobs:
+  # The CodeBuild Lambda runner bills per second and caps builds at 15
+  # minutes, too tight to compile Rust there. This job builds the ingest
+  # binary in an Amazon Linux 2023 container matching the runner image.
+  build-au-binary:
+    runs-on: ubuntu-24.04-arm
+    container: amazonlinux:2023
+    permissions:
+      contents: read
+    steps:
+      - name: Install build tools
+        run: dnf install -y gcc tar gzip zstd
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build ingest binary
+        run: cargo build --release -p pollywiki-ingest
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pollywiki-ingest-al2023-arm64
+          path: target/release/pollywiki-ingest
+          retention-days: 1
+
+  # They Vote For You refuses traffic from non-Australian datacentre ranges,
+  # so its sync runs on a CodeBuild-hosted runner in ap-southeast-2.
+  au-sources:
+    needs: build-au-binary
+    runs-on:
+      - codebuild-pollywiki-gha-runner-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 14
+    continue-on-error: true
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pollywiki-ingest-al2023-arm64
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INGEST_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - name: Sync Australian-only sources
+        env:
+          POLLYWIKI_DATA_BUCKET: ${{ vars.DATA_BUCKET }}
+          TVFY_API_KEY: ${{ secrets.TVFY_API_KEY }}
+        run: |
+          chmod +x ./pollywiki-ingest
+          ./pollywiki-ingest sync \
+            --store s3 \
+            --sources tvfy,handbook,aph
+
+  ingest:
+    needs: au-sources
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Configure AWS credentials (OIDC)
+        id: creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INGEST_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - name: Sync sources, summarise and derive bundles
+        env:
+          POLLYWIKI_DATA_BUCKET: ${{ vars.DATA_BUCKET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          cargo run --release -p pollywiki-ingest -- all \
+            --store s3 \
+            --sources "${{ inputs.sources || 'wikidata,aec-profiles' }}" \
+            --event "${{ inputs.event || '31496' }}"
+
+      # The stamp commit keeps the scheduled workflow from being auto-disabled
+      # after 60 days of repo inactivity and records sync history in git.
+      # Runs even when a source failed: the manifest records per-source
+      # status, and data from the sources that succeeded still deploys.
+      - name: Commit sync stamp
+        id: stamp
+        if: always() && steps.creds.outcome == 'success'
+        run: |
+          mkdir -p data/state
+          aws s3 cp "s3://${{ vars.DATA_BUCKET }}/state/sync-manifest.json" data/state/sync-stamp.json
+          git add data/state/sync-stamp.json
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name "pollywiki-ingest"
+            git config user.email "ingest@users.noreply.github.com"
+            git commit -m "data: sync stamp $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Pushes made with GITHUB_TOKEN never trigger other workflows,
+      # so kick the deploy explicitly when data moved.
+      - name: Trigger deploy
+        if: always() && steps.stamp.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main

@@ -1,0 +1,26 @@
+[package]
+name = "pollywiki-site"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Static site generator for pollywiki; reads bundles, never computes"
+
+[[bin]]
+name = "pollywiki-site"
+path = "src/main.rs"
+
+[dependencies]
+pollywiki-schema = { path = "../schema" }
+anyhow = "1"
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+regex.workspace = true
+chrono.workspace = true
+markdown = "1"
+percent-encoding = "2"
+include_dir = "0.7"
+pagefind = { version = "=1.5.2", default-features = false }
+# io-util backfills a tokio feature the pagefind library uses but does not declare.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+tiny_http = "0.12"

@@ -1,0 +1,1 @@
+var e=document.getElementById(`electorate-filter`),t=[...document.querySelectorAll(`#electorate-table tbody tr`)];e?.addEventListener(`input`,()=>{let n=e.value.trim().toLowerCase();for(let e of t)e.style.display=!n||(e.dataset.text??``).includes(n)?``:`none`});

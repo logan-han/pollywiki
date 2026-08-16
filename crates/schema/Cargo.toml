@@ -1,0 +1,13 @@
+[package]
+name = "pollywiki-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Entity types shared by the pollywiki ingest and site builders"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+unicode-normalization = "0.1"
+icu.workspace = true

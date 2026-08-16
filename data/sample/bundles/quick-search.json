@@ -1,0 +1,8 @@
+[
+  { "t": "person", "slug": "alex-paterson", "name": "Alex Paterson", "sub": "MP · Sampleford" },
+  { "t": "person", "slug": "jordan-nguyen", "name": "Jordan Nguyen", "sub": "MP · Placeholder Bay" },
+  { "t": "person", "slug": "sam-kelly", "name": "Sam Kelly", "sub": "Senator · QLD" },
+  { "t": "person", "slug": "morgan-rossi", "name": "Morgan Rossi", "sub": "Senator · TAS" },
+  { "t": "electorate", "slug": "sampleford", "name": "Sampleford", "sub": "Electorate · VIC" },
+  { "t": "electorate", "slug": "placeholder-bay", "name": "Placeholder Bay", "sub": "Electorate · NSW" }
+]

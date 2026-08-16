@@ -1,0 +1,73 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - name: Pull data bundles
+        if: vars.DATA_BUCKET != ''
+        run: aws s3 sync "s3://${{ vars.DATA_BUCKET }}/bundles" .cache/bundles --exact-timestamps
+
+      - name: Build site
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          if [ -d .cache/bundles ] && [ -s .cache/bundles/people.jsonl ]; then
+            export BUNDLES_DIR="$GITHUB_WORKSPACE/.cache/bundles"
+            echo "building from live bundles"
+          else
+            echo "building from sample bundles"
+          fi
+          cargo run --release -p pollywiki-site -- --out dist
+
+      - name: Sync to S3
+        run: |
+          aws s3 sync dist "s3://${{ vars.SITE_BUCKET }}" \
+            --delete --exclude "img/*"
+
+      # Mirrored member photos live in the data prefix; copy them under the
+      # site prefix so CloudFront serves them same-origin. Runs after the
+      # deletion sync above so it never fights --delete.
+      - name: Publish mirrored images
+        if: vars.DATA_BUCKET != ''
+        run: |
+          aws s3 sync "s3://${{ vars.DATA_BUCKET }}/derived/img" \
+            "s3://${{ vars.SITE_BUCKET }}/img" \
+            --exclude "*.src.json"
+
+      # Without this the pages sit in S3 while CloudFront serves the old copy
+      # until the default TTL expires. Skipped until the variable is set.
+      - name: Invalidate CloudFront
+        if: vars.CLOUDFRONT_DISTRIBUTION_ID != ''
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/*"

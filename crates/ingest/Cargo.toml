@@ -1,0 +1,25 @@
+[package]
+name = "pollywiki-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Source syncs, normalisation and derived bundles for pollywiki"
+
+[[bin]]
+name = "pollywiki-ingest"
+path = "src/main.rs"
+
+[dependencies]
+pollywiki-schema = { path = "../schema" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+regex.workspace = true
+chrono.workspace = true
+csv = "1"
+percent-encoding = "2"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls", "sso"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }

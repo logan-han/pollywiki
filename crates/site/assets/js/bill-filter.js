@@ -1,0 +1,1 @@
+var e=document.getElementById(`bill-filter`),t=[...document.querySelectorAll(`#bill-rows > li`)];function n(){let n=e.value.trim().toLowerCase();for(let e of t)e.style.display=!n||(e.dataset.text??``).includes(n)?``:`none`}e?.addEventListener(`input`,n);var r=new URLSearchParams(location.search).get(`q`);r&&e&&(e.value=r,n());

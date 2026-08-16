@@ -1,0 +1,1 @@
+var e=document.getElementById(`division-house`),t=[...e?.querySelectorAll(`button`)??[]],n=[...document.querySelectorAll(`#division-list > li`)];e?.addEventListener(`click`,e=>{let r=e.target.closest(`button`);if(!r)return;for(let e of t)e.setAttribute(`aria-pressed`,String(e===r));let i=r.dataset.house??``;for(let e of n)e.style.display=!i||e.dataset.house===i?``:`none`});
