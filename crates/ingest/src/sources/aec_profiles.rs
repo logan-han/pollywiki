@@ -163,20 +163,47 @@ pub fn parse_dt_dd(html: &str) -> IndexMap<String, String> {
     out
 }
 
+/// The named entities AEC profile prose actually uses. &amp; is decoded last,
+/// so an escaped entity such as "&amp;ndash;" survives as text instead of
+/// being decoded twice.
+const NAMED_ENTITIES: [(&str, &str); 12] = [
+    ("&nbsp;", " "),
+    ("&ndash;", "\u{2013}"),
+    ("&mdash;", "\u{2014}"),
+    ("&lsquo;", "\u{2018}"),
+    ("&rsquo;", "\u{2019}"),
+    ("&ldquo;", "\u{201c}"),
+    ("&rdquo;", "\u{201d}"),
+    ("&hellip;", "\u{2026}"),
+    ("&quot;", "\""),
+    ("&apos;", "'"),
+    ("&lt;", "<"),
+    ("&gt;", ">"),
+];
+
 fn clean(html: &str) -> String {
     static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
-    static DEC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#(\d+);").unwrap());
+    static DEC: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"&#(?:([0-9]+)|[xX]([0-9a-fA-F]+));").unwrap());
     static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
     let text = TAGS.replace_all(html, " ");
-    let text = text.replace("&amp;", "&").replace("&nbsp;", " ");
+    let mut text = text.into_owned();
+    for (entity, replacement) in NAMED_ENTITIES {
+        if text.contains(entity) {
+            text = text.replace(entity, replacement);
+        }
+    }
     let text = DEC.replace_all(&text, |caps: &regex::Captures| {
-        caps[1]
-            .parse::<u32>()
-            .ok()
-            .and_then(char::from_u32)
+        let code = match (caps.get(1), caps.get(2)) {
+            (Some(dec), _) => dec.as_str().parse::<u32>().ok(),
+            (None, Some(hex)) => u32::from_str_radix(hex.as_str(), 16).ok(),
+            _ => None,
+        };
+        code.and_then(char::from_u32)
             .map(String::from)
             .unwrap_or_default()
     });
+    let text = text.replace("&amp;", "&");
     SPACES.replace_all(&text, " ").trim().to_string()
 }
 
@@ -185,4 +212,38 @@ fn age_days(iso: &str) -> f64 {
         return f64::INFINITY;
     };
     (chrono::Utc::now().timestamp_millis() - then.timestamp_millis()) as f64 / 86_400_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_text_decodes_the_entities_aec_pages_use() {
+        let pairs = parse_dt_dd(
+            "<dl><dt>Demographic Rating:</dt><dd>Inner Metropolitan &ndash; well-established \
+             suburbs</dd><dt>Name derivation:</dt><dd>Named for the O&rsquo;Brien family \
+             &amp; others &#8212; see the note &#x2013; 1949</dd></dl>",
+        );
+        assert_eq!(
+            pairs.get("demographic rating").map(String::as_str),
+            Some("Inner Metropolitan \u{2013} well-established suburbs")
+        );
+        assert_eq!(
+            pairs.get("name derivation").map(String::as_str),
+            Some(
+                "Named for the O\u{2019}Brien family & others \u{2014} see the note \u{2013} 1949"
+            )
+        );
+    }
+
+    #[test]
+    fn escaped_entities_are_not_decoded_twice() {
+        // "&amp;ndash;" is the text "&ndash;", not an en dash.
+        let pairs = parse_dt_dd("<dl><dt>Area:</dt><dd>writes &amp;ndash; verbatim</dd></dl>");
+        assert_eq!(
+            pairs.get("area").map(String::as_str),
+            Some("writes &ndash; verbatim")
+        );
+    }
 }

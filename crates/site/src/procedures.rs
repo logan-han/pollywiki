@@ -28,7 +28,10 @@ static PROCEDURES: [Procedure; 15] = [
         "A rearrangement motion changes the order in which the chamber deals with the day's business, usually to bring a particular item on for debate immediately. It decides scheduling only, not the substance of any bill."
     ),
     procedure!(
-        r"(?i)suspend(sion of)? standing orders|standing orders be suspended",
+        // APH writes this several ways. The old "suspend(sion of)?" spelling
+        // only ever matched the literal "suspendsion of", so the note never
+        // showed on the phrasing the chambers actually use.
+        r"(?i)suspen(?:sion of|d) standing (?:and sessional )?orders|standing (?:and sessional )?orders be suspended|suspend the usual(?: procedural)? rules",
         "Suspension of standing orders",
         "Standing orders are the chamber's rules of procedure. A suspension motion asks to set them aside temporarily, usually so a member can move a motion the rules would not otherwise allow at that time."
     ),

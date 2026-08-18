@@ -202,7 +202,7 @@ pub fn bill_stage(bill: &Bill) -> u8 {
     from_timeline.max(from_status)
 }
 
-pub const BILL_DOTS_LEGEND: &str = "<p class=\"dots-legend\">Introduced \u{b7} Passed 1st house \u{b7} Passed 2nd house \u{b7} Assent</p>";
+pub const BILL_DOTS_LEGEND: &str = "<p class=\"dots-legend\"><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"off\"></i><i class=\"off\"></i><i class=\"off\"></i><i class=\"off\"></i></span>Introduced \u{2192} Passed 1st house \u{2192} Passed 2nd house \u{2192} Assent</p>";
 
 pub fn bill_dots(bill: &Bill) -> String {
     let stage = bill_stage(bill);
@@ -214,7 +214,7 @@ pub fn bill_dots(bill: &Bill) -> String {
         _ => "assented",
     };
     let mut out = format!(
-        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {stage} of 4: {reached}\">"
+        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {stage} of 4: {reached}\" title=\"Stage {stage} of 4: {reached}\">"
     );
     for step in 1..=4u8 {
         out.push_str(if step <= stage {

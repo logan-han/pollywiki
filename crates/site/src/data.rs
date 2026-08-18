@@ -419,35 +419,63 @@ pub enum Occupation {
     Raw(String),
 }
 
-/// Handbook occupation strings follow "Role at|for Organisation from X to Y."
-/// Parse them into columns; anything that doesn't match renders verbatim.
+/// Handbook occupation strings follow "Role at|for|with Organisation from X to
+/// Y." or "Role of the Organisation from X to Y."; anything that doesn't match
+/// renders verbatim across the row.
+///
+/// at/for/with is tried before of, so "Member of the Board at Example Co"
+/// splits on "at" and keeps the whole title in the role column.
 pub fn parse_occupation(text: &str) -> Occupation {
     use regex::Regex;
     use std::sync::LazyLock;
-    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    static AT: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^(.+?) (?:at|for|with) (?:the )?(.+?)(?: from (.+?))?(?: to (.+))?$").unwrap()
     });
+    static OF: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(.+?) of (?:the )?(.+?)(?: from (.+?))?(?: to (.+))?$").unwrap()
+    });
+    // A year or year range left dangling on the organisation, e.g.
+    // "UK Treasury, 2003", which the Handbook writes instead of "from ... to".
+    static TRAILING_YEARS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^(.*?),\s*((?:1[89]|20)\d{2})(?:\s*[-\u{2013}\u{2014}]\s*((?:1[89]|20)\d{2}))?$",
+        )
+        .unwrap()
+    });
+
     let trimmed = text.trim();
     let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
-    let Some(caps) = PATTERN.captures(trimmed) else {
+    let Some(caps) = AT.captures(trimmed).or_else(|| OF.captures(trimmed)) else {
         return Occupation::Raw(text.to_string());
     };
     let (Some(role), Some(org)) = (caps.get(1), caps.get(2)) else {
         return Occupation::Raw(text.to_string());
     };
-    if org.as_str().is_empty() {
-        return Occupation::Raw(text.to_string());
-    }
     let from = caps.get(3).map(|m| m.as_str());
     let to = caps.get(4).map(|m| m.as_str());
-    let period = match (from, to) {
+    let mut period = match (from, to) {
         (Some(from), Some(to)) => format!("{} \u{2013} {}", dotted_date(from), dotted_date(to)),
         (Some(from), None) => format!("from {}", dotted_date(from)),
         _ => String::new(),
     };
+
+    // Organisations arrive with the separator's trailing comma attached.
+    let mut org = org.as_str().trim().trim_end_matches(',').trim().to_string();
+    if period.is_empty() {
+        if let Some(years) = TRAILING_YEARS.captures(&org) {
+            period = match years.get(3) {
+                Some(end) => format!("{} \u{2013} {}", &years[2], end.as_str()),
+                None => years[2].to_string(),
+            };
+            org = years[1].trim().trim_end_matches(',').trim().to_string();
+        }
+    }
+    if org.is_empty() {
+        return Occupation::Raw(text.to_string());
+    }
     Occupation::Parsed {
-        role: role.as_str().to_string(),
-        org: org.as_str().to_string(),
+        role: role.as_str().trim().to_string(),
+        org,
         period,
     }
 }
@@ -692,5 +720,68 @@ mod tests {
     fn format_date_renders_site_style() {
         assert_eq!(format_date("2025-05-03"), "3 May 2025");
         assert_eq!(format_date("not-a-date"), "not-a-date");
+    }
+}
+
+#[cfg(test)]
+mod occupation_tests {
+    use super::*;
+
+    /// The forms that appear on live Handbook profiles, including the ones that
+    /// used to fall through to the verbatim row.
+    #[test]
+    fn occupations_handle_the_of_the_form_and_dangling_years() {
+        let parsed = |text: &str| match parse_occupation(text) {
+            Occupation::Parsed { role, org, period } => (role, org, period),
+            Occupation::Raw(raw) => panic!("expected a parse, got raw: {raw}"),
+        };
+
+        assert_eq!(
+            parsed("CEO of the Australian Business and Community Network from 2017 to 2021."),
+            (
+                "CEO".to_string(),
+                "Australian Business and Community Network".to_string(),
+                "2017 \u{2013} 2021".to_string()
+            )
+        );
+        assert_eq!(
+            parsed("Managing Director of Carla Zampatti Pty. Ltd. from 2008 to 2016."),
+            (
+                "Managing Director".to_string(),
+                "Carla Zampatti Pty. Ltd.".to_string(),
+                "2008 \u{2013} 2016".to_string()
+            )
+        );
+        // A year the Handbook hung off the organisation instead of "from ... to".
+        assert_eq!(
+            parsed("Policy Analyst at UK Treasury, 2003."),
+            (
+                "Policy Analyst".to_string(),
+                "UK Treasury".to_string(),
+                "2003".to_string()
+            )
+        );
+        // The separator leaves a trailing comma on the organisation.
+        assert_eq!(
+            parsed("Change Leader at King's College Hospital, London, from 2005 to 2007."),
+            (
+                "Change Leader".to_string(),
+                "King's College Hospital, London".to_string(),
+                "2005 \u{2013} 2007".to_string()
+            )
+        );
+        // at/for/with wins over of, so a title containing "of" stays intact.
+        assert_eq!(
+            parsed("Member of the Board at Example Co from 2010 to 2012."),
+            (
+                "Member of the Board".to_string(),
+                "Example Co".to_string(),
+                "2010 \u{2013} 2012".to_string()
+            )
+        );
+        assert!(matches!(
+            parse_occupation("Freeform text"),
+            Occupation::Raw(_)
+        ));
     }
 }

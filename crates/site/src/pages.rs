@@ -79,16 +79,30 @@ fn full_chamber(house: House) -> &'static str {
     }
 }
 
-/// Pill bucket for the bills index: still before a chamber, already an Act,
-/// or finished some other way (negatived, discharged, not proceeding).
+/// Pill bucket for the bills index: still before a chamber, already law, or
+/// finished some other way (negatived, discharged, not proceeding). APH reports
+/// law as either "Act" or "Assent"; both belong in the same bucket.
 fn bill_status_key(bill: &Bill) -> &'static str {
     if bill.status.starts_with("Before") {
         "open"
-    } else if bill.status == "Act" {
+    } else if bill.status == "Act" || bill.status == "Assent" {
         "act"
     } else {
         "other"
     }
+}
+
+/// The ingest stores each step as "description (Chamber)", which reads right on
+/// the bill page but is far too long for a homepage row. The chamber is already
+/// carried by the progress dots, so the row shows the description alone and
+/// keeps the full string in a title attribute.
+fn event_description(event: &str) -> &str {
+    for suffix in [" (House of Representatives)", " (Senate)"] {
+        if let Some(head) = event.strip_suffix(suffix) {
+            return head;
+        }
+    }
+    event
 }
 
 /// The most recent recorded step, by date. Bills with no timeline return None.
@@ -128,17 +142,19 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
 /// The date drops its year to keep the mono line on one row; the full date
 /// stays machine-readable in the <time> element and on the bill page.
 fn bill_activity_row(bill: &Bill) -> String {
-    let event = match latest_step(bill) {
-        Some(step) => format!(
-            "{} \u{b7} <time datetime=\"{}\">{}</time>",
-            esc(&step.event),
+    let event =
+        match latest_step(bill) {
+            Some(step) => format!(
+            "<span class=\"event\" title=\"{}\">{} \u{b7} <time datetime=\"{}\">{}</time></span>",
+            esc_attr(&format!("{} \u{b7} {}", step.event, format_date(&step.date))),
+            esc(event_description(&step.event)),
             esc_attr(&step.date),
             esc(&short_date(&step.date)),
         ),
-        None => esc(&bill.status),
-    };
+            None => format!("<span class=\"event\">{}</span>", esc(&bill.status)),
+        };
     format!(
-        "<li><span><a href=\"/bills/{id}/\">{title}</a></span><span>{dots}</span><span class=\"event\">{event}</span></li>",
+        "<li><span><a href=\"/bills/{id}/\">{title}</a></span><span>{dots}</span>{event}</li>",
         id = bill.id,
         title = esc(&bill.title),
         dots = bill_dots(bill),
@@ -1374,15 +1390,34 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     for m in &members {
         for p in m.positions.as_deref().unwrap_or_default() {
             if p.to.is_none() && LEADERSHIP.is_match(&p.role) {
-                leadership.push(Leader {
-                    person: m,
-                    role: &p.role,
-                    from: p.from.as_deref(),
-                });
+                // The Handbook records one entry per ministry, so a continuing
+                // role spans several. This table names the role, not the
+                // ministry, so keep one row per person and role, dated from the
+                // earliest of them.
+                let existing = leadership
+                    .iter_mut()
+                    .find(|l| l.person.slug == m.slug && l.role == p.role);
+                match existing {
+                    Some(l) => {
+                        if let Some(from) = p.from.as_deref() {
+                            if l.from.is_none_or(|held| from < held) {
+                                l.from = Some(from);
+                            }
+                        }
+                    }
+                    None => leadership.push(Leader {
+                        person: m,
+                        role: &p.role,
+                        from: p.from.as_deref(),
+                    }),
+                }
             }
         }
     }
-    leadership.sort_by(|a, b| pollywiki_schema::js_compare(a.role, b.role));
+    leadership.sort_by(|a, b| {
+        pollywiki_schema::js_compare(a.role, b.role)
+            .then_with(|| pollywiki_schema::js_compare(&a.person.name, &b.person.name))
+    });
 
     let reps_seats = party.seats.as_ref().map(|s| s.representatives).unwrap_or(0);
     let senate_seats = party.seats.as_ref().map(|s| s.senate).unwrap_or(0);
@@ -1688,10 +1723,33 @@ mod tests {
                 r#"{{"id":"a","title":"A","parliament":48,"chamber":"senate","status":"{status}"}}"#
             )))
         };
+        // The five statuses APH actually reports, plus the longer "Before the
+        // Senate" wording the sample bundles use.
+        assert_eq!(key("Before Senate"), "open");
+        assert_eq!(key("Before Reps"), "open");
         assert_eq!(key("Before the Senate"), "open");
         assert_eq!(key("Act"), "act");
-        assert_eq!(key("Not proceeding"), "other");
+        assert_eq!(key("Assent"), "act");
+        assert_eq!(key("Not Proceeding"), "other");
         assert_eq!(key("Discharged"), "other");
+    }
+
+    #[test]
+    fn event_descriptions_drop_only_the_chamber_suffix() {
+        assert_eq!(
+            event_description("Referred to Federation Chamber (House of Representatives)"),
+            "Referred to Federation Chamber"
+        );
+        assert_eq!(
+            event_description("Committee of the Whole debate (Senate)"),
+            "Committee of the Whole debate"
+        );
+        // No chamber suffix, and a parenthetical that is not one, both survive.
+        assert_eq!(event_description("Assent"), "Assent");
+        assert_eq!(
+            event_description("Second reading (adjourned)"),
+            "Second reading (adjourned)"
+        );
     }
 
     #[test]

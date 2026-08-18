@@ -450,6 +450,7 @@ p {
   font-size: 0.78rem;
   padding: 0.08rem 0.5rem;
   border-radius: 2px;
+  white-space: nowrap;
 }
 
 .vote-chip.aye {
@@ -707,6 +708,7 @@ th.num {
   font-family: var(--mono);
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 td.num.zero {
@@ -772,7 +774,7 @@ td.num.zero {
    so the event column has to be a fixed width or the dots stop lining up
    between rows. 15.5rem holds the longest APH event plus a short date. */
 .bill-list.activity li {
-  grid-template-columns: minmax(0, 1fr) 3.5rem 15.5rem;
+  grid-template-columns: minmax(0, 1fr) 3.5rem 18rem;
 }
 
 .bill-list .event {
@@ -826,6 +828,11 @@ td.num.zero {
   text-transform: uppercase;
   color: var(--faint);
   margin: 0.5rem 0 0;
+}
+
+.dots-legend .bill-dots {
+  margin-right: 0.5rem;
+  vertical-align: -1px;
 }
 
 /* Segmented control + filter pills */
