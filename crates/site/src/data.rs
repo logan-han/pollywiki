@@ -396,10 +396,10 @@ pub fn parse_bill_summary(summary: &str) -> Option<Vec<BillSummaryGroup>> {
                 acts: caps[1].to_string(),
                 items,
             });
-        } else if let Some(last) = groups.last_mut() {
-            last.items.push(part.clone());
         } else {
-            return None; // does not open with an act heading; not this grammar
+            // No heading to hang this item under, so the summary is not in
+            // this grammar at all.
+            groups.last_mut()?.items.push(part.clone());
         }
     }
     // Only worth grouping when there is more than one act group.
