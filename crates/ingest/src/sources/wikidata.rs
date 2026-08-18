@@ -495,6 +495,179 @@ fn strip_html(html: &str) -> String {
 mod tests {
     use super::*;
 
+    fn bindings(json: &str) -> Vec<Value> {
+        serde_json::from_str(json).expect("bindings fixture")
+    }
+
+    fn licence(licence: &str, attribution: &str) -> CommonsLicence {
+        CommonsLicence {
+            licence: licence.to_string(),
+            attribution: attribution.to_string(),
+        }
+    }
+
+    #[test]
+    fn only_the_two_chamber_positions_are_recognised() {
+        assert_eq!(house_position("Q18912794"), Some(House::Representatives));
+        assert_eq!(house_position("Q6814428"), Some(House::Senate));
+        // Any other P39 position is not a seat in this parliament.
+        assert_eq!(house_position("Q123456"), None);
+    }
+
+    #[test]
+    fn state_labels_and_codes_both_resolve() {
+        assert_eq!(as_state(Some("New South Wales")), Some(StateCode::NSW));
+        assert_eq!(as_state(Some("tasmania")), Some(StateCode::TAS));
+        // A bare code still parses, which is what the fallback is for.
+        assert_eq!(as_state(Some("QLD")), Some(StateCode::QLD));
+        assert_eq!(as_state(Some("Wentworth")), None);
+        assert_eq!(as_state(None), None);
+    }
+
+    #[test]
+    fn thumbnails_percent_encode_the_commons_file_name() {
+        assert_eq!(
+            thumb_url("Jane Smith 2026.jpg", 96),
+            "https://commons.wikimedia.org/wiki/Special:FilePath/Jane%20Smith%202026.jpg?width=96"
+        );
+        assert!(thumb_url("Caf\u{e9}.jpg", 320).contains("Caf%C3%A9.jpg?width=320"));
+    }
+
+    #[test]
+    fn attribution_falls_back_when_the_credit_is_only_markup() {
+        assert_eq!(strip_html("<a href=\"x\">Jane Smith</a>"), "Jane Smith");
+        assert_eq!(strip_html("<span></span>"), "Wikimedia Commons");
+        assert_eq!(strip_html("   "), "Wikimedia Commons");
+    }
+
+    #[test]
+    fn dedupe_keeps_the_most_recent_open_seat_per_person() {
+        let members = dedupe(&bindings(
+            r#"[
+              {"person":{"value":"http://www.wikidata.org/entity/Q1"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q18912794"},
+               "partyLabel":{"value":"Example Party"},
+               "electorateLabel":{"value":"Sampleford"},
+               "start":{"value":"2019-05-18T00:00:00Z"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q1"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q18912794"},
+               "partyLabel":{"value":"Example Party"},
+               "electorateLabel":{"value":"Placeholder Bay"},
+               "start":{"value":"2025-05-03T00:00:00Z"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q2"},
+               "personLabel":{"value":"Bob Jones"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q6814428"},
+               "electorateLabel":{"value":"Tasmania"},
+               "img":{"value":"http://commons.wikimedia.org/wiki/Special:FilePath/Bob%20Jones.jpg"},
+               "article":{"value":"https://en.wikipedia.org/wiki/Bob_Jones"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q3"},
+               "personLabel":{"value":"Not A Member"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q999"}},
+              {"personLabel":{"value":"No Uri"}}
+            ]"#,
+        ));
+
+        assert_eq!(
+            members.len(),
+            2,
+            "non-seat positions and headless rows drop"
+        );
+        let jane = members.iter().find(|m| m.wikidata == "Q1").expect("Q1");
+        assert_eq!(
+            jane.district.as_deref(),
+            Some("Placeholder Bay"),
+            "the later open statement wins"
+        );
+        assert_eq!(jane.since.as_deref(), Some("2025-05-03T00:00:00Z"));
+
+        let bob = members.iter().find(|m| m.wikidata == "Q2").expect("Q2");
+        // The Commons file name is percent-decoded out of the image URL.
+        assert_eq!(bob.commons_file.as_deref(), Some("Bob Jones.jpg"));
+        assert!(bob.since.is_none(), "an absent start date stays absent");
+        assert_eq!(
+            bob.wikipedia.as_deref(),
+            Some("https://en.wikipedia.org/wiki/Bob_Jones")
+        );
+    }
+
+    #[test]
+    fn members_become_people_with_seats_slugs_and_free_photos_only() {
+        let members = dedupe(&bindings(
+            r#"[
+              {"person":{"value":"http://www.wikidata.org/entity/Q1"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q18912794"},
+               "partyLabel":{"value":"Example Party"},
+               "electorateLabel":{"value":"Sampleford"},
+               "img":{"value":"http://commons.wikimedia.org/wiki/Special:FilePath/Free.jpg"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q2"},
+               "personLabel":{"value":"Bob Jones"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q6814428"},
+               "electorateLabel":{"value":"Tasmania"},
+               "img":{"value":"http://commons.wikimedia.org/wiki/Special:FilePath/Restricted.jpg"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q3"},
+               "personLabel":{"value":"Casey Doe"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q6814428"},
+               "electorateLabel":{"value":"Victoria"}}
+            ]"#,
+        ));
+        let mut licences = IndexMap::new();
+        licences.insert(
+            "Free.jpg".to_string(),
+            licence("CC BY-SA 4.0", "A Photographer"),
+        );
+        licences.insert(
+            "Restricted.jpg".to_string(),
+            licence("All rights reserved", "Someone"),
+        );
+
+        let people = people_from_members(&members, &licences);
+        assert_eq!(people.len(), 3);
+
+        // A member gets an electorate slug; a senator gets a state instead.
+        let jane = &people[0];
+        assert_eq!(jane.slug, "jane-smith");
+        assert_eq!(jane.electorate.as_deref(), Some("sampleford"));
+        assert!(jane.state.is_none());
+        assert_eq!(jane.group_slug, "example-party");
+        assert_eq!(jane.ids.wikidata.as_deref(), Some("Q1"));
+        // Only a free licence is reproduced.
+        let photo = jane.photo.as_ref().expect("free photo kept");
+        assert_eq!(photo.attribution, "A Photographer");
+
+        let bob = &people[1];
+        assert_eq!(bob.state, Some(StateCode::TAS));
+        assert!(bob.electorate.is_none());
+        assert!(bob.photo.is_none(), "a non-free image is never reproduced");
+
+        // No party statement means Independent, not a blank group.
+        let casey = &people[2];
+        assert_eq!(casey.group, "Independent");
+        assert_eq!(casey.group_slug, "independent");
+        assert!(casey.photo.is_none(), "no image at all means no photo");
+    }
+
+    #[test]
+    fn people_sharing_a_name_get_distinct_slugs() {
+        let members = dedupe(&bindings(
+            r#"[
+              {"person":{"value":"http://www.wikidata.org/entity/Q1"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q18912794"},
+               "electorateLabel":{"value":"Sampleford"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q2"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q6814428"},
+               "electorateLabel":{"value":"Tasmania"}}
+            ]"#,
+        ));
+        let people = people_from_members(&members, &IndexMap::new());
+        let slugs: Vec<&str> = people.iter().map(|p| p.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["jane-smith", "jane-smith-tasmania"]);
+    }
+
     /// Replays the cached SPARQL response through dedupe + people_from_members
     /// and checks every non-photo field against the canonical store the
     /// reference implementation wrote from the same input. Skips when the

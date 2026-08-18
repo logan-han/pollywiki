@@ -1,5 +1,7 @@
-# Coverage is reported, never gating: the site crate is mostly string
-# templating exercised by the sample-data build, not by unit tests.
+# Coverage is reported, never gating. What is left uncovered is almost entirely
+# the ingest crate's network and S3 code paths, which need an injectable HTTP
+# layer before they can be tested; the rendering and normalisation layers are
+# covered by unit tests plus a whole-site build over the sample bundles.
 coverage:
   status:
     project:
@@ -14,5 +16,4 @@ comment:
   require_changes: true
 
 ignore:
-  - "crates/site/src/main.rs" # binary entrypoint: build/serve plumbing
   - "infra/**"

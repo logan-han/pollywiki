@@ -387,6 +387,161 @@ pub fn strip_html(html: &str) -> String {
 mod tests {
     use super::*;
 
+    fn list_bill(json: &str) -> ParlWorkBill {
+        serde_json::from_str(json).expect("list bill fixture")
+    }
+
+    fn detail(json: &str) -> ParlWorkDetail {
+        serde_json::from_str(json).expect("detail fixture")
+    }
+
+    #[test]
+    fn list_records_become_bills_with_an_official_link() {
+        let bill = to_bill(
+            &list_bill(
+                r#"{"Id":"r7123","Title":"Example Bill 2026",
+                    "FormattedOriginatingChamber":"House of Representatives",
+                    "Status":"Before Senate","Summary":"<p>Amends the <b>Example Act</b>.</p>",
+                    "LastUpdatedDateTime":"/Date(1755000000000+1000)/"}"#,
+            ),
+            48,
+        );
+        assert_eq!(bill.id, "r7123");
+        assert_eq!(bill.chamber, House::Representatives);
+        assert_eq!(bill.status, "Before Senate");
+        // Markup is stripped from the official summary before it is stored.
+        assert_eq!(bill.summary.as_deref(), Some("Amends the Example Act ."));
+        assert!(bill
+            .links
+            .aph
+            .as_deref()
+            .is_some_and(|u| u.ends_with("bId=r7123")));
+        assert!(bill.list_updated.is_some(), "the freshness marker is kept");
+    }
+
+    #[test]
+    fn a_senate_bill_is_recognised_and_gaps_get_defaults() {
+        let senate = to_bill(
+            &list_bill(r#"{"FormattedOriginatingChamber":"Senate","Id":"s996"}"#),
+            48,
+        );
+        assert_eq!(senate.chamber, House::Senate);
+        // An absent status is not left blank; it says what little is known.
+        assert_eq!(senate.status, "Before parliament");
+        assert!(
+            senate.summary.is_none(),
+            "an absent summary is not an empty one"
+        );
+        assert!(senate.title.is_empty());
+
+        // An empty summary string is treated the same as an absent one.
+        let blank = to_bill(&list_bill(r#"{"Id":"r1","Summary":""}"#), 48);
+        assert!(blank.summary.is_none());
+        // Anything that is not the Senate originates in the House.
+        assert_eq!(blank.chamber, House::Representatives);
+    }
+
+    #[test]
+    fn detail_records_add_a_chamber_stamped_timeline_and_raisers() {
+        let bill = to_bill(
+            &list_bill(r#"{"Id":"r7123","Title":"Example Bill 2026"}"#),
+            48,
+        );
+        let bill = with_detail(
+            bill,
+            &detail(
+                r#"{"Bill":{"ParlInfoUrl":"https://parlinfo.gov.au/r7123",
+                    "Sponsors":[{"DisplayName":"SMITH, Ms Jane","Id":"r1"}],
+                    "Movers":[{"DisplayName":"JONES, the Hon. Bob MP","Id":"r2"}],
+                    "GroupedProgressStates":[
+                      {"FormattedChamber":"House of Representatives","ProgressStates":[
+                        {"Description":"Introduced","UpdateDate":"/Date(1750000000000)/"},
+                        {"Description":"","UpdateDate":"/Date(1750100000000)/"},
+                        {"Description":"Second reading moved","UpdateDate":null}]},
+                      {"FormattedChamber":"","ProgressStates":[
+                        {"Description":"Assent","UpdateDate":"/Date(1755000000000)/"}]}
+                    ]}}"#,
+            ),
+        );
+
+        // Each step is stamped with its chamber, except where APH names none.
+        let events: Vec<&str> = bill.timeline.iter().map(|s| s.event.as_str()).collect();
+        assert_eq!(
+            events,
+            vec!["Introduced (House of Representatives)", "Assent"],
+            "steps without a description or date are dropped, not guessed"
+        );
+        assert!(
+            bill.timeline[0].date < bill.timeline[1].date,
+            "timeline is sorted"
+        );
+        assert_eq!(
+            bill.links.parlinfo.as_deref(),
+            Some("https://parlinfo.gov.au/r7123")
+        );
+        assert_eq!(bill.sponsors[0].name, "Jane Smith");
+        assert_eq!(bill.movers[0].name, "Bob Jones");
+    }
+
+    #[test]
+    fn a_detail_response_with_no_bill_leaves_the_record_alone() {
+        let bill = to_bill(&list_bill(r#"{"Id":"r1","Status":"Act"}"#), 48);
+        let untouched = with_detail(bill, &detail(r#"{"Bill":null}"#));
+        assert_eq!(untouched.status, "Act");
+        assert!(untouched.timeline.is_empty());
+    }
+
+    #[test]
+    fn refreshing_a_bill_keeps_the_fields_only_the_detail_fetch_knows() {
+        let mut existing = to_bill(&list_bill(r#"{"Id":"r1","Status":"Before Reps"}"#), 48);
+        existing.bill_type = Some("Government".to_string());
+        existing.portfolio = Some("Health".to_string());
+        existing.sponsor = Some("A Sponsor".to_string());
+        existing.ai_summary = Some(pollywiki_schema::AiText {
+            text: "note".to_string(),
+            model: "m".to_string(),
+            generated_at: "2026-08-01T00:00:00.000Z".to_string(),
+        });
+
+        let fresh = to_bill(&list_bill(r#"{"Id":"r1","Status":"Act"}"#), 48);
+        let merged = merge_existing(&existing, fresh);
+        // The list response carries the new status but none of these fields.
+        assert_eq!(merged.status, "Act");
+        assert_eq!(merged.bill_type.as_deref(), Some("Government"));
+        assert_eq!(merged.portfolio.as_deref(), Some("Health"));
+        assert_eq!(merged.sponsor.as_deref(), Some("A Sponsor"));
+        assert!(merged.ai_summary.is_some(), "an AI note is not regenerated");
+    }
+
+    #[test]
+    fn dot_net_dates_decode_with_and_without_an_offset() {
+        assert_eq!(
+            dot_net_date(Some("/Date(1755000000000)/")).as_deref(),
+            Some("2025-08-12")
+        );
+        // A positive offset can push the date forward.
+        assert_eq!(
+            dot_net_date(Some("/Date(1755043200000+1000)/")).as_deref(),
+            Some("2025-08-13")
+        );
+        assert_eq!(dot_net_date(Some("not a date")), None);
+        assert_eq!(dot_net_date(None), None);
+    }
+
+    #[test]
+    fn html_stripping_decodes_named_decimal_and_hex_entities() {
+        assert_eq!(
+            strip_html("<p>A&nbsp;bill &amp; a&#8201;note &#x2013; done</p>"),
+            "A bill & a note \u{2013} done"
+        );
+        assert_eq!(
+            strip_html("<i>Caf&eacute;</i> &unknown;"),
+            "Caf&eacute; &unknown;"
+        );
+        assert_eq!(strip_html("  <b>  spaced  </b>  "), "spaced");
+        assert_eq!(strip_html(""), "");
+    }
+
     #[test]
     fn raisers_drop_honorifics_and_post_nominals() {
         let raiser = to_raiser(&ParlWorkPerson {

@@ -435,3 +435,363 @@ fn title_from_slug(slug: Option<&str>) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::LocalStore;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/derive-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    async fn put(store: &Store, key: &str, json: &str) {
+        let value: serde_json::Value = serde_json::from_str(json).expect("fixture json");
+        store.put_json(key, &value).await.expect("put fixture");
+    }
+
+    fn lines<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
+        raw.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("bundle line"))
+            .collect()
+    }
+
+    /// A canonical store with one of everything derive reads.
+    async fn seeded(name: &str) -> Store {
+        let store = Store::Local(LocalStore::new(scratch(name)));
+
+        put(
+            &store,
+            "canonical/people/alex-paterson.json",
+            r#"{
+            "slug":"alex-paterson","name":"Alex Paterson","house":"representatives","state":"VIC",
+            "electorate":"sampleford","group":"Example Party","groupSlug":"example-party",
+            "ids":{"aph":"ALEX1"},"links":{}}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/people/morgan-rossi.json",
+            r#"{
+            "slug":"morgan-rossi","name":"Morgan Rossi","house":"senate","state":"TAS",
+            "group":"Example Party","groupSlug":"example-party","ids":{},"links":{}}"#,
+        )
+        .await;
+
+        put(
+            &store,
+            "canonical/electorates/sampleford.json",
+            r#"{
+            "slug":"sampleford","name":"Sampleford","state":"VIC","memberSlug":"alex-paterson"}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/electorates/placeholder-bay.json",
+            r#"{
+            "slug":"placeholder-bay","name":"Placeholder Bay","state":"NSW"}"#,
+        )
+        .await;
+
+        // Two divisions: the House one carries a crossed vote and cites a bill.
+        put(
+            &store,
+            "canonical/divisions/a.json",
+            r#"{
+            "id":"representatives/2026-08-12/2","house":"representatives","date":"2026-08-12",
+            "number":2,"name":"Bills - Example Bill 2026; Second Reading","result":"passed",
+            "ayes":1,"noes":0,"billIds":["r100"],"links":{},
+            "votes":[{"personSlug":"alex-paterson","vote":"aye","againstGroupMajority":true}]}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/divisions/b.json",
+            r#"{
+            "id":"senate/2026-07-01/1","house":"senate","date":"2026-07-01","number":1,
+            "name":"Motions - Example","result":"rejected","ayes":0,"noes":1,"links":{},
+            "votes":[{"personSlug":"morgan-rossi","vote":"no"}]}"#,
+        )
+        .await;
+
+        // One bill raised by phid, one by a name that resolves to a slug, and a
+        // third raised by someone who is not a sitting member.
+        put(
+            &store,
+            "canonical/bills/r100.json",
+            r#"{
+            "id":"r100","title":"Example Bill 2026","parliament":48,"chamber":"representatives",
+            "status":"Before Senate","links":{},
+            "movers":[{"name":"Alex Paterson","phid":"alex1"}],
+            "timeline":[{"date":"2026-08-01","event":"Introduced (House of Representatives)"}]}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/bills/r200.json",
+            r#"{
+            "id":"r200","title":"Another Bill 2026","parliament":48,"chamber":"senate",
+            "status":"Act","links":{},
+            "sponsors":[{"name":"Morgan Rossi"},{"name":"Someone Retired"}]}"#,
+        )
+        .await;
+
+        // Two contests for the same seat; only the newer event is current.
+        put(
+            &store,
+            "canonical/elections/old.json",
+            r#"{
+            "eventId":"27966","eventName":"2022 federal election","electorateSlug":"sampleford",
+            "electorateName":"Sampleford","state":"VIC",
+            "firstPrefs":[{"name":"Alex Paterson","party":"Example Party","votes":100,"pct":40.0,
+                           "elected":false}],"tcp":[]}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/elections/new.json",
+            r#"{
+            "eventId":"31496","eventName":"2025 federal election","electorateSlug":"sampleford",
+            "electorateName":"Sampleford","state":"VIC",
+            "firstPrefs":[{"name":"Alex Paterson","party":"Example Party","votes":200,"pct":55.5,
+                           "swing":15.5,"elected":true}],"tcp":[]}"#,
+        )
+        .await;
+        // A contest for a seat that no longer exists must not reach the bundle.
+        put(
+            &store,
+            "canonical/elections/gone.json",
+            r#"{
+            "eventId":"31496","eventName":"2025 federal election","electorateSlug":"abolished",
+            "electorateName":"Abolished","state":"NSW","firstPrefs":[],"tcp":[]}"#,
+        )
+        .await;
+
+        put(
+            &store,
+            "canonical/electorate-profiles/sampleford.json",
+            r#"{
+            "storedAt":"2026-08-01T00:00:00.000Z","enrolment":118432,
+            "profile":{"area":"142 sq km","demographic":"Inner metropolitan"}}"#,
+        )
+        .await;
+        put(&store, "canonical/party-facts/example-party.json", r#"{
+            "website":"https://example.org.au/","wikipedia":"https://en.wikipedia.org/wiki/Example"}"#).await;
+        put(
+            &store,
+            "canonical/handbook/alex-paterson.json",
+            r#"{
+            "phid":"ALEX1","storedAt":"2026-08-01T00:00:00.000Z",
+            "background":{"born":"1970-01-01","occupations":["Grazier"],"qualifications":[]},
+            "positions":[{"role":"Prime Minister","kind":"ministry","from":"2025-05-03"}]}"#,
+        )
+        .await;
+
+        crate::manifest::record_sync(&store, "wikidata", true, None)
+            .await
+            .expect("manifest");
+        store
+    }
+
+    #[tokio::test]
+    async fn derive_assembles_every_bundle_from_the_canonical_store() {
+        let store = seeded("bundles").await;
+        // No env mutation here: tests share a process, and build_parties falls
+        // back to the group name from the record when the reference file is not
+        // on the test's relative path, which is what these assertions check.
+        derive(&store).await.expect("derive");
+
+        let people: Vec<Person> = lines(
+            &store
+                .get_raw("bundles/people.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(
+            people.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(),
+            vec!["alex-paterson", "morgan-rossi"],
+            "people are written in slug order"
+        );
+
+        // The Handbook profile and positions are folded in.
+        let alex = &people[0];
+        assert_eq!(
+            alex.background.as_ref().map(|b| b.occupations.clone()),
+            Some(vec!["Grazier".to_string()])
+        );
+        assert_eq!(
+            alex.positions.as_ref().map(|p| p.len()),
+            Some(1),
+            "positions come from the handbook record"
+        );
+
+        // Election history attaches by candidate name, newest event first.
+        let elections = alex.elections.as_ref().expect("election history");
+        assert_eq!(
+            elections
+                .iter()
+                .map(|e| e.event.as_str())
+                .collect::<Vec<_>>(),
+            vec!["31496", "27966"]
+        );
+        assert!(elections[0].elected);
+
+        // Vote stats count per chamber: one division each, both voted in.
+        let stats = alex.stats.as_ref().expect("stats");
+        assert_eq!(
+            (
+                stats.divisions_eligible,
+                stats.divisions_voted,
+                stats.against_group_majority
+            ),
+            (1, 1, 1)
+        );
+        let rossi_stats = people[1].stats.as_ref().expect("stats");
+        assert_eq!(rossi_stats.against_group_majority, 0);
+
+        // Divisions come out newest first, which is what every index relies on.
+        let divisions: Vec<Division> = lines(
+            &store
+                .get_raw("bundles/divisions.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(
+            divisions.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            vec!["representatives/2026-08-12/2", "senate/2026-07-01/1"]
+        );
+
+        // Bills are alphabetical, linked back to their divisions, with raisers
+        // resolved by phid or name and unknown raisers left unresolved.
+        let bills: Vec<Bill> = lines(&store.get_raw("bundles/bills.jsonl").await.unwrap().unwrap());
+        assert_eq!(
+            bills.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(),
+            vec!["Another Bill 2026", "Example Bill 2026"]
+        );
+        let example = bills.iter().find(|b| b.id == "r100").unwrap();
+        assert_eq!(example.division_ids, vec!["representatives/2026-08-12/2"]);
+        assert_eq!(
+            example.movers[0].slug.as_deref(),
+            Some("alex-paterson"),
+            "phid match is case-insensitive"
+        );
+        let another = bills.iter().find(|b| b.id == "r200").unwrap();
+        assert_eq!(another.sponsors[0].slug.as_deref(), Some("morgan-rossi"));
+        assert!(
+            another.sponsors[1].slug.is_none(),
+            "a raiser who is not a sitting member stays unlinked"
+        );
+
+        // Electorate profiles and enrolment are merged onto the seat.
+        let electorates: Vec<Electorate> = lines(
+            &store
+                .get_raw("bundles/electorates.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let sampleford = electorates.iter().find(|e| e.slug == "sampleford").unwrap();
+        assert_eq!(sampleford.enrolment, Some(118432));
+        assert_eq!(
+            sampleford.profile.as_ref().and_then(|p| p.area.clone()),
+            Some("142 sq km".to_string())
+        );
+        assert!(electorates
+            .iter()
+            .find(|e| e.slug == "placeholder-bay")
+            .unwrap()
+            .profile
+            .is_none());
+
+        // One party, both members counted per chamber, with its facts attached.
+        let parties: Vec<Party> = lines(
+            &store
+                .get_raw("bundles/parties.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(parties.len(), 1);
+        let seats = parties[0].seats.as_ref().expect("seats");
+        assert_eq!((seats.representatives, seats.senate), (1, 1));
+        assert!(parties[0].facts.is_some(), "party facts are merged in");
+
+        // Only the newest contest per current seat; abolished seats drop out.
+        let current: Vec<ElectorateResult> = lines(
+            &store
+                .get_raw("bundles/elections.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].event_id, "31496");
+        assert_eq!(current[0].electorate_slug, "sampleford");
+
+        // Meta records the manifest and is never marked as sample data.
+        let meta: Meta =
+            serde_json::from_str(&store.get_raw("bundles/meta.json").await.unwrap().unwrap())
+                .expect("meta");
+        assert!(!meta.sample);
+        assert!(meta.sources.contains_key("wikidata"));
+        assert!(!meta.generated_at.is_empty());
+
+        // The quick-search index leads with bills, then people, then seats.
+        let quick: Vec<QuickSearchEntry> = serde_json::from_str(
+            &store
+                .get_raw("bundles/quick-search.json")
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .expect("quick search");
+        let kinds: Vec<&str> = quick.iter().map(|e| e.t.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "bill",
+                "bill",
+                "person",
+                "person",
+                "electorate",
+                "electorate"
+            ]
+        );
+        let bill_entry = &quick[0];
+        assert!(
+            bill_entry.slug == "r100" || bill_entry.slug == "r200",
+            "bills are indexed by id"
+        );
+        assert!(quick.iter().any(|e| e.sub == "Before Senate"));
+    }
+
+    #[tokio::test]
+    async fn derive_over_an_empty_store_writes_empty_bundles() {
+        let store = Store::Local(LocalStore::new(scratch("empty")));
+        derive(&store).await.expect("derive over nothing");
+        for file in [
+            "people.jsonl",
+            "parties.jsonl",
+            "electorates.jsonl",
+            "divisions.jsonl",
+            "bills.jsonl",
+            "elections.jsonl",
+        ] {
+            let raw = store
+                .get_raw(&format!("bundles/{file}"))
+                .await
+                .unwrap()
+                .unwrap_or_default();
+            assert!(raw.trim().is_empty(), "{file} should be empty, got {raw}");
+        }
+    }
+}

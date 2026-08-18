@@ -207,6 +207,7 @@ fn parse_options(args: &[String]) -> Options {
 
 #[cfg(test)]
 mod tests {
+    use crate::parse_options;
     use crate::sources::aec::{to_candidates, AecRow};
     use crate::sources::tvfy::key_for;
     use pollywiki_schema::JsNum;
@@ -277,6 +278,42 @@ mod tests {
         ])];
         let candidates = to_candidates(&rows, "Bean");
         assert_eq!(candidates[0].name, "Michael McCormack");
+    }
+
+    #[test]
+    fn options_default_to_the_documented_values() {
+        let options = parse_options(&[]);
+        assert_eq!(options.store, "local");
+        assert_eq!(options.sources, vec!["wikidata", "aec-profiles"]);
+        assert_eq!(options.event, "31496");
+        assert!(!options.rebuild);
+    }
+
+    #[test]
+    fn options_read_flags_and_trim_the_source_list() {
+        let args: Vec<String> = [
+            "--store",
+            "s3",
+            "--sources",
+            "aph, tvfy ,handbook",
+            "--event",
+            "31633",
+            "--rebuild",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let options = parse_options(&args);
+        assert_eq!(options.store, "s3");
+        assert_eq!(options.sources, vec!["aph", "tvfy", "handbook"]);
+        assert_eq!(options.event, "31633");
+        assert!(options.rebuild);
+    }
+
+    #[test]
+    fn a_flag_with_no_value_falls_back_to_the_default() {
+        let options = parse_options(&["--event".to_string()]);
+        assert_eq!(options.event, "31496");
     }
 
     #[test]

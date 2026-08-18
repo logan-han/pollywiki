@@ -316,3 +316,77 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/store-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[tokio::test]
+    async fn json_is_written_one_space_indented_and_reads_back() {
+        let store = Store::Local(LocalStore::new(scratch("json")));
+        let value = serde_json::json!({ "b": 1, "a": [1, 2] });
+        store
+            .put_json("canonical/thing.json", &value)
+            .await
+            .unwrap();
+
+        // The on-disk shape is the pretty form the bundles are diffed in.
+        let raw = store
+            .get_raw("canonical/thing.json")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(raw.starts_with("{\n \"b\": 1"), "unexpected shape: {raw}");
+
+        let back: serde_json::Value = store
+            .get_json("canonical/thing.json")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, value);
+    }
+
+    #[tokio::test]
+    async fn missing_keys_read_as_none_and_deletes_are_idempotent() {
+        let store = Store::Local(LocalStore::new(scratch("missing")));
+        let missing: Option<serde_json::Value> = store.get_json("nope.json").await.unwrap();
+        assert!(missing.is_none());
+        assert!(store.get_raw("nope.json").await.unwrap().is_none());
+        // Deleting something that was never there is not an error.
+        store.delete("nope.json").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn listing_walks_nested_prefixes_and_sorts() {
+        let store = Store::Local(LocalStore::new(scratch("list")));
+        for key in [
+            "canonical/people/b.json",
+            "canonical/people/a.json",
+            "canonical/people/nested/c.json",
+            "canonical/other/d.json",
+        ] {
+            store.put_raw(key, b"{}").await.unwrap();
+        }
+        let keys = store.list("canonical/people/").await.unwrap();
+        assert_eq!(
+            keys,
+            vec![
+                "canonical/people/a.json",
+                "canonical/people/b.json",
+                "canonical/people/nested/c.json",
+            ],
+            "listing must stay inside the prefix and be sorted"
+        );
+        // An empty prefix lists nothing rather than failing.
+        assert!(store.list("canonical/absent/").await.unwrap().is_empty());
+    }
+}

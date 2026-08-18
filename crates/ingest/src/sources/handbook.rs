@@ -369,3 +369,128 @@ pub fn match_people<'a>(
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pollywiki_schema::{House, StateCode};
+
+    fn person(slug: &str, name: &str) -> Person {
+        serde_json::from_str(&format!(
+            r#"{{"slug":"{slug}","name":"{name}","house":"representatives",
+                 "group":"Example","groupSlug":"example","ids":{{}},"links":{{}}}}"#
+        ))
+        .expect("person fixture")
+    }
+
+    fn individual(json: &str) -> HandbookIndividual {
+        serde_json::from_str(json).expect("individual fixture")
+    }
+
+    #[test]
+    fn roles_join_their_parts_and_keep_their_ministry() {
+        let record: RoleRecord = serde_json::from_str(
+            r#"{"Role":"Minister","Prep":"for","Entity":"Finance",
+                "Ministry":"Example Ministry","RDateStart":"2025-05-03T00:00:00",
+                "RDateEnd":null}"#,
+        )
+        .expect("role fixture");
+        let position = to_position(&record, PositionKind::Ministry);
+        assert_eq!(position.role, "Minister for Finance");
+        assert_eq!(position.ministry.as_deref(), Some("Example Ministry"));
+        assert_eq!(position.from.as_deref(), Some("2025-05-03"));
+        assert!(position.to.is_none(), "an open role has no end date");
+    }
+
+    #[test]
+    fn role_parts_that_are_absent_or_blank_are_skipped() {
+        let record: RoleRecord = serde_json::from_str(
+            r#"{"Role":"Speaker","Prep":"","Entity":null,"Ministry":"",
+                "RDateStart":"","RDateEnd":""}"#,
+        )
+        .expect("role fixture");
+        let position = to_position(&record, PositionKind::Position);
+        assert_eq!(position.role, "Speaker");
+        assert!(
+            position.ministry.is_none(),
+            "an empty ministry is not a ministry"
+        );
+        assert!(position.from.is_none());
+        assert!(position.to.is_none());
+    }
+
+    #[test]
+    fn the_open_end_sentinel_reads_as_no_end_date() {
+        // The Handbook writes 1900-01-01 for roles that have not ended.
+        assert_eq!(clean_date(Some("1900-01-01T00:00:00")), None);
+        assert_eq!(
+            clean_date(Some("2022-05-23T00:00:00")),
+            Some("2022-05-23".to_string())
+        );
+        assert_eq!(clean_date(Some("")), None);
+        assert_eq!(clean_date(None), None);
+    }
+
+    #[test]
+    fn unparseable_timestamps_read_as_infinitely_old() {
+        assert!(age_days("not-a-date").is_infinite());
+        assert!(age_days("2020-01-01T00:00:00Z") > 1000.0);
+    }
+
+    #[test]
+    fn individuals_match_on_given_or_preferred_name() {
+        let people = vec![
+            person("alex-paterson", "Alex Paterson"),
+            person("jordan-nguyen", "Jordan Nguyen"),
+        ];
+        let individuals = vec![
+            individual(
+                r#"{"GivenName":"Alexander","PreferredName":"(Alex)","FamilyName":"Paterson"}"#,
+            ),
+            individual(r#"{"GivenName":"Jordan","FamilyName":"Nguyen"}"#),
+        ];
+        let matched = match_people(&individuals, &people);
+        assert_eq!(matched.len(), 2);
+        // The preferred name in brackets is what the canonical slug uses.
+        assert!(matched.contains_key("alex-paterson"));
+        assert!(matched.contains_key("jordan-nguyen"));
+    }
+
+    #[test]
+    fn a_diverging_first_name_falls_back_to_family_name_and_seat() {
+        let mut mp = person("samantha-kelly", "Samantha Kelly");
+        mp.electorate = Some("sampleford".to_string());
+        let mut senator = person("morgan-rossi", "Morgan Rossi");
+        senator.house = House::Senate;
+        senator.state = Some(StateCode::TAS);
+        senator.electorate = None;
+        let people = vec![mp, senator];
+
+        let individuals = vec![
+            // Recorded as "Sam", matched on Kelly plus the electorate.
+            individual(r#"{"GivenName":"Sam","FamilyName":"Kelly","Electorate":"Sampleford"}"#),
+            // Matched on Rossi plus the state.
+            individual(r#"{"GivenName":"M","FamilyName":"Rossi","StateAbbrev":"tas"}"#),
+            // Nothing to match on, so left out rather than guessed at.
+            individual(r#"{"GivenName":"Unknown","FamilyName":"Person"}"#),
+        ];
+        let matched = match_people(&individuals, &people);
+        assert_eq!(matched.len(), 2);
+        assert!(matched.contains_key("samantha-kelly"));
+        assert!(matched.contains_key("morgan-rossi"));
+    }
+
+    #[test]
+    fn an_ambiguous_family_name_is_left_unmatched() {
+        let mut one = person("chris-smith", "Chris Smith");
+        one.state = Some(StateCode::VIC);
+        let mut two = person("dana-smith", "Dana Smith");
+        two.state = Some(StateCode::VIC);
+        let people = vec![one, two];
+        let individuals = vec![individual(
+            r#"{"GivenName":"Robin","FamilyName":"Smith","StateAbbrev":"VIC"}"#,
+        )];
+        // Two seat matches is not a match, so nothing is asserted about either.
+        assert!(match_people(&individuals, &people).is_empty());
+    }
+}

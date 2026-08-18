@@ -588,8 +588,39 @@ fn utf16_slice(input: &str, max_units: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_transcript;
+    use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn derived_keys_are_stable_and_namespaced() {
+        assert_eq!(
+            ai_key("representatives/2026-08-12/7"),
+            "derived/ai-summaries/representatives-2026-08-12-7.json"
+        );
+        assert_eq!(
+            note_key("alex-paterson"),
+            "derived/ai-person-notes/alex-paterson.json"
+        );
+        assert_eq!(bill_note_key("r7123"), "derived/ai-bill-notes/r7123.json");
+    }
+
+    #[test]
+    fn utf16_slicing_never_panics_on_a_split_surrogate_pair() {
+        assert_eq!(utf16_slice("hello", 4), "hell");
+        assert_eq!(utf16_slice("hello", 99), "hello");
+        assert_eq!(utf16_slice("", 4), "");
+        // An emoji is two utf-16 units. Cutting between them must degrade
+        // lossily rather than panic, which is why the cap is counted in units.
+        let pair = "a\u{1f600}b";
+        assert_eq!(utf16_slice(pair, 1), "a");
+        assert_eq!(utf16_slice(pair, 3), "a\u{1f600}");
+        assert_eq!(utf16_slice(pair, 2).chars().count(), 2);
+    }
+
+    #[test]
+    fn the_request_cap_is_always_a_usable_number() {
+        assert!(request_cap() > 0);
+    }
 
     #[test]
     fn transcripts_are_marked_by_a_bare_member_name_line() {

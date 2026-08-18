@@ -7,6 +7,8 @@ mod markdown;
 mod og;
 mod pages;
 mod procedures;
+#[cfg(test)]
+mod render_tests;
 
 use anyhow::{Context, Result};
 use data::SiteData;
@@ -21,30 +23,43 @@ const USAGE: &str = "usage: pollywiki-site [--out <dir>] [--serve [port]]
   SITE_URL      canonical origin (default https://pollywiki.au)
 ";
 
+struct Args {
+    help: bool,
+    out_dir: PathBuf,
+    /// Some(port) when --serve was passed; the port is optional after it.
+    serve_port: Option<u16>,
+}
+
+fn parse_args(args: &[String]) -> Args {
+    Args {
+        help: args.iter().any(|a| a == "--help" || a == "-h"),
+        out_dir: args
+            .iter()
+            .position(|a| a == "--out")
+            .and_then(|i| args.get(i + 1))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("dist")),
+        serve_port: args.iter().position(|a| a == "--serve").map(|i| {
+            args.get(i + 1)
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(4321)
+        }),
+    }
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    let args = parse_args(&std::env::args().skip(1).collect::<Vec<String>>());
+    if args.help {
         print!("{USAGE}");
         return;
     }
-    let out_dir = args
-        .iter()
-        .position(|a| a == "--out")
-        .and_then(|i| args.get(i + 1))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("dist"));
-    let serve_port = args.iter().position(|a| a == "--serve").map(|i| {
-        args.get(i + 1)
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(4321)
-    });
 
-    if let Err(err) = build(&out_dir) {
+    if let Err(err) = build(&args.out_dir) {
         eprintln!("build failed: {err:#}");
         std::process::exit(1);
     }
-    if let Some(port) = serve_port {
-        if let Err(err) = serve(&out_dir, port) {
+    if let Some(port) = args.serve_port {
+        if let Err(err) = serve(&args.out_dir, port) {
             eprintln!("serve failed: {err:#}");
             std::process::exit(1);
         }
@@ -57,10 +72,15 @@ fn bundles_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("data/sample/bundles"))
 }
 
+/// Reads the configuration from the environment, then builds.
 fn build(out_dir: &Path) -> Result<()> {
     let bundles = bundles_dir();
     let site_url = std::env::var("SITE_URL").unwrap_or_else(|_| "https://pollywiki.au".to_string());
-    let data = SiteData::load(&bundles, &site_url)
+    build_site(out_dir, &bundles, &site_url)
+}
+
+fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
+    let data = SiteData::load(bundles, site_url)
         .with_context(|| format!("loading bundles from {}", bundles.display()))?;
 
     if out_dir.exists() {
@@ -113,7 +133,7 @@ fn build(out_dir: &Path) -> Result<()> {
 
     let mut sitemap_urls: Vec<(String, Option<String>)> = Vec::new();
     for page in &page_list {
-        let html = layout::render(&data, &site_url, &css_href, page);
+        let html = layout::render(&data, site_url, &css_href, page);
         let rel = page.path.trim_start_matches('/');
         let file = out_dir.join(rel).join("index.html");
         std::fs::create_dir_all(file.parent().unwrap())?;
@@ -125,11 +145,11 @@ fn build(out_dir: &Path) -> Result<()> {
     let not_found = pages::not_found();
     std::fs::write(
         out_dir.join("404.html"),
-        layout::render(&data, &site_url, &css_href, &not_found),
+        layout::render(&data, site_url, &css_href, &not_found),
     )?;
 
-    write_sitemap(out_dir, &site_url, &sitemap_urls)?;
-    feeds::write_feeds(out_dir, &site_url, &data)?;
+    write_sitemap(out_dir, site_url, &sitemap_urls)?;
+    feeds::write_feeds(out_dir, site_url, &data)?;
 
     println!(
         "site: {} pages from {}",

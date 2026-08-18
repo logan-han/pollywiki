@@ -1,5 +1,12 @@
 {
   "generatedAt": "2026-08-14T00:00:00.000Z",
   "sample": true,
-  "sources": {}
+  "sources": {
+    "wikidata": { "lastSync": "2026-08-14T01:00:00.000Z", "ok": true },
+    "aec": { "lastSync": "2026-08-13T23:25:08.880Z", "ok": true },
+    "aph-bills": { "lastSync": "2026-08-14T01:10:00.000Z", "ok": true },
+    "tvfy": { "lastSync": "2026-08-14T01:11:00.000Z", "ok": true },
+    "handbook": { "lastSync": "2026-08-14T01:11:00.000Z", "ok": true },
+    "aec-profiles": { "lastSync": "2026-08-01T01:14:00.000Z", "ok": false, "note": "sample failure, shown as stale" }
+  }
 }

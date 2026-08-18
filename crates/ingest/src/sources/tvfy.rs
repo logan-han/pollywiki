@@ -455,3 +455,266 @@ fn iso_days_before(iso: &str, days: i64) -> Result<String> {
         .format("%Y-%m-%d")
         .to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pollywiki_schema::StateCode;
+
+    fn person(slug: &str, name: &str, house: House) -> Person {
+        let mut p: Person = serde_json::from_str(&format!(
+            r#"{{"slug":"{slug}","name":"{name}","house":"{}","group":"Example","groupSlug":"example","ids":{{}},"links":{{}}}}"#,
+            house
+        ))
+        .expect("person fixture");
+        p.electorate = None;
+        p
+    }
+
+    fn detail(json: &str) -> TvfyDivisionDetail {
+        serde_json::from_str(json).expect("division detail fixture")
+    }
+
+    #[test]
+    fn state_codes_cover_every_senate_seat_name() {
+        for (seat, code) in [
+            ("New South Wales", "NSW"),
+            ("victoria", "VIC"),
+            ("QUEENSLAND", "QLD"),
+            ("Western Australia", "WA"),
+            ("South Australia", "SA"),
+            ("Tasmania", "TAS"),
+            ("Australian Capital Territory", "ACT"),
+            ("Northern Territory", "NT"),
+        ] {
+            assert_eq!(state_code_for(seat), Some(code), "{seat}");
+        }
+        // A House electorate is not a state name.
+        assert_eq!(state_code_for("Wentworth"), None);
+    }
+
+    #[test]
+    fn people_match_by_name_then_by_seat() {
+        let tvfy: Vec<TvfyPersonSummary> = serde_json::from_str(
+            r#"[
+              {"id":10,"latest_member":{"name":{"first":"Alex","last":"Paterson"},
+                "electorate":"Sampleford","house":"representatives","party":"Example"}},
+              {"id":11,"latest_member":{"name":{"first":"Sam","last":"Kelly"},
+                "electorate":"Queensland","house":"senate","party":"Example"}},
+              {"id":12,"latest_member":{"name":{"first":"Nobody","last":"Here"},
+                "electorate":"Nowhere","house":"senate","party":"Example"}}
+            ]"#,
+        )
+        .expect("tvfy people fixture");
+
+        let mut senator = person("sam-kelly", "Sam Kelly", House::Senate);
+        senator.state = Some(StateCode::QLD);
+        let people = vec![
+            person("alex-paterson", "Alex Paterson", House::Representatives),
+            senator,
+        ];
+
+        let crosswalk = match_people(&tvfy, &people);
+        assert_eq!(crosswalk.get("alex-paterson"), Some(&10));
+        assert_eq!(crosswalk.get("sam-kelly"), Some(&11));
+        // Unmatched TVFY people are reported, never invented.
+        assert_eq!(crosswalk.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_names_are_split_by_chamber_and_seat() {
+        let tvfy: Vec<TvfyPersonSummary> = serde_json::from_str(
+            r#"[{"id":20,"latest_member":{"name":{"first":"Jane","last":"Smith"},
+                 "electorate":"Tasmania","house":"senate","party":"Example"}}]"#,
+        )
+        .expect("tvfy people fixture");
+
+        let mut senator = person("jane-smith-senate", "Jane Smith", House::Senate);
+        senator.state = Some(StateCode::TAS);
+        let people = vec![
+            person("jane-smith", "Jane Smith", House::Representatives),
+            senator,
+        ];
+
+        // Two canonical people share the name, so the seat decides.
+        let crosswalk = match_people(&tvfy, &people);
+        assert_eq!(crosswalk.get("jane-smith-senate"), Some(&20));
+        assert!(!crosswalk.contains_key("jane-smith"));
+    }
+
+    #[test]
+    fn divisions_normalise_ids_results_and_crossings() {
+        let d = detail(
+            r#"{"id":1,"house":"representatives","date":"2026-08-12","number":7,
+                "name":"Bills — Example Bill 2026; Second Reading",
+                "aye_votes":2,"no_votes":1,"summary":"  Context.  ",
+                "bills":[{"id":99,"title":"Example","official_id":"r7123"},
+                         {"id":100,"title":"Numbered","official_id":4242},
+                         {"id":101,"title":"Bare","official_id":null}],
+                "votes":[
+                  {"member":{"person":{"id":10},"first_name":"Alex","last_name":"Paterson",
+                    "party":"Example Party"},"vote":"aye"},
+                  {"member":{"person":{"id":11},"first_name":"Jordan","last_name":"Nguyen",
+                    "party":"Example Party"},"vote":"aye"},
+                  {"member":{"person":{"id":99},"first_name":"Casey","last_name":"O'Brien",
+                    "party":"Example Party"},"vote":"no"}
+                ]}"#,
+        );
+        let mut crosswalk: IndexMap<String, i64> = IndexMap::new();
+        crosswalk.insert("alex-paterson".to_string(), 10);
+        crosswalk.insert("jordan-nguyen".to_string(), 11);
+
+        let division = to_division(&d, &crosswalk);
+        assert_eq!(division.id, "representatives/2026-08-12/7");
+        assert_eq!(division.result, DivisionResult::Passed);
+        assert_eq!((division.ayes, division.noes), (2, 1));
+        // Summary is trimmed; empty ones drop out entirely.
+        assert_eq!(division.summary.as_deref(), Some("Context."));
+        // Official ids win over TVFY's internal ids, whatever their JSON type.
+        assert_eq!(division.bill_ids, vec!["r7123", "4242", "101"]);
+        assert_eq!(
+            division.links.tvfy.as_deref(),
+            Some("https://theyvoteforyou.org.au/divisions/representatives/2026-08-12/7")
+        );
+
+        // Unknown TVFY ids fall back to a slug of the member's name.
+        let slugs: Vec<&str> = division
+            .votes
+            .iter()
+            .map(|v| v.person_slug.as_str())
+            .collect();
+        assert_eq!(
+            slugs,
+            vec!["alex-paterson", "jordan-nguyen", "casey-obrien"]
+        );
+        // The party voted 2-1 aye, so only the no vote crossed.
+        let crossed: Vec<Option<bool>> = division
+            .votes
+            .iter()
+            .map(|v| v.against_group_majority)
+            .collect();
+        assert_eq!(crossed, vec![None, None, Some(true)]);
+    }
+
+    #[test]
+    fn a_tied_party_has_no_majority_to_cross() {
+        let d = detail(
+            r#"{"id":2,"house":"senate","date":"2026-08-12","number":1,"name":"Tied",
+                "aye_votes":1,"no_votes":1,"summary":"   ",
+                "votes":[
+                  {"member":{"person":{"id":1},"first_name":"A","last_name":"One",
+                    "party":"Split Party"},"vote":"aye"},
+                  {"member":{"person":{"id":2},"first_name":"B","last_name":"Two",
+                    "party":"Split Party"},"vote":"no"}
+                ]}"#,
+        );
+        let division = to_division(&d, &IndexMap::new());
+        assert_eq!(division.result, DivisionResult::Rejected);
+        assert!(
+            division.summary.is_none(),
+            "whitespace-only summary must drop"
+        );
+        assert!(division.bill_ids.is_empty());
+        assert!(division
+            .votes
+            .iter()
+            .all(|v| v.against_group_majority.is_none()));
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tvfy-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[tokio::test]
+    async fn rebuild_renormalises_every_cached_division_without_the_api() {
+        let store = Store::Local(crate::store::LocalStore::new(scratch("rebuild")));
+        let raw_people: serde_json::Value = serde_json::from_str(
+            r#"[{"id":10,"latest_member":{"name":{"first":"Alex","last":"Paterson"},
+                 "electorate":"Sampleford","house":"representatives","party":"Example"}}]"#,
+        )
+        .unwrap();
+        store
+            .put_json("raw/tvfy/people.json", &raw_people)
+            .await
+            .unwrap();
+
+        for (key, json) in [
+            (
+                "raw/tvfy/divisions/representatives-2026-08-12-7.json",
+                r#"{"id":1,"house":"representatives","date":"2026-08-12","number":7,
+                    "name":"Bills - Example; Second Reading","aye_votes":1,"no_votes":0,
+                    "summary":"Context.","votes":[{"member":{"person":{"id":10},
+                      "first_name":"Alex","last_name":"Paterson","party":"Example"},"vote":"aye"}]}"#,
+            ),
+            (
+                "raw/tvfy/divisions/senate-2026-07-01-1.json",
+                r#"{"id":2,"house":"senate","date":"2026-07-01","number":1,"name":"Motions",
+                    "aye_votes":0,"no_votes":1,"summary":null,"votes":[]}"#,
+            ),
+        ] {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap();
+            store.put_json(key, &value).await.unwrap();
+        }
+
+        let mut people = vec![{
+            let mut p = person("alex-paterson", "Alex Paterson", House::Representatives);
+            p.electorate = Some("sampleford".to_string());
+            p
+        }];
+
+        sync_tvfy(&store, &mut people, true).await.expect("rebuild");
+
+        // Both cached payloads become canonical divisions, keyed by flattened id.
+        let keys = store.list("canonical/divisions/").await.unwrap();
+        assert_eq!(keys.len(), 2, "got {keys:?}");
+        let division: Division = store
+            .get_json("canonical/divisions/representatives-2026-08-12-7.json")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(division.result, DivisionResult::Passed);
+        assert_eq!(division.votes[0].person_slug, "alex-paterson");
+
+        // The crosswalk id is written back onto the person record.
+        assert_eq!(people[0].ids.tvfy, Some(10));
+        let stored: Person = store
+            .get_json("canonical/people/alex-paterson.json")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.ids.tvfy, Some(10));
+    }
+
+    #[tokio::test]
+    async fn rebuild_without_a_cached_people_payload_is_an_error_not_a_silent_pass() {
+        let store = Store::Local(crate::store::LocalStore::new(scratch("norebuild")));
+        let mut people = vec![person(
+            "alex-paterson",
+            "Alex Paterson",
+            House::Representatives,
+        )];
+        let err = sync_tvfy(&store, &mut people, true)
+            .await
+            .expect_err("a rebuild with no raw payload must fail");
+        assert!(
+            err.to_string().contains("run a live sync first"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn division_keys_and_date_windows() {
+        assert_eq!(
+            key_for("representatives/2026-08-12/7"),
+            "representatives-2026-08-12-7"
+        );
+        assert_eq!(iso_days_before("2026-08-12", 30).unwrap(), "2026-07-13");
+        assert_eq!(iso_days_before("2026-01-01", 1).unwrap(), "2025-12-31");
+        assert!(iso_days_before("not-a-date", 1).is_err());
+    }
+}

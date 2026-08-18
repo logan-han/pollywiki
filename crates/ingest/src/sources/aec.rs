@@ -292,3 +292,91 @@ fn round2(n: f64) -> f64 {
     // Math.round rounds half towards +Infinity; inputs here are >= 0.
     (n * 100.0).round() / 100.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(pairs: &[(&str, &str)]) -> AecRow {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn known_events_are_named_and_unknown_ones_are_not_invented() {
+        assert_eq!(event_name("31496"), Some("2025 federal election"));
+        assert_eq!(event_name("29807"), Some("2024 Cook by-election"));
+        assert_eq!(event_name("99999"), None);
+        // Every by-election id in the aggregation list is also a named event.
+        for id in BY_ELECTIONS {
+            if let Some(name) = event_name(id) {
+                assert!(name.contains("by-election"), "{id} is named {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn csv_parsing_skips_blank_rows_and_tolerates_short_ones() {
+        let rows =
+            parse_csv("DivisionNm,CandidateID,OrdinaryVotes\nWentworth,1,100\n\nWentworth,2\n")
+                .expect("csv parses");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].get("OrdinaryVotes").map(String::as_str),
+            Some("100")
+        );
+        // A short record fills the missing column rather than failing the file.
+        assert_eq!(rows[1].get("OrdinaryVotes").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn by_election_polling_places_sum_per_candidate() {
+        let rows = vec![
+            row(&[
+                ("CandidateID", "1"),
+                ("OrdinaryVotes", "100"),
+                ("Surname", "One"),
+            ]),
+            row(&[
+                ("CandidateID", "2"),
+                ("OrdinaryVotes", "40"),
+                ("Surname", "Two"),
+            ]),
+            row(&[
+                ("CandidateID", "1"),
+                ("OrdinaryVotes", "55"),
+                ("Surname", "One"),
+            ]),
+            row(&[
+                ("CandidateID", "1"),
+                ("OrdinaryVotes", ""),
+                ("Surname", "One"),
+            ]),
+        ];
+        let totals = aggregate_polling_places(&rows);
+        assert_eq!(totals.len(), 2, "one row per candidate");
+        assert_eq!(totals[0].get("TotalVotes").map(String::as_str), Some("155"));
+        assert_eq!(totals[1].get("TotalVotes").map(String::as_str), Some("40"));
+        // By-elections publish no swing, so the column is blanked, not guessed.
+        assert_eq!(totals[0].get("Swing").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn number_parsing_follows_javascript_for_the_strings_aec_files_use() {
+        assert_eq!(js_number("1234"), 1234.0);
+        assert_eq!(js_number("  12.5 "), 12.5);
+        assert_eq!(js_number(""), 0.0);
+        assert!(js_number("not a number").is_nan());
+        assert_eq!(js_number_to_string(155.0), "155");
+        assert_eq!(js_number_to_string(12.5), "12.5");
+    }
+
+    #[test]
+    fn percentages_round_to_two_places() {
+        assert_eq!(round2(33.333333), 33.33);
+        assert_eq!(round2(33.335), 33.34);
+        assert_eq!(round2(50.0), 50.0);
+    }
+}
