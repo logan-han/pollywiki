@@ -8,3 +8,5 @@ infra/.terraform/
 infra/*.tfstate
 infra/*.tfstate.*
 infra/tfplan
+
+codecov.json
