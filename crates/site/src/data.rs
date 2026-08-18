@@ -19,6 +19,9 @@ pub struct SiteData {
     pub elections: Vec<ElectorateResult>,
     pub meta: Meta,
     pub bundles_dir: PathBuf,
+    /// Canonical origin without a trailing slash, for absolute URLs in
+    /// structured data and feeds.
+    pub site_url: String,
     people_by_slug: HashMap<String, usize>,
     parties_by_slug: HashMap<String, usize>,
     electorates_by_slug: HashMap<String, usize>,
@@ -46,7 +49,7 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(dir: &Path, file: &str) -> Result<
 }
 
 impl SiteData {
-    pub fn load(bundles_dir: &Path) -> Result<SiteData> {
+    pub fn load(bundles_dir: &Path, site_url: &str) -> Result<SiteData> {
         let people: Vec<Person> = read_jsonl(bundles_dir, "people.jsonl")?;
         let mut parties: Vec<Party> = read_jsonl(bundles_dir, "parties.jsonl")?;
         parties.sort_by(|a, b| {
@@ -107,6 +110,7 @@ impl SiteData {
             elections,
             meta,
             bundles_dir: bundles_dir.to_path_buf(),
+            site_url: site_url.trim_end_matches('/').to_string(),
             people_by_slug,
             parties_by_slug,
             electorates_by_slug,

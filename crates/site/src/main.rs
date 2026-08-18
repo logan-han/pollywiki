@@ -1,8 +1,10 @@
 mod components;
 mod data;
+mod feeds;
 mod html;
 mod layout;
 mod markdown;
+mod og;
 mod pages;
 mod procedures;
 
@@ -12,7 +14,7 @@ use include_dir::{include_dir, Dir};
 use layout::Page;
 use std::path::{Path, PathBuf};
 
-static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets");
+pub(crate) static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets");
 
 const USAGE: &str = "usage: pollywiki-site [--out <dir>] [--serve [port]]
   BUNDLES_DIR   bundles directory (default data/sample/bundles)
@@ -58,7 +60,7 @@ fn bundles_dir() -> PathBuf {
 fn build(out_dir: &Path) -> Result<()> {
     let bundles = bundles_dir();
     let site_url = std::env::var("SITE_URL").unwrap_or_else(|_| "https://pollywiki.au".to_string());
-    let data = SiteData::load(&bundles)
+    let data = SiteData::load(&bundles, &site_url)
         .with_context(|| format!("loading bundles from {}", bundles.display()))?;
 
     if out_dir.exists() {
@@ -85,8 +87,19 @@ fn build(out_dir: &Path) -> Result<()> {
     for person in &data.people {
         page_list.push(pages::person_page(&data, person));
     }
+    // Per-division share cards. Best-effort: a division with no card falls
+    // back to the site-wide default image.
+    let cards = match og::Cards::load() {
+        Some(cards) => cards.write_all(out_dir, &data)?,
+        None => std::collections::HashMap::new(),
+    };
+    if !cards.is_empty() {
+        println!("og: {} division cards", cards.len());
+    }
     for division in &data.divisions {
-        page_list.push(pages::division_page(&data, division));
+        let mut page = pages::division_page(&data, division);
+        page.og_image = cards.get(&division.id).cloned();
+        page_list.push(page);
     }
     for bill in &data.bills {
         page_list.push(pages::bill_page(&data, bill));
@@ -98,14 +111,14 @@ fn build(out_dir: &Path) -> Result<()> {
         page_list.push(pages::party_page(&data, party));
     }
 
-    let mut sitemap_paths: Vec<String> = Vec::new();
+    let mut sitemap_urls: Vec<(String, Option<String>)> = Vec::new();
     for page in &page_list {
         let html = layout::render(&data, &site_url, &css_href, page);
         let rel = page.path.trim_start_matches('/');
         let file = out_dir.join(rel).join("index.html");
         std::fs::create_dir_all(file.parent().unwrap())?;
         std::fs::write(&file, html)?;
-        sitemap_paths.push(page.path.clone());
+        sitemap_urls.push((page.path.clone(), page.lastmod.clone()));
     }
 
     // The not-found page lives at /404.html, outside the sitemap.
@@ -115,7 +128,8 @@ fn build(out_dir: &Path) -> Result<()> {
         layout::render(&data, &site_url, &css_href, &not_found),
     )?;
 
-    write_sitemap(out_dir, &site_url, &sitemap_paths)?;
+    write_sitemap(out_dir, &site_url, &sitemap_urls)?;
+    feeds::write_feeds(out_dir, &site_url, &data)?;
 
     println!(
         "site: {} pages from {}",
@@ -173,17 +187,29 @@ fn copy_public(data: &SiteData, out_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_sitemap(out_dir: &Path, site_url: &str, paths: &[String]) -> Result<()> {
+fn write_sitemap(
+    out_dir: &Path,
+    site_url: &str,
+    entries: &[(String, Option<String>)],
+) -> Result<()> {
     let origin = site_url.trim_end_matches('/');
-    let mut urls: Vec<String> = paths.iter().map(|p| format!("{origin}{p}")).collect();
+    let mut urls: Vec<(String, Option<&str>)> = entries
+        .iter()
+        .map(|(path, lastmod)| (format!("{origin}{path}"), lastmod.as_deref()))
+        .collect();
     // Natural sort (digit runs compare numerically), matching the reference
     // sitemap: /bills/s996/ sorts before /bills/s1138/.
-    urls.sort_by_key(|a| natural_key(a));
+    urls.sort_by_key(|(url, _)| natural_key(url));
     let mut sitemap = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:news=\"http://www.google.com/schemas/sitemap-news/0.9\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" xmlns:image=\"http://www.google.com/schemas/sitemap-image/1.1\" xmlns:video=\"http://www.google.com/schemas/sitemap-video/1.1\">",
     );
-    for url in &urls {
-        sitemap.push_str(&format!("<url><loc>{url}</loc></url>"));
+    for (url, lastmod) in &urls {
+        match lastmod {
+            Some(date) => sitemap.push_str(&format!(
+                "<url><loc>{url}</loc><lastmod>{date}</lastmod></url>"
+            )),
+            None => sitemap.push_str(&format!("<url><loc>{url}</loc></url>")),
+        }
     }
     sitemap.push_str("</urlset>");
     std::fs::write(out_dir.join("sitemap-0.xml"), sitemap)?;

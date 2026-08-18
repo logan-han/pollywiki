@@ -1,9 +1,10 @@
-//! Every page template, ported from the reference site. Text flows are
-//! written pre-collapsed: the reference build strips template indentation,
-//! so these strings carry the exact bytes the pages render.
+//! Every page template. Text flows are written pre-collapsed, so these
+//! strings carry the exact bytes the pages render; the original constraint of
+//! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, chamber_chip, group_chip, ledger_row, person_card, seat_bar, vote_bar,
+    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, person_card,
+    result_chip, result_word, seat_bar, vote_bar, BILL_DOTS_LEGEND,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
@@ -13,18 +14,56 @@ use crate::html::{esc, esc_attr};
 use crate::layout::Page;
 use crate::markdown;
 use crate::procedures::procedure_for;
-use pollywiki_schema::{
-    Bill, Division, DivisionResult, Electorate, House, Party, Person, SummaryKind, Vote,
-};
+use pollywiki_schema::{Bill, Division, Electorate, House, Party, Person, SummaryKind, Vote};
 use regex::Regex;
 use std::sync::LazyLock;
 
-// The client-side filter scripts ship as the exact compiled bytes the
-// reference build inlined, so page behaviour and bytes stay identical.
+// One filter script per index page, inlined where the page needs it.
 const PEOPLE_FILTER_JS: &str = include_str!("../assets/js/people-filter.js");
 const DIVISION_FILTER_JS: &str = include_str!("../assets/js/division-filter.js");
 const BILL_FILTER_JS: &str = include_str!("../assets/js/bill-filter.js");
 const ELECTORATE_FILTER_JS: &str = include_str!("../assets/js/electorate-filter.js");
+
+/// Live count plus an explicit empty state, shared by the four index pages.
+/// The count element stays in the DOM so its aria-live region is stable; it
+/// reads empty while nothing is filtered.
+fn filter_feedback(empty_message: &str) -> String {
+    format!(
+        "<p class=\"note filter-count\" id=\"filter-count\" aria-live=\"polite\"></p><div class=\"filter-empty\" id=\"filter-empty\" hidden><p>{}</p><button type=\"button\" id=\"filter-clear\">Clear filters</button></div>",
+        esc(empty_message)
+    )
+}
+
+/// JSON-LD for a <script> block. Angle brackets are escaped so no title can
+/// close the element early.
+fn jsonld_script(items: Vec<serde_json::Value>) -> String {
+    let value = if items.len() == 1 {
+        items.into_iter().next().unwrap_or(serde_json::Value::Null)
+    } else {
+        serde_json::Value::Array(items)
+    };
+    value
+        .to_string()
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+}
+
+fn breadcrumb(site_url: &str, trail: &[(&str, &str)]) -> serde_json::Value {
+    serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": trail
+            .iter()
+            .enumerate()
+            .map(|(i, (name, path))| serde_json::json!({
+                "@type": "ListItem",
+                "position": i + 1,
+                "name": name,
+                "item": format!("{site_url}{path}"),
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
 
 fn chamber_word(house: House) -> &'static str {
     match house {
@@ -40,10 +79,28 @@ fn full_chamber(house: House) -> &'static str {
     }
 }
 
+/// Pill bucket for the bills index: still before a chamber, already an Act,
+/// or finished some other way (negatived, discharged, not proceeding).
+fn bill_status_key(bill: &Bill) -> &'static str {
+    if bill.status.starts_with("Before") {
+        "open"
+    } else if bill.status == "Act" {
+        "act"
+    } else {
+        "other"
+    }
+}
+
+/// The most recent recorded step, by date. Bills with no timeline return None.
+pub fn latest_step(bill: &Bill) -> Option<&pollywiki_schema::TimelineStep> {
+    bill.timeline.iter().max_by(|a, b| a.date.cmp(&b.date))
+}
+
 fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
     let li = if with_filter_text {
         format!(
-            "<li data-text=\"{}\">",
+            "<li data-status=\"{}\" data-text=\"{}\">",
+            bill_status_key(bill),
             esc_attr(
                 &format!("{} {}", bill.title, bill.portfolio.as_deref().unwrap_or(""))
                     .to_lowercase()
@@ -53,10 +110,11 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
         "<li>".to_string()
     };
     format!(
-        "{li}<span><a href=\"/bills/{id}/\">{title}</a></span><span class=\"chamber\">{chamber}</span><span class=\"{status_class}\">{status}</span></li>",
+        "{li}<span><a href=\"/bills/{id}/\">{title}</a></span><span class=\"chamber\">{chamber}</span><span>{dots}</span><span class=\"{status_class}\">{status}</span></li>",
         id = bill.id,
         title = esc(&bill.title),
         chamber = chamber_word(bill.chamber),
+        dots = bill_dots(bill),
         status_class = if bill.status.starts_with("Before") {
             "status open"
         } else {
@@ -64,6 +122,38 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
         },
         status = esc(&bill.status),
     )
+}
+
+/// Homepage row: title, progress dots, and what last happened to the bill.
+/// The date drops its year to keep the mono line on one row; the full date
+/// stays machine-readable in the <time> element and on the bill page.
+fn bill_activity_row(bill: &Bill) -> String {
+    let event = match latest_step(bill) {
+        Some(step) => format!(
+            "{} \u{b7} <time datetime=\"{}\">{}</time>",
+            esc(&step.event),
+            esc_attr(&step.date),
+            esc(&short_date(&step.date)),
+        ),
+        None => esc(&bill.status),
+    };
+    format!(
+        "<li><span><a href=\"/bills/{id}/\">{title}</a></span><span>{dots}</span><span class=\"event\">{event}</span></li>",
+        id = bill.id,
+        title = esc(&bill.title),
+        dots = bill_dots(bill),
+    )
+}
+
+/// "2025-08-01" -> "1 Aug". Falls back to the full rendering if unparseable.
+fn short_date(iso: &str) -> String {
+    let full = format_date(iso);
+    match full.rsplit_once(' ') {
+        Some((head, year)) if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) => {
+            head.to_string()
+        }
+        _ => full,
+    }
 }
 
 pub fn home(data: &SiteData) -> Page {
@@ -89,19 +179,44 @@ pub fn home(data: &SiteData) -> Page {
         body.push_str("<p class=\"note\">No division records loaded yet. Votes appear here once the They Vote For You sync runs.</p>");
     }
 
-    body.push_str("<div class=\"section-head\"><h2>Bills before parliament</h2><a href=\"/bills/\">All bills →</a></div>");
-    let recent: Vec<&Bill> = data.bills.iter().take(8).collect();
+    body.push_str("<div class=\"section-head\"><h2>Latest bill activity</h2><a href=\"/bills/\">All bills →</a></div>");
+    // Newest recorded step first. The sort is stable, so bills with no
+    // timeline keep the bundle's alphabetical order at the bottom.
+    let mut by_activity: Vec<&Bill> = data.bills.iter().collect();
+    by_activity.sort_by(|a, b| {
+        latest_step(b)
+            .map(|s| s.date.as_str())
+            .cmp(&latest_step(a).map(|s| s.date.as_str()))
+    });
+    let recent: Vec<&Bill> = by_activity.into_iter().take(8).collect();
     if !recent.is_empty() {
-        body.push_str("<ul class=\"bill-list\">");
+        body.push_str("<ul class=\"bill-list activity\">");
         for b in recent {
-            body.push_str(&bill_row(b, false));
+            body.push_str(&bill_activity_row(b));
         }
         body.push_str("</ul>");
+        body.push_str(BILL_DOTS_LEGEND);
     } else {
         body.push_str("<p class=\"note\">No bill records loaded yet.</p>");
     }
 
-    Page::new("pollywiki", None, "/", body)
+    let mut page = Page::new("pollywiki", None, "/", body);
+    page.jsonld = Some(jsonld_script(vec![serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "pollywiki",
+        "url": format!("{}/", data.site_url),
+        "description": crate::layout::DEFAULT_DESCRIPTION,
+        "potentialAction": {
+            "@type": "SearchAction",
+            "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": format!("{}/search/?q={{search_term_string}}", data.site_url),
+            },
+            "query-input": "required name=search_term_string",
+        },
+    })]));
+    page
 }
 
 pub fn people_index(data: &SiteData) -> Page {
@@ -126,6 +241,7 @@ pub fn people_index(data: &SiteData) -> Page {
         ));
     }
     body.push_str("</span><input type=\"search\" id=\"people-filter\" placeholder=\"Filter by name, electorate or state\" aria-label=\"Filter people\"></div>");
+    body.push_str(&filter_feedback("No one matches these filters."));
 
     body.push_str("<div class=\"person-grid\" id=\"person-grid\">");
     for person in sorted {
@@ -301,7 +417,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         );
         if let Some(born) = &background.born {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Born</td><td>{}{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Born</th><td>{}{}</td></tr>",
                 esc(&format_date(born)),
                 match &background.birthplace {
                     Some(birthplace) => esc(&format!(", {birthplace}")),
@@ -311,13 +427,13 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         }
         if let Some(start) = &background.service_start {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Entered parliament</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Entered parliament</th><td>{}</td></tr>",
                 esc(&format_date(start))
             ));
         }
         if !background.parliaments.is_empty() {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Parliaments</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Parliaments</th><td>{}</td></tr>",
                 esc(&background
                     .parliaments
                     .iter()
@@ -328,14 +444,14 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         }
         if !background.honours.is_empty() {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Honours</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Honours</th><td>{}</td></tr>",
                 esc(&background.honours.join("; "))
             ));
         }
         body.push_str("</tbody></table></div>");
 
         if !background.qualifications.is_empty() {
-            body.push_str("<div class=\"table-scroll\"><table><thead><tr><th>Qualification</th><th>Institution</th></tr></thead><tbody>");
+            body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
             for q in &background.qualifications {
                 let parsed = parse_qualification(q);
                 body.push_str(&format!(
@@ -347,7 +463,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             body.push_str("</tbody></table></div>");
         }
         if !background.occupations.is_empty() {
-            body.push_str("<h3 style=\"font-size:.95rem; margin-top:1.2rem;\">Occupations before parliament</h3><div class=\"table-scroll\"><table><thead><tr><th>Role</th><th>Organisation</th><th class=\"num\">Period</th></tr></thead><tbody>");
+            body.push_str("<h3 style=\"font-size:.95rem; margin-top:1.2rem;\">Occupations before parliament</h3><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Organisation</th><th class=\"num\" scope=\"col\">Period</th></tr></thead><tbody>");
             for o in &background.occupations {
                 match parse_occupation(o) {
                     Occupation::Raw(raw) => {
@@ -368,7 +484,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
 
     if let Some(positions) = person.positions.as_deref().filter(|p| !p.is_empty()) {
-        body.push_str("<h2>Positions held</h2><div class=\"table-scroll\"><table><thead><tr><th>Role</th><th>Ministry</th><th class=\"num\">From</th><th class=\"num\">To</th></tr></thead><tbody>");
+        body.push_str("<h2>Positions held</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
         for pos in positions {
             body.push_str(&format!(
                 "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
@@ -391,7 +507,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
 
     if let Some(elections) = person.elections.as_deref().filter(|e| !e.is_empty()) {
-        body.push_str("<h2>Election history</h2><div class=\"table-scroll\"><table><thead><tr><th>Election</th><th>Electorate</th><th>Party</th><th class=\"num\">First pref %</th><th class=\"num\">Swing</th><th>Result</th></tr></thead><tbody>");
+        body.push_str("<h2>Election history</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for e in elections {
             body.push_str(&format!(
                 "<tr><td>{}</td><td><a href=\"/electorates/{}/\">{}</a></td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
@@ -415,7 +531,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
 
     if !raised.is_empty() {
-        body.push_str("<h2>Bills raised</h2><div class=\"table-scroll\"><table><thead><tr><th>Bill</th><th>Role</th><th>Status</th></tr></thead><tbody>");
+        body.push_str("<h2>Bills raised</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Bill</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
         for r in &raised {
             body.push_str(&format!(
                 "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td></tr>",
@@ -430,10 +546,10 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
 
     body.push_str("<h2>Voting record</h2>");
     if !votes.is_empty() {
-        body.push_str("<div class=\"table-scroll\"><table><thead><tr><th>Date</th><th>Division</th><th>Vote</th></tr></thead><tbody>");
+        body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Division</th><th scope=\"col\">Vote</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for v in &votes {
             body.push_str(&format!(
-                "<tr><td class=\"num\">{}</td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td></tr>",
+                "<tr><td class=\"num\">{}</td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
                 esc(&format_date(&v.division.date)),
                 v.division.house,
                 division_key(v.division),
@@ -449,6 +565,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
                     Vote::No => "No",
                 },
                 if v.against_group_majority { " · crossed" } else { "" },
+                result_chip(v.division.result),
             ));
         }
         body.push_str("</tbody></table></div>");
@@ -484,12 +601,41 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     body.push_str("</article>");
 
     let description = format!("{seat}. Voting record and service details from official sources.");
-    Page::new(
-        person.name.clone(),
-        Some(description),
-        format!("/people/{}/", person.slug),
-        body,
-    )
+    let path = format!("/people/{}/", person.slug);
+    let mut person_ld = serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "Person",
+        "name": person.name,
+        "url": format!("{}{path}", data.site_url),
+        "jobTitle": seat,
+    });
+    if let Some(photo) = &person.photo {
+        person_ld["image"] = serde_json::json!(photo.url);
+    }
+    if let Some(party) = data.party_by_slug(&person.group_slug) {
+        person_ld["memberOf"] = serde_json::json!({
+            "@type": "Organization",
+            "name": party.name,
+            "url": format!("{}/parties/{}/", data.site_url, party.slug),
+        });
+    }
+    if let Some(wikipedia) = &person.links.wikipedia {
+        person_ld["sameAs"] = serde_json::json!(wikipedia);
+    }
+    let mut page = Page::new(person.name.clone(), Some(description), path.clone(), body);
+    page.og_type = "profile";
+    page.jsonld = Some(jsonld_script(vec![
+        person_ld,
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("People", "/people/"),
+                (&person.name, &path),
+            ],
+        ),
+    ]));
+    page
 }
 
 pub fn divisions_index(data: &SiteData) -> Page {
@@ -500,11 +646,25 @@ pub fn divisions_index(data: &SiteData) -> Page {
         data.divisions.len()
     ));
     body.push_str("</p></div>");
-    body.push_str("<div class=\"filter-bar\"><span class=\"segmented\" id=\"division-house\" role=\"group\" aria-label=\"Filter by chamber\"><button aria-pressed=\"true\" data-house=\"\">Both chambers</button><button aria-pressed=\"false\" data-house=\"representatives\">House</button><button aria-pressed=\"false\" data-house=\"senate\">Senate</button></span></div>");
+    body.push_str("<div class=\"filter-bar\"><span class=\"segmented\" id=\"division-house\" role=\"group\" aria-label=\"Filter by chamber\"><button aria-pressed=\"true\" data-house=\"\">Both chambers</button><button aria-pressed=\"false\" data-house=\"representatives\">House</button><button aria-pressed=\"false\" data-house=\"senate\">Senate</button></span><input type=\"search\" id=\"division-filter-text\" placeholder=\"Filter by division name\" aria-label=\"Filter divisions\"></div>");
+    body.push_str(&filter_feedback("No divisions match these filters."));
     if !data.divisions.is_empty() {
-        body.push_str("<ul class=\"ledger\" id=\"division-list\">");
+        // Divisions arrive newest first, so each month is already one run.
+        let mut months: Vec<(&str, Vec<&Division>)> = Vec::new();
         for d in &data.divisions {
-            body.push_str(&ledger_row(d));
+            let key = d.date.get(..7).unwrap_or(d.date.as_str());
+            if months.last().map(|(m, _)| *m) == Some(key) {
+                months.last_mut().expect("just matched").1.push(d);
+            } else {
+                months.push((key, vec![d]));
+            }
+        }
+        body.push_str("<ul class=\"ledger\" id=\"division-list\">");
+        for (month, rows) in &months {
+            body.push_str(&ledger_month(month, rows.len()));
+            for d in rows {
+                body.push_str(&ledger_row(d));
+            }
         }
         body.push_str("</ul>");
     } else {
@@ -569,10 +729,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
     ));
     body.push_str(&format!(
         "<div class=\"result-line\"><strong>{}</strong><span class=\"figures\">{} aye · {} no</span>{}</div>",
-        match division.result {
-            DivisionResult::Passed => "Passed",
-            DivisionResult::Rejected => "Not passed",
-        },
+        result_word(division.result),
         division.ayes,
         division.noes,
         vote_bar(division.ayes, division.noes, true),
@@ -621,7 +778,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         body.push_str("</ul>");
     }
 
-    body.push_str("<h2>By party</h2><div class=\"table-scroll\"><table><thead><tr><th>Party</th><th class=\"num\">Aye</th><th class=\"num\">No</th></tr></thead><tbody>");
+    body.push_str("<h2>By party</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Aye</th><th class=\"num\" scope=\"col\">No</th></tr></thead><tbody>");
     for row in &breakdown {
         body.push_str(&format!(
             "<tr><td><span class=\"group-chip\"><span class=\"dot\" style=\"background:{}\" aria-hidden=\"true\"></span>{}</span></td><td class=\"{}\">{}</td><td class=\"{}\">{}</td></tr>",
@@ -692,8 +849,18 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         division.noes
     );
     let path = format!("/divisions/{}/{}/", division.house, division_key(division));
-    let mut page = Page::new(division.name.clone(), Some(description), path, body);
+    let mut page = Page::new(division.name.clone(), Some(description), path.clone(), body);
     page.footer_note = Some(footer_note);
+    page.og_type = "article";
+    page.lastmod = Some(division.date.clone());
+    page.jsonld = Some(jsonld_script(vec![breadcrumb(
+        &data.site_url,
+        &[
+            ("pollywiki", "/"),
+            ("Divisions", "/divisions/"),
+            (&division.name, &path),
+        ],
+    )]));
     page
 }
 
@@ -705,13 +872,15 @@ pub fn bills_index(data: &SiteData) -> Page {
         data.bills.len()
     ));
     body.push_str("</p></div>");
-    body.push_str("<div class=\"filter-bar\"><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" aria-label=\"Filter bills\"></div>");
+    body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" aria-label=\"Filter bills\"></div>");
+    body.push_str(&filter_feedback("No bills match these filters."));
     if !data.bills.is_empty() {
         body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
         for b in &data.bills {
             body.push_str(&bill_row(b, true));
         }
         body.push_str("</ul>");
+        body.push_str(BILL_DOTS_LEGEND);
     } else {
         body.push_str("<p class=\"note\">No bill records loaded yet. They appear once the APH bills sync runs.</p>");
     }
@@ -781,7 +950,9 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         "</span><span class=\"status\"><span class=\"label\">Status</span><span class=\"value\">",
     );
     body.push_str(&esc(&bill.status));
-    body.push_str("</span></span></div>");
+    body.push_str("</span>");
+    body.push_str(&bill_dots(bill));
+    body.push_str("</span></div>");
     body.push_str(&format!(
         "<h1 class=\"{}\" data-pagefind-meta=\"title\">{}</h1>",
         title_tier(&bill.title),
@@ -923,12 +1094,36 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         "{}. Progress of this bill through the federal parliament.",
         bill.status
     );
-    Page::new(
-        bill.title.clone(),
-        Some(description),
-        format!("/bills/{}/", bill.id),
-        body,
-    )
+    let path = format!("/bills/{}/", bill.id);
+    let mut legislation = serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "Legislation",
+        "name": bill.title,
+        "legislationStatus": bill.status,
+        "url": bill
+            .links
+            .aph
+            .clone()
+            .unwrap_or_else(|| format!("{}{path}", data.site_url)),
+    });
+    if let Some(bill_type) = &bill.bill_type {
+        legislation["legislationType"] = serde_json::json!(bill_type);
+    }
+    let mut page = Page::new(bill.title.clone(), Some(description), path.clone(), body);
+    page.og_type = "article";
+    page.lastmod = latest_step(bill).map(|step| step.date.clone());
+    page.jsonld = Some(jsonld_script(vec![
+        legislation,
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("Bills", "/bills/"),
+                (&bill.title, &path),
+            ],
+        ),
+    ]));
+    page
 }
 
 pub fn electorates_index(data: &SiteData) -> Page {
@@ -943,7 +1138,8 @@ pub fn electorates_index(data: &SiteData) -> Page {
     ));
     body.push_str("</p>");
     body.push_str("<div class=\"filter-bar\"><input type=\"search\" id=\"electorate-filter\" placeholder=\"Filter by name or state\" aria-label=\"Filter electorates\"></div>");
-    body.push_str("<div class=\"table-scroll\"><table id=\"electorate-table\"><thead><tr><th>Electorate</th><th>State</th><th>Member</th></tr></thead><tbody>");
+    body.push_str(&filter_feedback("No electorates match these filters."));
+    body.push_str("<div class=\"table-scroll\"><table id=\"electorate-table\"><thead><tr><th scope=\"col\">Electorate</th><th scope=\"col\">State</th><th scope=\"col\">Member</th></tr></thead><tbody>");
     for e in sorted {
         let member = e
             .member_slug
@@ -1016,31 +1212,31 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
         body.push_str("<div class=\"table-scroll\"><table class=\"facts\"><tbody>");
         if let Some(enrolment) = electorate.enrolment {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Enrolled voters</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Enrolled voters</th><td>{}</td></tr>",
                 locale_int(enrolment)
             ));
         }
         if let Some(area) = profile.and_then(|p| p.area.as_deref()) {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Area</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Area</th><td>{}</td></tr>",
                 esc(area)
             ));
         }
         if let Some(demographic) = profile.and_then(|p| p.demographic.as_deref()) {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Demographic rating</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Demographic rating</th><td>{}</td></tr>",
                 esc(demographic)
             ));
         }
         if let Some(first) = profile.and_then(|p| p.first_contested.as_deref()) {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Name first used</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Name first used</th><td>{}</td></tr>",
                 esc(first)
             ));
         }
         if let Some(gazetted) = profile.and_then(|p| p.gazetted.as_deref()) {
             body.push_str(&format!(
-                "<tr><td class=\"label\">Boundary gazetted</td><td>{}</td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Boundary gazetted</th><td>{}</td></tr>",
                 esc(gazetted)
             ));
         }
@@ -1077,7 +1273,7 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
         }
         if !result.first_prefs.is_empty() {
             body.push_str(&format!(
-                "<h2>{}: first preferences</h2><div class=\"table-scroll\"><table><thead><tr><th>Candidate</th><th>Party</th><th class=\"num\">Votes</th><th class=\"num\">%</th><th class=\"num\">Swing</th></tr></thead><tbody>",
+                "<h2>{}: first preferences</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead><tbody>",
                 esc(&result.event_name)
             ));
             for c in &result.first_prefs {
@@ -1111,18 +1307,23 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
         electorate.name,
         state_name(electorate.state.as_str()).unwrap_or("undefined")
     );
-    Page::new(
-        title,
-        Some(description),
-        format!("/electorates/{}/", electorate.slug),
-        body,
-    )
+    let path = format!("/electorates/{}/", electorate.slug);
+    let mut page = Page::new(title, Some(description), path.clone(), body);
+    page.jsonld = Some(jsonld_script(vec![breadcrumb(
+        &data.site_url,
+        &[
+            ("pollywiki", "/"),
+            ("Electorates", "/electorates/"),
+            (&electorate.name, &path),
+        ],
+    )]));
+    page
 }
 
 pub fn parties_index(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<h1>Parties</h1><p>Parliamentary groups of the 48th Parliament. Grouping follows the official record; Coalition members sit as one parliamentary group.</p>");
-    body.push_str("<div class=\"table-scroll\"><table><thead><tr><th>Group</th><th class=\"num\">House</th><th class=\"num\">Senate</th><th class=\"num\">Total</th></tr></thead><tbody>");
+    body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Group</th><th class=\"num\" scope=\"col\">House</th><th class=\"num\" scope=\"col\">Senate</th><th class=\"num\" scope=\"col\">Total</th></tr></thead><tbody>");
     for p in &data.parties {
         body.push_str(&format!(
             "<tr><td><a class=\"group-chip\" href=\"/parties/{}/\"><span class=\"dot\" style=\"background:{}\" aria-hidden=\"true\"></span>{}</a></td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
@@ -1208,7 +1409,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
             let label = WEBSITE_PREFIX.replace(website, "");
             let label = label.strip_suffix('/').unwrap_or(&label);
             body.push_str(&format!(
-                "<tr><td class=\"label\">Website</td><td><a href=\"{}\">{}</a></td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Website</th><td><a href=\"{}\">{}</a></td></tr>",
                 esc_attr(website),
                 esc(label)
             ));
@@ -1221,7 +1422,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
                 .unwrap_or_else(|| "article".to_string())
                 .replace('_', " ");
             body.push_str(&format!(
-                "<tr><td class=\"label\">Wikipedia</td><td><a href=\"{}\">{}</a></td></tr>",
+                "<tr><th class=\"label\" scope=\"row\">Wikipedia</th><td><a href=\"{}\">{}</a></td></tr>",
                 esc_attr(wikipedia),
                 esc(&article)
             ));
@@ -1230,7 +1431,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     }
 
     if !leadership.is_empty() {
-        body.push_str("<h2>Parliamentary leadership</h2><div class=\"table-scroll\"><table><thead><tr><th>Role</th><th>Member</th><th class=\"num\">Since</th></tr></thead><tbody>");
+        body.push_str("<h2>Parliamentary leadership</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Member</th><th class=\"num\" scope=\"col\">Since</th></tr></thead><tbody>");
         for l in &leadership {
             body.push_str(&format!(
                 "<tr><td>{}</td><td><a href=\"/people/{}/\">{}</a></td><td class=\"num\">{}</td></tr>",
@@ -1260,16 +1461,23 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     body.push_str("</article>");
 
     let description = format!("{}: members in the 48th federal parliament.", party.name);
-    Page::new(
-        party.name.clone(),
-        Some(description),
-        format!("/parties/{}/", party.slug),
-        body,
-    )
+    let path = format!("/parties/{}/", party.slug);
+    let mut page = Page::new(party.name.clone(), Some(description), path.clone(), body);
+    page.jsonld = Some(jsonld_script(vec![breadcrumb(
+        &data.site_url,
+        &[
+            ("pollywiki", "/"),
+            ("Parties", "/parties/"),
+            (&party.name, &path),
+        ],
+    )]));
+    page
 }
 
 pub fn search_page() -> Page {
-    const SEARCH_INLINE_JS: &str = "\n    window.addEventListener('DOMContentLoaded', () => {\n      if (typeof PagefindUI !== 'undefined') {\n        new PagefindUI({ element: '#search', showSubResults: false, showImages: false })\n        const input = document.querySelector('#search input')\n        if (input) input.focus()\n      } else {\n        document.getElementById('search').textContent =\n          'Search index not built. Run the full build (pnpm build) to generate it.'\n      }\n    })\n  ";
+    // Pagefind renders its own input, so a ?q= term has to be poured in after
+    // init and announced with an input event for the UI to run the query.
+    const SEARCH_INLINE_JS: &str = "\n    window.addEventListener('DOMContentLoaded', () => {\n      if (typeof PagefindUI !== 'undefined') {\n        new PagefindUI({ element: '#search', showSubResults: false, showImages: false })\n        const input = document.querySelector('#search input')\n        if (input) {\n          const q = new URLSearchParams(location.search).get('q')\n          if (q) {\n            input.value = q\n            input.dispatchEvent(new Event('input', { bubbles: true }))\n          }\n          input.focus()\n        }\n      } else {\n        document.getElementById('search').textContent =\n          'Search index not built. Run the full build to generate it.'\n      }\n    })\n  ";
     let mut body = String::new();
     body.push_str("<h1>Search the record</h1><p class=\"note\">People, divisions, bills, electorates and parties.</p>");
     body.push_str("<link href=\"/pagefind/pagefind-ui.css\" rel=\"stylesheet\"><script src=\"/pagefind/pagefind-ui.js\"></script><div id=\"search\" style=\"margin-top: 1.4rem;\"></div><script>");
@@ -1359,7 +1567,7 @@ pub fn data_sources(data: &SiteData) -> Page {
 
     let mut body = String::new();
     body.push_str("<h1>Data sources</h1><p>Everything on this site is generated from the sources below. Nothing is written by hand and nothing is edited after ingestion.</p>");
-    body.push_str("<div class=\"table-scroll\"><table><thead><tr><th>Source</th><th>Used for</th><th>Licence</th><th>Last synced</th></tr></thead><tbody>");
+    body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Source</th><th scope=\"col\">Used for</th><th scope=\"col\">Licence</th><th scope=\"col\">Last synced</th></tr></thead><tbody>");
     for s in &SOURCES {
         let status = data.meta.sources.get(s.key);
         body.push_str(&format!(
@@ -1445,7 +1653,7 @@ pub fn corrections() -> Page {
 
 /// new Date(str).getTime() for the two shapes the record contains:
 /// date-only strings parse as UTC; date-times without a zone parse as local
-/// time in the reference build, which runs in UTC in CI.
+/// time the build runs in, which is UTC in CI.
 fn parse_js_date_millis(input: &str) -> Option<i64> {
     if let Ok(date) = chrono::NaiveDate::parse_from_str(input, "%Y-%m-%d") {
         return Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
@@ -1456,4 +1664,65 @@ fn parse_js_date_millis(input: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(input)
         .ok()
         .map(|dt| dt.timestamp_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bill(json: &str) -> Bill {
+        serde_json::from_str(json).expect("bill fixture")
+    }
+
+    #[test]
+    fn short_dates_drop_the_year() {
+        assert_eq!(short_date("2025-08-01"), "1 Aug");
+        assert_eq!(short_date("2026-12-31"), "31 Dec");
+        assert_eq!(short_date("not-a-date"), "not-a-date");
+    }
+
+    #[test]
+    fn status_pills_bucket_every_bill() {
+        let key = |status: &str| {
+            bill_status_key(&bill(&format!(
+                r#"{{"id":"a","title":"A","parliament":48,"chamber":"senate","status":"{status}"}}"#
+            )))
+        };
+        assert_eq!(key("Before the Senate"), "open");
+        assert_eq!(key("Act"), "act");
+        assert_eq!(key("Not proceeding"), "other");
+        assert_eq!(key("Discharged"), "other");
+    }
+
+    #[test]
+    fn latest_step_is_the_newest_by_date_not_by_position() {
+        let out_of_order = bill(
+            r#"{"id":"b","title":"B","parliament":48,"chamber":"senate","status":"Act",
+                "timeline":[{"date":"2026-05-01","event":"Assent"},
+                            {"date":"2026-01-01","event":"Introduced"}]}"#,
+        );
+        assert_eq!(latest_step(&out_of_order).unwrap().event, "Assent");
+        let empty =
+            bill(r#"{"id":"c","title":"C","parliament":48,"chamber":"senate","status":"Act"}"#);
+        assert!(latest_step(&empty).is_none());
+    }
+
+    #[test]
+    fn jsonld_cannot_close_its_own_script_element() {
+        let out = jsonld_script(vec![serde_json::json!({ "name": "</script><b>x" })]);
+        assert!(!out.contains("</script>"));
+        assert!(out.contains("\\u003c/script\\u003e"));
+    }
+
+    #[test]
+    fn breadcrumbs_are_absolute_and_ordered() {
+        let value = breadcrumb(
+            "https://pollywiki.au",
+            &[("pollywiki", "/"), ("Bills", "/bills/")],
+        );
+        let items = value["itemListElement"].as_array().expect("list");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["position"], 1);
+        assert_eq!(items[1]["item"], "https://pollywiki.au/bills/");
+    }
 }

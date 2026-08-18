@@ -1,4 +1,6 @@
 [
+  { "t": "bill", "slug": "sample-1", "name": "Demonstration Data Bill 2025", "sub": "Before the Senate" },
+  { "t": "bill", "slug": "sample-2", "name": "Placeholder Amendment Bill 2025", "sub": "Before the House" },
   { "t": "person", "slug": "alex-paterson", "name": "Alex Paterson", "sub": "MP · Sampleford" },
   { "t": "person", "slug": "jordan-nguyen", "name": "Jordan Nguyen", "sub": "MP · Placeholder Bay" },
   { "t": "person", "slug": "sam-kelly", "name": "Sam Kelly", "sub": "Senator · QLD" },

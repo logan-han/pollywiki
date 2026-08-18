@@ -1,6 +1,6 @@
 //! CommonMark rendering via markdown-rs, the same author's Rust port of the
-//! micromark renderer the reference build used: raw HTML in the source is
-//! escaped by default and the output shape matches byte for byte.
+//! micromark renderer this site's markdown was authored against: raw HTML in
+//! the source is escaped by default and the output shape matches byte for byte.
 //!
 //! One parity gap needs correcting: inside a blockquote, micromark renders a
 //! list as LOOSE (items wrapped in <p>) when a blank quote line separates it

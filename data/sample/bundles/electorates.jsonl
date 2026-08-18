@@ -1,2 +1,2 @@
-{"slug":"sampleford","name":"Sampleford","state":"VIC","memberSlug":"alex-paterson"}
-{"slug":"placeholder-bay","name":"Placeholder Bay","state":"NSW","memberSlug":"jordan-nguyen"}
+{"slug":"sampleford","name":"Sampleford","state":"VIC","memberSlug":"alex-paterson","profile":{"nameDerivation":"Named after the fictional town of Sampleford, used here to demonstrate the electorate profile layout.","location":"Covers the sample suburbs of Exampleton, Placeholder Heights and Demo Vale.","area":"142 sq km","gazetted":"1 January 2024","firstContested":"2025","demographic":"Inner metropolitan"},"enrolment":118432}
+{"slug":"placeholder-bay","name":"Placeholder Bay","state":"NSW","memberSlug":"jordan-nguyen","enrolment":106710}

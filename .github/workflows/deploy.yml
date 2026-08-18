@@ -48,10 +48,18 @@ jobs:
           fi
           cargo run --release -p pollywiki-site -- --out dist
 
+      # Pages get a short TTL so a deploy shows up quickly; the content-hashed
+      # bundle is immutable; share cards sit in between. Excluded prefixes are
+      # left alone by --delete, so each later sync prunes its own prefix.
       - name: Sync to S3
         run: |
           aws s3 sync dist "s3://${{ vars.SITE_BUCKET }}" \
-            --delete --exclude "img/*"
+            --delete --exclude "img/*" --exclude "_assets/*" --exclude "og/*" \
+            --cache-control "public,max-age=300"
+          aws s3 sync dist/_assets "s3://${{ vars.SITE_BUCKET }}/_assets" \
+            --delete --cache-control "public,max-age=31536000,immutable"
+          aws s3 sync dist/og "s3://${{ vars.SITE_BUCKET }}/og" \
+            --delete --cache-control "public,max-age=86400"
 
       # Mirrored member photos live in the data prefix; copy them under the
       # site prefix so CloudFront serves them same-origin. Runs after the
@@ -61,7 +69,8 @@ jobs:
         run: |
           aws s3 sync "s3://${{ vars.DATA_BUCKET }}/derived/img" \
             "s3://${{ vars.SITE_BUCKET }}/img" \
-            --exclude "*.src.json"
+            --exclude "*.src.json" \
+            --cache-control "public,max-age=86400"
 
       # Without this the pages sit in S3 while CloudFront serves the old copy
       # until the default TTL expires. Skipped until the variable is set.

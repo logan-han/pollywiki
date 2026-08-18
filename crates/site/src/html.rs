@@ -1,6 +1,6 @@
-//! Escaping that matches the reference output: interpolated text escapes the
-//! full entity set; interpolated attribute values escape only & and ".
-//! Static template text is written literally at the call sites.
+//! Two escapers, by position: interpolated text escapes the full entity set;
+//! interpolated attribute values escape only & and ". Static template text is
+//! written literally at the call sites.
 
 pub fn esc(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

@@ -24,3 +24,9 @@ pagefind = { version = "=1.5.2", default-features = false }
 # io-util backfills a tokio feature the pagefind library uses but does not declare.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
 tiny_http = "0.12"
+# Build-time rasteriser for the per-division share cards. No raster-image or
+# system-font features: everything the cards draw is vector text in the fonts
+# vendored under assets/fonts, decoded from woff2 by wuff.
+resvg = { version = "0.48", default-features = false, features = ["text"] }
+wuff = "0.2"
+ttf-parser = "0.25"

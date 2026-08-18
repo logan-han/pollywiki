@@ -242,6 +242,16 @@ pub async fn derive(store: &Store) -> Result<()> {
     store.put_json("bundles/meta.json", &meta).await?;
 
     let mut quick_search: Vec<QuickSearchEntry> = Vec::new();
+    // Bills first: they are the most-searched entity, and the site's dropdown
+    // groups by type anyway. A few hundred entries of the current parliament.
+    for b in &bills {
+        quick_search.push(QuickSearchEntry {
+            t: "bill".to_string(),
+            slug: b.id.clone(),
+            name: b.title.clone(),
+            sub: b.status.clone(),
+        });
+    }
     for p in &people {
         quick_search.push(QuickSearchEntry {
             t: "person".to_string(),

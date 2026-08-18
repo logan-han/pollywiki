@@ -1,6 +1,6 @@
 use crate::data::{division_key, format_date, js_float, SiteData};
 use crate::html::{esc, esc_attr};
-use pollywiki_schema::{Division, House, Person};
+use pollywiki_schema::{Bill, Division, DivisionResult, House, Person};
 
 pub fn avatar(person: &Person, large: bool) -> String {
     match &person.photo {
@@ -72,6 +72,25 @@ pub fn vote_bar(ayes: i64, noes: i64, result: bool) -> String {
     )
 }
 
+/// The question put, in the official terminology used site-wide.
+pub fn result_word(result: DivisionResult) -> &'static str {
+    match result {
+        DivisionResult::Passed => "Carried",
+        DivisionResult::Rejected => "Negatived",
+    }
+}
+
+pub fn result_chip(result: DivisionResult) -> String {
+    format!(
+        "<span class=\"result-chip {class}\">{word}</span>",
+        class = match result {
+            DivisionResult::Passed => "carried",
+            DivisionResult::Rejected => "negatived",
+        },
+        word = result_word(result),
+    )
+}
+
 pub fn ledger_row(division: &Division) -> String {
     let href = format!("/divisions/{}/{}/", division.house, division_key(division));
     let chamber = match division.house {
@@ -79,14 +98,133 @@ pub fn ledger_row(division: &Division) -> String {
         House::Representatives => "House",
     };
     format!(
-        "<li data-house=\"{house}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chamber} {ayes}\u{2013}{noes}{bar}</span></li>",
+        "<li data-house=\"{house}\" data-text=\"{text}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chip}{chamber} {ayes}\u{2013}{noes}{bar}</span></li>",
         house = division.house,
+        text = esc_attr(&division.name.to_lowercase()),
         when = esc(&format_date(&division.date)),
         name = esc(&division.name),
+        chip = result_chip(division.result),
         ayes = division.ayes,
         noes = division.noes,
         bar = vote_bar(division.ayes, division.noes, false),
     )
+}
+
+/// Month divider for the divisions ledger: mono-caps month, hairline, count.
+pub fn ledger_month(month: &str, count: usize) -> String {
+    format!(
+        "<li class=\"ledger-month\" data-month=\"{key}\"><span class=\"m\">{label}</span><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} division{plural}</span></li>",
+        key = esc_attr(month),
+        label = esc(&month_label(month)),
+        plural = if count == 1 { "" } else { "s" },
+    )
+}
+
+const MONTH_NAMES: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// "2026-08" -> "August 2026". Unparseable keys pass through unchanged.
+pub fn month_label(month: &str) -> String {
+    let (year, m) = match month.split_once('-') {
+        Some(parts) => parts,
+        None => return month.to_string(),
+    };
+    match m.parse::<usize>() {
+        Ok(n) if (1..=12).contains(&n) => format!("{} {year}", MONTH_NAMES[n - 1]),
+        _ => month.to_string(),
+    }
+}
+
+/// Which chamber a status line such as "Before the Senate" points at.
+fn status_chamber(status_lower: &str) -> Option<House> {
+    if status_lower.contains("senate") {
+        Some(House::Senate)
+    } else if status_lower.contains("house")
+        || status_lower.contains("representatives")
+        || status_lower.contains("reps")
+    {
+        Some(House::Representatives)
+    } else {
+        None
+    }
+}
+
+/// Progress on the introduced -> passed 1st house -> passed 2nd house ->
+/// assent path, 0 to 4. Timeline events lead where the ingest recorded them;
+/// the status word fills in the rest and always wins if it is further along.
+pub fn bill_stage(bill: &Bill) -> u8 {
+    let mut from_timeline = 0u8;
+    let mut third_readings = 0u8;
+    for step in &bill.timeline {
+        let event = step.event.to_lowercase();
+        if event.contains("assent") {
+            return 4;
+        } else if event.contains("passed both houses") {
+            from_timeline = from_timeline.max(3);
+        } else if event.contains("third reading") {
+            // The bundles do not name the chamber, so count the readings: one
+            // is the originating house, two is both.
+            third_readings = third_readings.saturating_add(1);
+        } else if event.contains("introduced") || event.contains("first reading") {
+            from_timeline = from_timeline.max(1);
+        }
+    }
+    from_timeline = from_timeline.max(match third_readings {
+        0 => 0,
+        1 => 2,
+        _ => 3,
+    });
+
+    let status = bill.status.to_lowercase();
+    let from_status = if status.contains("assent") || status.starts_with("act") {
+        4
+    } else if let Some(rest) = status.strip_prefix("before ") {
+        // Sitting in the other chamber means the originating house has passed it.
+        match status_chamber(rest) {
+            Some(house) if house != bill.chamber => 2,
+            _ => 1,
+        }
+    } else {
+        0
+    };
+    from_timeline.max(from_status)
+}
+
+pub const BILL_DOTS_LEGEND: &str = "<p class=\"dots-legend\">Introduced \u{b7} Passed 1st house \u{b7} Passed 2nd house \u{b7} Assent</p>";
+
+pub fn bill_dots(bill: &Bill) -> String {
+    let stage = bill_stage(bill);
+    let reached = match stage {
+        0 => "not yet introduced",
+        1 => "introduced",
+        2 => "passed originating house",
+        3 => "passed both houses",
+        _ => "assented",
+    };
+    let mut out = format!(
+        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {stage} of 4: {reached}\">"
+    );
+    for step in 1..=4u8 {
+        out.push_str(if step <= stage {
+            "<i class=\"on\"></i>"
+        } else {
+            "<i class=\"off\"></i>"
+        });
+    }
+    out.push_str("</span>");
+    out
 }
 
 pub fn person_card(data: &SiteData, person: &Person) -> String {
@@ -134,24 +272,172 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
         .map(|(p, seats)| format!("{} {seats}", p.name))
         .collect::<Vec<_>>()
         .join(", ");
+    // The threshold sits on the boundary between the last minority seat and
+    // the first majority one, so a segment crossing the tick holds a majority.
+    let majority = total / 2 + 1;
+    let tick = js_float((majority - 1).max(0) as f64 / total.max(1) as f64 * 100.0);
+
     let mut out = format!(
-        "<div class=\"seat-bar\"><div class=\"label\">{chamber} · {total} seats</div><div class=\"bar\" role=\"img\" aria-label=\"{}\">",
-        esc_attr(&format!("{chamber} composition: {aria}")),
+        "<div class=\"seat-bar\"><div class=\"label\"><span>{chamber} \u{b7} {total} seats</span>"
     );
+    if total > 0 {
+        out.push_str(&format!(
+            "<span class=\"majority\">majority {majority}</span>"
+        ));
+    }
+    out.push_str("</div><div class=\"bar-wrap\">");
+    if total > 0 {
+        out.push_str(&format!(
+            "<span class=\"tick-label\" style=\"left:{tick}%\">{majority}</span>"
+        ));
+    }
+    out.push_str(&format!(
+        "<div class=\"bar\" role=\"img\" aria-label=\"{}\">",
+        esc_attr(&format!("{chamber} composition: {aria}")),
+    ));
     for (party, seats) in &rows {
         out.push_str(&format!(
-            "<span style=\"width:{width}%;background:{colour}\" title=\"{title}\"></span>",
+            "<a href=\"/parties/{slug}/\" style=\"width:{width}%;background:{colour}\" title=\"{title}\" aria-label=\"{label}\"></a>",
+            slug = party.slug,
             width = js_float(*seats as f64 / total.max(1) as f64 * 100.0),
             colour = party.colour.as_deref().unwrap_or("#6e7b74"),
             title = esc_attr(&format!("{}: {seats}", party.name)),
+            label = esc_attr(&format!(
+                "{}, {seats} seat{}",
+                party.code.as_deref().unwrap_or(&party.name),
+                if *seats == 1 { "" } else { "s" }
+            )),
+        ));
+    }
+    out.push_str("</div>");
+    if total > 0 {
+        out.push_str(&format!(
+            "<span class=\"tick\" style=\"left:{tick}%\" aria-hidden=\"true\"></span>"
         ));
     }
     out.push_str("</div><div class=\"key\">");
-    out.push_str(&esc(&rows
-        .iter()
-        .map(|(p, seats)| format!("{} {seats}", p.code.as_deref().unwrap_or(&p.name)))
-        .collect::<Vec<_>>()
-        .join(" · ")));
+    out.push_str(
+        &rows
+            .iter()
+            .map(|(p, seats)| {
+                format!(
+                    "<a href=\"/parties/{}/\">{} {seats}</a>",
+                    p.slug,
+                    esc(p.code.as_deref().unwrap_or(&p.name))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" \u{b7} "),
+    );
     out.push_str("</div></div>");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bill(json: &str) -> Bill {
+        serde_json::from_str(json).expect("bill fixture")
+    }
+
+    #[test]
+    fn month_labels_read_as_prose() {
+        assert_eq!(month_label("2026-08"), "August 2026");
+        assert_eq!(month_label("2026-01"), "January 2026");
+        assert_eq!(month_label("2026-13"), "2026-13");
+        assert_eq!(month_label("2026"), "2026");
+    }
+
+    #[test]
+    fn result_words_use_the_question_terminology() {
+        assert_eq!(result_word(DivisionResult::Passed), "Carried");
+        assert_eq!(result_word(DivisionResult::Rejected), "Negatived");
+        assert!(result_chip(DivisionResult::Passed).contains("result-chip carried"));
+        assert!(result_chip(DivisionResult::Rejected).contains("result-chip negatived"));
+    }
+
+    #[test]
+    fn stage_from_status_alone() {
+        // Sitting in the chamber it was introduced in: stage 1.
+        assert_eq!(
+            bill_stage(&bill(
+                r#"{"id":"a","title":"A","parliament":48,"chamber":"representatives","status":"Before the House of Representatives"}"#
+            )),
+            1
+        );
+        // Sitting in the other chamber, so the originating house has passed it.
+        assert_eq!(
+            bill_stage(&bill(
+                r#"{"id":"b","title":"B","parliament":48,"chamber":"representatives","status":"Before the Senate"}"#
+            )),
+            2
+        );
+        assert_eq!(
+            bill_stage(&bill(
+                r#"{"id":"c","title":"C","parliament":48,"chamber":"senate","status":"Before Reps"}"#
+            )),
+            2
+        );
+        assert_eq!(
+            bill_stage(&bill(
+                r#"{"id":"d","title":"D","parliament":48,"chamber":"representatives","status":"Act"}"#
+            )),
+            4
+        );
+        // Finished some other way: the status word carries the rest.
+        assert_eq!(
+            bill_stage(&bill(
+                r#"{"id":"e","title":"E","parliament":48,"chamber":"senate","status":"Not proceeding"}"#
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn timeline_events_lead_where_they_exist() {
+        let introduced = bill(
+            r#"{"id":"f","title":"F","parliament":48,"chamber":"senate","status":"Not proceeding",
+                "timeline":[{"date":"2026-02-01","event":"Introduced"}]}"#,
+        );
+        assert_eq!(bill_stage(&introduced), 1);
+
+        let one_reading = bill(
+            r#"{"id":"g","title":"G","parliament":48,"chamber":"senate","status":"Discharged",
+                "timeline":[{"date":"2026-02-01","event":"Introduced"},
+                            {"date":"2026-03-01","event":"Third reading agreed to"}]}"#,
+        );
+        assert_eq!(bill_stage(&one_reading), 2);
+
+        let both_readings = bill(
+            r#"{"id":"h","title":"H","parliament":48,"chamber":"senate","status":"Discharged",
+                "timeline":[{"date":"2026-02-01","event":"Third reading agreed to"},
+                            {"date":"2026-03-01","event":"Third reading agreed to"}]}"#,
+        );
+        assert_eq!(bill_stage(&both_readings), 3);
+
+        let assented = bill(
+            r#"{"id":"i","title":"I","parliament":48,"chamber":"senate","status":"Before the House",
+                "timeline":[{"date":"2026-04-01","event":"Assent"}]}"#,
+        );
+        assert_eq!(bill_stage(&assented), 4);
+    }
+
+    #[test]
+    fn dots_carry_a_stage_label_and_fill_count() {
+        let dots = bill_dots(&bill(
+            r#"{"id":"j","title":"J","parliament":48,"chamber":"representatives","status":"Before the Senate"}"#,
+        ));
+        assert!(dots.contains("Stage 2 of 4: passed originating house"));
+        assert_eq!(dots.matches("class=\"on\"").count(), 2);
+        assert_eq!(dots.matches("class=\"off\"").count(), 2);
+    }
+
+    #[test]
+    fn month_divider_counts_agree_with_the_run() {
+        let row = ledger_month("2026-07", 1);
+        assert!(row.contains("July 2026"));
+        assert!(row.contains("1 division<"));
+        assert!(ledger_month("2026-07", 5).contains("5 divisions<"));
+    }
 }
