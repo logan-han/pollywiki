@@ -1,4 +1,5 @@
-use crate::http::{fetch_text, FetchOpts};
+use crate::endpoints::Endpoints;
+use crate::http::fetch_text;
 use crate::sources::aec::parse_csv;
 use crate::store::Store;
 use anyhow::{anyhow, Result};
@@ -37,7 +38,11 @@ fn state_path(state: &str) -> &'static str {
 /// The AEC's official electorate profiles: name derivation, location, area
 /// and gazettal facts, scraped from the dt/dd pairs on aec.gov.au, plus
 /// enrolment figures from the current election's enrolment download.
-pub async fn sync_aec_profiles(store: &Store, current_event: &str) -> Result<()> {
+pub async fn sync_aec_profiles(
+    store: &Store,
+    current_event: &str,
+    endpoints: &Endpoints,
+) -> Result<()> {
     let mut electorates: Vec<Electorate> = Vec::new();
     for key in store.list("canonical/electorates/").await? {
         if let Some(e) = store.get_json::<Electorate>(&key).await? {
@@ -48,7 +53,7 @@ pub async fn sync_aec_profiles(store: &Store, current_event: &str) -> Result<()>
         return Err(anyhow!("aec-profiles: no electorates in store yet"));
     }
 
-    let enrolment = fetch_enrolment(store, current_event).await;
+    let enrolment = fetch_enrolment(store, current_event, endpoints).await;
 
     let mut fetched = 0;
     let mut skipped = 0;
@@ -64,11 +69,12 @@ pub async fn sync_aec_profiles(store: &Store, current_event: &str) -> Result<()>
         }
         let result: Result<()> = async {
             let url = format!(
-                "https://www.aec.gov.au/profiles/{}/{}.htm",
+                "{}/profiles/{}/{}.htm",
+                endpoints.aec_profiles,
                 state_path(electorate.state.as_str()),
                 electorate.slug
             );
-            let html = fetch_text(&url, &FetchOpts::min_interval(700)).await?;
+            let html = fetch_text(&url, &endpoints.opts(700)).await?;
             let pairs = parse_dt_dd(&html);
             let profile = ElectorateProfile {
                 stored_at: crate::now_iso(),
@@ -102,14 +108,19 @@ pub async fn sync_aec_profiles(store: &Store, current_event: &str) -> Result<()>
     Ok(())
 }
 
-async fn fetch_enrolment(store: &Store, event_id: &str) -> IndexMap<String, i64> {
+async fn fetch_enrolment(
+    store: &Store,
+    event_id: &str,
+    endpoints: &Endpoints,
+) -> IndexMap<String, i64> {
     let mut out = IndexMap::new();
     let result: Result<()> = async {
         let csv = fetch_text(
             &format!(
-                "https://results.aec.gov.au/{event_id}/Website/Downloads/GeneralEnrolmentByDivisionDownload-{event_id}.csv"
+                "{}/{event_id}/Website/Downloads/GeneralEnrolmentByDivisionDownload-{event_id}.csv",
+                endpoints.aec_results
             ),
-            &FetchOpts::min_interval(1500),
+            &endpoints.opts(1500),
         )
         .await?;
         store
@@ -217,6 +228,35 @@ fn age_days(iso: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::LocalStore;
+    use crate::test_http::{Response, TestServer};
+    use std::path::PathBuf;
+
+    fn new_store(name: &str) -> Store {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/aec-profile-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Store::Local(LocalStore::new(dir))
+    }
+
+    async fn seed_electorate(store: &Store, slug: &str, name: &str, state: &str) {
+        let electorate: Electorate = serde_json::from_str(&format!(
+            r#"{{"slug":"{slug}","name":"{name}","state":"{state}"}}"#
+        ))
+        .expect("electorate fixture");
+        store
+            .put_json(&format!("canonical/electorates/{slug}.json"), &electorate)
+            .await
+            .expect("seed");
+    }
+
+    const PROFILE_HTML: &str = "<dl><dt>Name derivation:</dt><dd>Named for a sample</dd>\
+        <dt>Location description:</dt><dd>Inner suburbs</dd><dt>Area:</dt><dd>52 sq km</dd>\
+        <dt>Date this name and boundary was gazetted:</dt><dd>31 July 2024</dd>\
+        <dt>First election this name was used at:</dt><dd>1949</dd>\
+        <dt>Demographic rating:</dt><dd>Inner Metropolitan</dd></dl>";
 
     #[test]
     fn profile_text_decodes_the_entities_aec_pages_use() {
@@ -244,6 +284,196 @@ mod tests {
         assert_eq!(
             pairs.get("area").map(String::as_str),
             Some("writes &ndash; verbatim")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sync_scrapes_the_profile_facts_and_joins_the_enrolment_figure() {
+        let server = TestServer::start(|req| {
+            if req.path.contains("GeneralEnrolmentByDivisionDownload") {
+                return Response::text(
+                    "Enrolment as at some date\nStateAb,DivisionID,DivisionNm,Enrolment\nVIC,101,Sampleford,118432",
+                );
+            }
+            if req.path.contains("/profiles/vic/sampleford.htm") {
+                return Response::html(PROFILE_HTML);
+            }
+            Response::status(404, "unexpected path")
+        });
+        let store = new_store("scrape");
+        seed_electorate(&store, "sampleford", "Sampleford", "VIC").await;
+
+        sync_aec_profiles(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let profile: ElectorateProfile = store
+            .get_json("canonical/electorate-profiles/sampleford.json")
+            .await
+            .unwrap()
+            .expect("profile stored");
+        assert_eq!(
+            profile.profile.name_derivation.as_deref(),
+            Some("Named for a sample")
+        );
+        assert_eq!(profile.profile.location.as_deref(), Some("Inner suburbs"));
+        assert_eq!(profile.profile.area.as_deref(), Some("52 sq km"));
+        assert_eq!(profile.profile.gazetted.as_deref(), Some("31 July 2024"));
+        assert_eq!(profile.profile.first_contested.as_deref(), Some("1949"));
+        assert_eq!(
+            profile.profile.demographic.as_deref(),
+            Some("Inner Metropolitan")
+        );
+        // Enrolment is matched case-insensitively by division name.
+        assert_eq!(profile.enrolment, Some(118432));
+
+        // The enrolment download is kept raw.
+        assert!(store
+            .get_raw("raw/aec/31496/GeneralEnrolmentByDivisionDownload.csv")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_profile_is_left_alone_and_a_stale_one_is_refetched() {
+        let server = TestServer::start(|req| match req.path.contains("/profiles/") {
+            true => Response::html(PROFILE_HTML),
+            false => Response::text("h\nStateAb,DivisionNm,Enrolment\nVIC,Sampleford,10"),
+        });
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("refresh");
+        seed_electorate(&store, "sampleford", "Sampleford", "VIC").await;
+
+        sync_aec_profiles(&store, "31496", &endpoints)
+            .await
+            .expect("first");
+        let after_first = server.hits();
+        sync_aec_profiles(&store, "31496", &endpoints)
+            .await
+            .expect("second");
+        // Only the enrolment download is refetched; the profile page is current.
+        assert_eq!(server.hits(), after_first + 1);
+
+        let mut profile: ElectorateProfile = store
+            .get_json("canonical/electorate-profiles/sampleford.json")
+            .await
+            .unwrap()
+            .expect("profile");
+        profile.stored_at = "2020-01-01T00:00:00.000Z".to_string();
+        store
+            .put_json("canonical/electorate-profiles/sampleford.json", &profile)
+            .await
+            .unwrap();
+        sync_aec_profiles(&store, "31496", &endpoints)
+            .await
+            .expect("third");
+        assert_eq!(
+            server.hits(),
+            after_first + 3,
+            "a stale profile is refetched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sync_with_no_electorates_yet_is_an_error() {
+        let server = TestServer::start(|_| Response::html(PROFILE_HTML));
+        let store = new_store("empty");
+        let err = sync_aec_profiles(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect_err("nothing to profile");
+        assert!(err.to_string().contains("no electorates"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_profile_page_is_survivable_until_ten_of_them() {
+        // One failure among many leaves the rest of the run intact.
+        let server = TestServer::start(|req| {
+            if req.path.contains("/profiles/vic/missing-seat.htm") {
+                return Response::status(404, "no profile");
+            }
+            if req.path.contains("/profiles/") {
+                return Response::html(PROFILE_HTML);
+            }
+            Response::text("h\nStateAb,DivisionNm,Enrolment\nVIC,Sampleford,10")
+        });
+        let store = new_store("onefailure");
+        seed_electorate(&store, "missing-seat", "Missing Seat", "VIC").await;
+        seed_electorate(&store, "sampleford", "Sampleford", "VIC").await;
+
+        sync_aec_profiles(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect("one 404 is not fatal");
+        assert!(store
+            .get_json::<ElectorateProfile>("canonical/electorate-profiles/sampleford.json")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get_json::<ElectorateProfile>("canonical/electorate-profiles/missing-seat.json")
+            .await
+            .unwrap()
+            .is_none());
+
+        // Ten failures means something systemic, so the run stops.
+        let all_gone = TestServer::start(|req| match req.path.contains("/profiles/") {
+            true => Response::status(404, "no profile"),
+            false => Response::text("h\nStateAb,DivisionNm,Enrolment\nVIC,Sampleford,10"),
+        });
+        let store = new_store("tenfailures");
+        for n in 0..12 {
+            seed_electorate(&store, &format!("seat-{n}"), &format!("Seat {n}"), "VIC").await;
+        }
+        let err = sync_aec_profiles(&store, "31496", &Endpoints::at(&all_gone.base))
+            .await
+            .expect_err("ten failures abort");
+        assert!(err.to_string().contains("too many failures"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn a_seat_in_an_unknown_state_asks_for_an_empty_state_path() {
+        let server = TestServer::start(|req| match req.path.contains("/profiles/") {
+            // state_path returns "" for anything unexpected, so the URL has an
+            // empty segment; the AEC answers 404 and the seat is skipped.
+            true => Response::status(404, "no such profile"),
+            false => Response::text("h\nStateAb,DivisionNm,Enrolment\nNSW,Elsewhere,10"),
+        });
+        let store = new_store("unknownstate");
+        seed_electorate(&store, "elsewhere", "Elsewhere", "NSW").await;
+        sync_aec_profiles(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect("skipped, not fatal");
+        assert_eq!(state_path("NSW"), "nsw");
+        assert_eq!(state_path("XX"), "");
+    }
+
+    #[tokio::test]
+    async fn an_enrolment_download_that_fails_still_leaves_the_profiles_usable() {
+        let server = TestServer::start(|req| match req.path.contains("/profiles/") {
+            true => Response::html(PROFILE_HTML),
+            false => Response::status(500, "enrolment unavailable"),
+        });
+        let store = new_store("noenrolment");
+        seed_electorate(&store, "sampleford", "Sampleford", "VIC").await;
+
+        let mut endpoints = Endpoints::at(&server.base);
+        endpoints.backoff_ms = Some(1);
+        sync_aec_profiles(&store, "31496", &endpoints)
+            .await
+            .expect("enrolment is optional");
+
+        let profile: ElectorateProfile = store
+            .get_json("canonical/electorate-profiles/sampleford.json")
+            .await
+            .unwrap()
+            .expect("profile stored anyway");
+        assert!(
+            profile.enrolment.is_none(),
+            "no figure rather than a wrong one"
+        );
+        assert!(
+            profile.profile.area.is_some(),
+            "the scraped facts still land"
         );
     }
 }

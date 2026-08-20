@@ -1,4 +1,5 @@
-use crate::http::{fetch_json, FetchOpts};
+use crate::endpoints::Endpoints;
+use crate::http::fetch_json;
 use crate::store::Store;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -8,7 +9,6 @@ use pollywiki_schema::{
 use serde::Deserialize;
 use serde_json::Value;
 
-const BASE: &str = "https://theyvoteforyou.org.au/api/v1";
 const PAGE_SIZE: usize = 100;
 
 const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
@@ -104,14 +104,15 @@ struct TvfyCursor {
     last_division_date: Option<String>,
 }
 
-struct TvfyClient {
+struct TvfyClient<'a> {
     key: String,
     requests: u32,
     cap: u32,
     ua_blocked: bool,
+    endpoints: &'a Endpoints,
 }
 
-impl TvfyClient {
+impl TvfyClient<'_> {
     async fn get<T: serde::de::DeserializeOwned>(
         &mut self,
         path: &str,
@@ -132,12 +133,15 @@ impl TvfyClient {
                 crate::js_url::encode_uri_component(value).replace("%20", "+")
             ));
         }
-        let url = format!("{BASE}/{path}.json?{qs}");
-        let browser = FetchOpts::min_interval(1200).with_header("user-agent", BROWSER_UA);
+        let url = format!("{}/{path}.json?{qs}", self.endpoints.tvfy);
+        let browser = self
+            .endpoints
+            .opts(1200)
+            .with_header("user-agent", BROWSER_UA);
         if self.ua_blocked {
             return fetch_json(&url, &browser).await;
         }
-        match fetch_json(&url, &FetchOpts::min_interval(1200)).await {
+        match fetch_json(&url, &self.endpoints.opts(1200)).await {
             Ok(value) => Ok(value),
             Err(err) if err.to_string().contains(" 403") => {
                 // Some edges 403 the identifying bot UA (seen from CI runners); fall
@@ -155,17 +159,33 @@ impl TvfyClient {
 /// Divisions and votes from They Vote For You (data licence: ODbL 1.0).
 /// Requires TVFY_API_KEY. Free access is low-volume and non-commercial;
 /// email the OpenAustralia Foundation before any bulk backfill.
-pub async fn sync_tvfy(store: &Store, people: &mut [Person], rebuild: bool) -> Result<()> {
+pub async fn sync_tvfy(
+    store: &Store,
+    people: &mut [Person],
+    rebuild: bool,
+    endpoints: &Endpoints,
+) -> Result<()> {
     if rebuild {
         return rebuild_from_raw(store, people).await;
     }
     let key = std::env::var("TVFY_API_KEY")
         .map_err(|_| anyhow!("TVFY_API_KEY not set; skipping They Vote For You sync"))?;
+    sync_with_key(store, people, &key, endpoints).await
+}
+
+/// The sync itself, against a given key and endpoint.
+async fn sync_with_key(
+    store: &Store,
+    people: &mut [Person],
+    key: &str,
+    endpoints: &Endpoints,
+) -> Result<()> {
     let mut client = TvfyClient {
-        key,
+        key: key.to_string(),
         requests: 0,
         cap: request_cap(),
         ua_blocked: false,
+        endpoints,
     };
 
     let tvfy_people_raw: Value = client.get("people", &[]).await?;
@@ -459,6 +479,7 @@ fn iso_days_before(iso: &str, days: i64) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_http::{Response, TestServer};
     use pollywiki_schema::StateCode;
 
     fn person(slug: &str, name: &str, house: House) -> Person {
@@ -667,7 +688,9 @@ mod tests {
             p
         }];
 
-        sync_tvfy(&store, &mut people, true).await.expect("rebuild");
+        sync_tvfy(&store, &mut people, true, &Endpoints::default())
+            .await
+            .expect("rebuild");
 
         // Both cached payloads become canonical divisions, keyed by flattened id.
         let keys = store.list("canonical/divisions/").await.unwrap();
@@ -698,7 +721,7 @@ mod tests {
             "Alex Paterson",
             House::Representatives,
         )];
-        let err = sync_tvfy(&store, &mut people, true)
+        let err = sync_tvfy(&store, &mut people, true, &Endpoints::default())
             .await
             .expect_err("a rebuild with no raw payload must fail");
         assert!(
@@ -716,5 +739,327 @@ mod tests {
         assert_eq!(iso_days_before("2026-08-12", 30).unwrap(), "2026-07-13");
         assert_eq!(iso_days_before("2026-01-01", 1).unwrap(), "2025-12-31");
         assert!(iso_days_before("not-a-date", 1).is_err());
+    }
+
+    fn division_summary(
+        id: i64,
+        house: &str,
+        date: &str,
+        number: i64,
+        ayes: i64,
+        noes: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "house": house, "date": date, "number": number,
+            "name": format!("Division {number}"), "aye_votes": ayes, "no_votes": noes
+        })
+    }
+
+    fn division_detail(id: i64, house: &str, date: &str, number: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "house": house, "date": date, "number": number,
+            "name": format!("Division {number}"), "aye_votes": 2, "no_votes": 1,
+            "summary": "A written summary.",
+            "votes": [
+                { "member": { "person": { "id": 10001 }, "first_name": "Alex",
+                              "last_name": "Paterson", "party": "Example Party" },
+                  "vote": "aye" }
+            ],
+            "bills": [{ "id": 5, "title": "Appropriation Bill 2026", "official_id": "r7354" }]
+        })
+    }
+
+    /// The people index, the division index and per-division details.
+    fn tvfy_server() -> TestServer {
+        TestServer::start(|req| {
+            if req.path.starts_with("/tvfy/people.json") {
+                return Response::json(
+                    serde_json::json!([{
+                        "id": 10001,
+                        "latest_member": {
+                            "name": { "first": "Alex", "last": "Paterson" },
+                            "electorate": "Sampleford",
+                            "house": "representatives",
+                            "party": "Example Party"
+                        }
+                    }])
+                    .to_string(),
+                );
+            }
+            if req.path.starts_with("/tvfy/divisions/") {
+                let id: i64 = req
+                    .path
+                    .trim_start_matches("/tvfy/divisions/")
+                    .split(".json")
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .expect("division id in the path");
+                return Response::json(
+                    division_detail(id, "representatives", "2026-08-12", id).to_string(),
+                );
+            }
+            if req.path.starts_with("/tvfy/divisions.json") {
+                // Only the House has anything; the Senate index is empty.
+                if req.query("house").as_deref() == Some("senate") {
+                    return Response::json("[]");
+                }
+                return Response::json(
+                    serde_json::json!([division_summary(
+                        1,
+                        "representatives",
+                        "2026-08-12",
+                        1,
+                        2,
+                        1
+                    )])
+                    .to_string(),
+                );
+            }
+            Response::status(404, "unexpected path")
+        })
+    }
+
+    #[tokio::test]
+    async fn a_sync_stores_divisions_votes_and_the_cursor() {
+        let server = tvfy_server();
+        let store = Store::Local(crate::store::LocalStore::new(scratch("sync")));
+        let mut people = vec![person(
+            "alex-paterson",
+            "Alex Paterson",
+            House::Representatives,
+        )];
+
+        sync_with_key(
+            &store,
+            &mut people,
+            "test-key",
+            &Endpoints::at(&server.base),
+        )
+        .await
+        .expect("sync");
+
+        let division: Division = store
+            .get_json("canonical/divisions/representatives-2026-08-12-1.json")
+            .await
+            .unwrap()
+            .expect("division stored");
+        assert_eq!(division.id, "representatives/2026-08-12/1");
+        assert_eq!(division.ayes, 2);
+        assert_eq!(division.noes, 1);
+        assert_eq!(division.bill_ids, vec!["r7354"]);
+        assert_eq!(division.votes.len(), 1);
+        assert_eq!(division.votes[0].person_slug, "alex-paterson");
+
+        // The crosswalk id is written back onto the person.
+        assert_eq!(people[0].ids.tvfy, Some(10001));
+
+        // Raw responses are kept, and the cursor advances to the newest date.
+        assert!(store
+            .get_json::<Value>("raw/tvfy/people.json")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get_json::<Value>("raw/tvfy/divisions/1.json")
+            .await
+            .unwrap()
+            .is_some());
+        let cursor: TvfyCursor = store
+            .get_json("state/tvfy-cursor.json")
+            .await
+            .unwrap()
+            .expect("cursor stored");
+        assert_eq!(cursor.last_division_date.as_deref(), Some("2026-08-12"));
+
+        // The api key rides on every request.
+        assert!(
+            server
+                .requests()
+                .iter()
+                .all(|r| r.query("key").as_deref() == Some("test-key")),
+            "every call is keyed"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_division_is_not_refetched_but_a_changed_tally_is() {
+        let server = tvfy_server();
+        let endpoints = Endpoints::at(&server.base);
+        let store = Store::Local(crate::store::LocalStore::new(scratch("unchanged")));
+        let mut people = vec![person(
+            "alex-paterson",
+            "Alex Paterson",
+            House::Representatives,
+        )];
+
+        sync_with_key(&store, &mut people, "k", &endpoints)
+            .await
+            .expect("first");
+        let after_first = server.hits();
+        sync_with_key(&store, &mut people, "k", &endpoints)
+            .await
+            .expect("second");
+        // People index plus two chamber index calls; no detail refetch.
+        assert_eq!(
+            server.hits() - after_first,
+            3,
+            "matching tallies are skipped"
+        );
+
+        // A tally that no longer matches means the division is refetched.
+        let mut stored: Division = store
+            .get_json("canonical/divisions/representatives-2026-08-12-1.json")
+            .await
+            .unwrap()
+            .expect("division");
+        stored.ayes = 99;
+        store
+            .put_json(
+                "canonical/divisions/representatives-2026-08-12-1.json",
+                &stored,
+            )
+            .await
+            .unwrap();
+        let before = server.hits();
+        sync_with_key(&store, &mut people, "k", &endpoints)
+            .await
+            .expect("third");
+        assert_eq!(server.hits() - before, 4, "a changed tally is refetched");
+    }
+
+    #[tokio::test]
+    async fn the_index_is_walked_backwards_by_end_date_because_page_is_ignored() {
+        // The real index caps at 100 rows, newest first, and ignores `page`, so
+        // the only way back through history is the end_date window.
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/tvfy/people.json") {
+                return Response::json("[]");
+            }
+            if req.path.starts_with("/tvfy/divisions/") {
+                // The detail has to mirror its summary, or the canonical key it
+                // is stored under would not match the one just checked.
+                let id: i64 = req
+                    .path
+                    .trim_start_matches("/tvfy/divisions/")
+                    .split(".json")
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .expect("division id in the path");
+                let (date, number) = match id > PAGE_SIZE as i64 {
+                    true => ("2026-07-01", 1),
+                    false => ("2026-08-12", id),
+                };
+                return Response::json(
+                    division_detail(id, "representatives", date, number).to_string(),
+                );
+            }
+            if req.path.starts_with("/tvfy/divisions.json") {
+                if req.query("house").as_deref() == Some("senate") {
+                    return Response::json("[]");
+                }
+                // A full page on the first call, then a short one, then nothing
+                // new: three windows in all.
+                match req.query("end_date").as_deref() {
+                    None => {
+                        let rows: Vec<serde_json::Value> = (1..=PAGE_SIZE as i64)
+                            .map(|n| division_summary(n, "representatives", "2026-08-12", n, 1, 0))
+                            .collect();
+                        Response::json(serde_json::to_string(&rows).unwrap())
+                    }
+                    Some("2026-08-12") => {
+                        let rows = vec![division_summary(
+                            PAGE_SIZE as i64 + 1,
+                            "representatives",
+                            "2026-07-01",
+                            1,
+                            1,
+                            0,
+                        )];
+                        Response::json(serde_json::to_string(&rows).unwrap())
+                    }
+                    _ => Response::json("[]"),
+                }
+            } else {
+                Response::status(404, "unexpected path")
+            }
+        });
+        let store = Store::Local(crate::store::LocalStore::new(scratch("windows")));
+        let mut people: Vec<Person> = Vec::new();
+
+        sync_with_key(&store, &mut people, "k", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let windows: Vec<Option<String>> = server
+            .requests()
+            .iter()
+            .filter(|r| r.path.starts_with("/tvfy/divisions.json"))
+            .filter(|r| r.query("house").as_deref() == Some("representatives"))
+            .map(|r| r.query("end_date"))
+            .collect();
+        assert_eq!(
+            windows,
+            vec![None, Some("2026-08-12".to_string())],
+            "the window steps back to the oldest date in the previous batch"
+        );
+        // Every division across both windows is stored.
+        let stored = store.list("canonical/divisions/").await.unwrap();
+        assert_eq!(stored.len(), PAGE_SIZE + 1);
+    }
+
+    #[tokio::test]
+    async fn an_identifying_user_agent_that_is_refused_falls_back_to_a_browser_one() {
+        // Some edges 403 the bot UA. The run must recover rather than fail.
+        let server = TestServer::start(|req| {
+            let browser = req
+                .header("user-agent")
+                .is_some_and(|ua| ua.starts_with("Mozilla/"));
+            if !browser {
+                return Response::status(403, "bot refused");
+            }
+            if req.path.starts_with("/tvfy/people.json") {
+                return Response::json("[]");
+            }
+            Response::json("[]")
+        });
+        let store = Store::Local(crate::store::LocalStore::new(scratch("uafallback")));
+        let mut people: Vec<Person> = Vec::new();
+
+        sync_with_key(&store, &mut people, "k", &Endpoints::at(&server.base))
+            .await
+            .expect("the browser UA carries the run");
+
+        let uas: Vec<String> = server
+            .requests()
+            .iter()
+            .filter_map(|r| r.header("user-agent").map(str::to_string))
+            .collect();
+        assert!(
+            uas[0].starts_with("pollywiki/"),
+            "the honest UA is tried first"
+        );
+        assert!(uas[1].starts_with("Mozilla/"), "then the browser one");
+        assert!(
+            uas[2..].iter().all(|ua| ua.starts_with("Mozilla/")),
+            "and it sticks for the rest of the run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_api_key_is_reported_rather_than_guessed() {
+        // The env is process-wide, so this only asserts the message shape when
+        // the variable happens to be absent, which it is in a clean test run.
+        if std::env::var("TVFY_API_KEY").is_ok() {
+            return;
+        }
+        let store = Store::Local(crate::store::LocalStore::new(scratch("nokey")));
+        let mut people: Vec<Person> = Vec::new();
+        let err = sync_tvfy(&store, &mut people, false, &Endpoints::default())
+            .await
+            .expect_err("no key, no sync");
+        assert!(
+            err.to_string().contains("TVFY_API_KEY not set"),
+            "got {err}"
+        );
     }
 }

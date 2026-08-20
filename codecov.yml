@@ -1,7 +1,7 @@
-# Coverage is reported, never gating. What is left uncovered is almost entirely
-# the ingest crate's network and S3 code paths, which need an injectable HTTP
-# layer before they can be tested; the rendering and normalisation layers are
-# covered by unit tests plus a whole-site build over the sample bundles.
+# Coverage is reported, never gating. Every source sync now runs end to end in
+# tests against a local HTTP server (see crates/ingest/src/test_http.rs), which
+# each source reaches because its endpoint is a value rather than a constant.
+# What is left uncovered is main()'s argument dispatch and the live S3 client.
 coverage:
   status:
     project:

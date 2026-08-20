@@ -1,4 +1,5 @@
-use crate::http::{fetch_json, FetchOpts};
+use crate::endpoints::Endpoints;
+use crate::http::fetch_json;
 use crate::js_url::encode_uri_component;
 use crate::store::Store;
 use anyhow::Result;
@@ -7,7 +8,6 @@ use pollywiki_schema::{slugify, Background, Person, PositionKind, PositionRecord
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const BASE: &str = "https://handbookapi.aph.gov.au/api";
 /// Handbook data moves slowly; per-person detail refreshes weekly.
 const REFRESH_DAYS: f64 = 7.0;
 /// The API uses this sentinel for "still serving".
@@ -89,14 +89,19 @@ impl<T> Default for ODataPage<T> {
 /// Career, biographical and position data from the official Parliamentary
 /// Handbook OData API. One bulk call lists current parliamentarians; dated
 /// ministry and shadow-ministry records are fetched per person and cached.
-pub async fn sync_handbook(store: &Store, people: &mut [Person]) -> Result<()> {
+pub async fn sync_handbook(
+    store: &Store,
+    people: &mut [Person],
+    endpoints: &Endpoints,
+) -> Result<()> {
     // The API caps $top at 100, so page through the current members.
     let mut individuals: Vec<HandbookIndividual> = Vec::new();
     let mut raw_values: Vec<Value> = Vec::new();
     let mut skip = 0;
     loop {
         let page: Value = fetch_odata(
-            &format!("{BASE}/individuals"),
+            endpoints,
+            &format!("{}/individuals", endpoints.handbook),
             "InCurrentParliament eq 'True'",
             &format!("&$top=100&$skip={skip}"),
         )
@@ -140,12 +145,14 @@ pub async fn sync_handbook(store: &Store, people: &mut [Person]) -> Result<()> {
         }
 
         let ministries = fetch_roles(
-            &format!("{BASE}/ministryrecords"),
+            endpoints,
+            &format!("{}/ministryrecords", endpoints.handbook),
             &format!("PHID eq '{phid}'"),
         )
         .await?;
         let shadows = fetch_roles(
-            &format!("{BASE}/shadowministryrecords"),
+            endpoints,
+            &format!("{}/shadowministryrecords", endpoints.handbook),
             &format!("PHID eq '{phid}'"),
         )
         .await?;
@@ -247,6 +254,7 @@ pub async fn sync_handbook(store: &Store, people: &mut [Person]) -> Result<()> {
 /// rejects them with 400 from others (observed from GitHub-hosted runners),
 /// so fall back to the literal-$ form when the encoded form is refused.
 async fn fetch_odata<T: serde::de::DeserializeOwned>(
+    endpoints: &Endpoints,
     endpoint: &str,
     filter: &str,
     extra: &str,
@@ -256,22 +264,26 @@ async fn fetch_odata<T: serde::de::DeserializeOwned>(
         encode_uri_component(filter),
         extra.replace('$', "%24")
     );
-    match fetch_json(&encoded, &FetchOpts::min_interval(400)).await {
+    match fetch_json(&encoded, &endpoints.opts(400)).await {
         Ok(value) => Ok(value),
         Err(err) if err.to_string().contains(" 400 ") => {
             let literal = format!(
                 "{endpoint}?$filter={}{extra}",
                 filter.replace(' ', "%20").replace('\'', "%27")
             );
-            fetch_json(&literal, &FetchOpts::min_interval(400)).await
+            fetch_json(&literal, &endpoints.opts(400)).await
         }
         Err(err) => Err(err),
     }
 }
 
-async fn fetch_roles(endpoint: &str, filter: &str) -> Result<Vec<RoleRecord>> {
+async fn fetch_roles(
+    endpoints: &Endpoints,
+    endpoint: &str,
+    filter: &str,
+) -> Result<Vec<RoleRecord>> {
     // The API caps $top at 100; no individual approaches that many records.
-    let data: ODataPage<RoleRecord> = fetch_odata(endpoint, filter, "&$top=100").await?;
+    let data: ODataPage<RoleRecord> = fetch_odata(endpoints, endpoint, filter, "&$top=100").await?;
     Ok(data.value)
 }
 
@@ -373,7 +385,21 @@ pub fn match_people<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::LocalStore;
+    use crate::test_http::{Response, TestServer};
     use pollywiki_schema::{House, StateCode};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn new_store(name: &str) -> Store {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/handbook-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Store::Local(LocalStore::new(dir))
+    }
 
     fn person(slug: &str, name: &str) -> Person {
         serde_json::from_str(&format!(
@@ -492,5 +518,239 @@ mod tests {
         )];
         // Two seat matches is not a match, so nothing is asserted about either.
         assert!(match_people(&individuals, &people).is_empty());
+    }
+
+    /// One current member with every biographical field populated, plus a
+    /// ministry and a shadow record.
+    fn handbook_server() -> TestServer {
+        TestServer::start(|req| {
+            if req.path.contains("/individuals") {
+                // $skip past the first page must come back empty or the loop
+                // would never end.
+                let skipped = req
+                    .path
+                    .split("skip=")
+                    .nth(1)
+                    .and_then(|s| s.split('&').next())
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0);
+                if skipped > 0 {
+                    return Response::json(r#"{"value":[]}"#);
+                }
+                return Response::json(
+                    serde_json::json!({ "value": [{
+                        "PHID": "ABC123",
+                        "GivenName": "Alexandra",
+                        "PreferredName": "Alex",
+                        "FamilyName": "Paterson",
+                        "DateOfBirth": "1975-04-02",
+                        "PlaceOfBirth": "Ballarat",
+                        "StateOfBirth": "Vic",
+                        "CountryOfBirth": "Australia",
+                        "Electorate": "Sampleford",
+                        "StateAbbrev": "VIC",
+                        "Occupations": ["Teacher"],
+                        "Qualifications": ["BA, University of Melbourne"],
+                        "Honours": ["AM"],
+                        "ParliamentaryPositions": ["Member, Standing Committee on Economics"],
+                        "RepresentedParliaments": [47, 48],
+                        "ServiceHistory_Start": "2022-05-21"
+                    }] })
+                    .to_string(),
+                );
+            }
+            if req.path.contains("/ministryrecords") {
+                return Response::json(
+                    serde_json::json!({ "value": [{
+                        "Role": "Minister",
+                        "Prep": "for",
+                        "Entity": "Education",
+                        "Ministry": "Second Albanese Ministry",
+                        "RDateStart": "2025-05-13",
+                        "RDateEnd": "1900-01-01"
+                    }] })
+                    .to_string(),
+                );
+            }
+            if req.path.contains("/shadowministryrecords") {
+                return Response::json(
+                    serde_json::json!({ "value": [{
+                        "Role": "Shadow Minister",
+                        "Prep": "for",
+                        "Entity": "Health",
+                        "RDateStart": "2019-06-01",
+                        "RDateEnd": "2022-05-21"
+                    }] })
+                    .to_string(),
+                );
+            }
+            Response::status(404, "unexpected path")
+        })
+    }
+
+    #[tokio::test]
+    async fn a_sync_writes_the_profile_and_stamps_the_handbook_id_on_the_person() {
+        let server = handbook_server();
+        let store = new_store("profile");
+        let mut people = vec![person("alex-paterson", "Alex Paterson")];
+
+        sync_handbook(&store, &mut people, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let profile: HandbookProfile = store
+            .get_json("canonical/handbook/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("profile stored");
+        assert_eq!(profile.phid, "ABC123");
+        assert_eq!(profile.background.born.as_deref(), Some("1975-04-02"));
+        // Birthplace joins the town to the state, preferring state over country.
+        assert_eq!(
+            profile.background.birthplace.as_deref(),
+            Some("Ballarat, Vic")
+        );
+        assert_eq!(profile.background.occupations, vec!["Teacher"]);
+        assert_eq!(profile.background.honours, vec!["AM"]);
+        assert_eq!(profile.background.parliaments, vec![47, 48]);
+        assert_eq!(
+            profile.background.service_start.as_deref(),
+            Some("2022-05-21")
+        );
+
+        // Ministry, shadow and parliamentary positions all land, newest first.
+        assert_eq!(profile.positions.len(), 3);
+        assert_eq!(profile.positions[0].role, "Minister for Education");
+        assert_eq!(profile.positions[0].kind, PositionKind::Ministry);
+        assert_eq!(profile.positions[0].from.as_deref(), Some("2025-05-13"));
+        assert!(
+            profile.positions[0].to.is_none(),
+            "the open-end sentinel means still serving"
+        );
+        assert_eq!(profile.positions[1].role, "Shadow Minister for Health");
+        assert_eq!(profile.positions[1].to.as_deref(), Some("2022-05-21"));
+        assert_eq!(profile.positions[2].kind, PositionKind::Position);
+
+        // The id is written back onto the person and persisted.
+        assert_eq!(people[0].ids.aph.as_deref(), Some("ABC123"));
+        let stored: Person = store
+            .get_json("canonical/people/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("person persisted");
+        assert_eq!(stored.ids.aph.as_deref(), Some("ABC123"));
+
+        // The raw listing is kept for replay.
+        assert!(store
+            .get_json::<Value>("raw/handbook/individuals.json")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_profile_is_not_refetched_but_a_stale_one_is() {
+        let server = handbook_server();
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("refresh");
+        let mut people = vec![person("alex-paterson", "Alex Paterson")];
+
+        sync_handbook(&store, &mut people, &endpoints)
+            .await
+            .expect("first");
+        let after_first = server.hits();
+        sync_handbook(&store, &mut people, &endpoints)
+            .await
+            .expect("second");
+        assert_eq!(
+            server.hits(),
+            after_first + 1,
+            "only the listing is refetched while the profile is fresh"
+        );
+
+        // Age the stored profile past the refresh window and it is fetched again.
+        let mut profile: HandbookProfile = store
+            .get_json("canonical/handbook/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("profile");
+        profile.stored_at = "2020-01-01T00:00:00.000Z".to_string();
+        store
+            .put_json("canonical/handbook/alex-paterson.json", &profile)
+            .await
+            .unwrap();
+        sync_handbook(&store, &mut people, &endpoints)
+            .await
+            .expect("third");
+        assert!(
+            server.hits() > after_first + 2,
+            "a stale profile is refetched"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_encoded_odata_form_falls_back_to_literal_dollars_on_a_400() {
+        // Some networks get a bare 400 for the percent-encoded $filter form.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let server = TestServer::start(move |req| {
+            if req.path.contains("%24filter") {
+                counter.fetch_add(1, Ordering::SeqCst);
+                return Response::status(400, "encoded form refused");
+            }
+            assert!(req.path.contains("$filter"), "expected the literal form");
+            Response::json(r#"{"value":[]}"#)
+        });
+
+        let store = new_store("fallback");
+        let mut people: Vec<Person> = Vec::new();
+        sync_handbook(&store, &mut people, &Endpoints::at(&server.base))
+            .await
+            .expect("the fallback carries the sync");
+        assert!(
+            calls.load(Ordering::SeqCst) >= 1,
+            "the encoded form was tried first"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_individual_with_no_phid_is_skipped_rather_than_fetched() {
+        let server = TestServer::start(|req| {
+            if req.path.contains("/individuals") && !req.path.contains("skip=100") {
+                return Response::json(
+                    serde_json::json!({ "value": [
+                        { "PHID": "", "GivenName": "Alex", "FamilyName": "Paterson" },
+                        { "GivenName": "Quiet", "FamilyName": "Member" }
+                    ] })
+                    .to_string(),
+                );
+            }
+            if req.path.contains("/individuals") {
+                return Response::json(r#"{"value":[]}"#);
+            }
+            panic!("no role records should be fetched: {}", req.path);
+        });
+        let store = new_store("nophid");
+        let mut people = vec![person("alex-paterson", "Alex Paterson")];
+        sync_handbook(&store, &mut people, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        assert!(store
+            .get_json::<HandbookProfile>("canonical/handbook/alex-paterson.json")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(people[0].ids.aph.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_source_that_is_down_surfaces_as_an_error() {
+        let server = TestServer::start(|_| Response::status(403, "blocked"));
+        let store = new_store("down");
+        let mut people = vec![person("alex-paterson", "Alex Paterson")];
+        let err = sync_handbook(&store, &mut people, &Endpoints::at(&server.base))
+            .await
+            .expect_err("a blocked API is a failed sync");
+        assert!(err.to_string().contains("403"), "got {err}");
     }
 }

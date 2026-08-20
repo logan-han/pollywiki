@@ -1,4 +1,5 @@
-use crate::http::{fetch_json, FetchOpts};
+use crate::endpoints::Endpoints;
+use crate::http::fetch_json;
 use crate::store::Store;
 use anyhow::{anyhow, Result};
 use pollywiki_schema::{Bill, BillLinks, BillRaiser, House, TimelineStep};
@@ -78,12 +79,13 @@ pub struct ParlWorkProgressState {
     pub update_date: Option<String>,
 }
 
-pub async fn sync_aph_bills(store: &Store, parliament: i64) -> Result<()> {
-    let opts = FetchOpts::min_interval(2000).with_header("user-agent", BROWSER_UA);
+pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoints) -> Result<()> {
+    let opts = endpoints.opts(2000).with_header("user-agent", BROWSER_UA);
     let mut items: Vec<ParlWorkBill> = Vec::new();
     for page in 1..=MAX_PAGES {
         let url = format!(
-            "https://parlwork.aph.gov.au/api/bills?Take={PAGE_SIZE}&Page={page}&SortOrder=2&Keyword=null&IsTitleSearch=true&DateRangeFrom=null&DateRangeTo=null&StatusFilters=0&BillTypes=0"
+            "{}/bills?Take={PAGE_SIZE}&Page={page}&SortOrder=2&Keyword=null&IsTitleSearch=true&DateRangeFrom=null&DateRangeTo=null&StatusFilters=0&BillTypes=0",
+            endpoints.parlwork
         );
         let batch_raw: Value = fetch_json(&url, &opts).await?;
         if !batch_raw.is_array() {
@@ -103,7 +105,7 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64) -> Result<()> {
         return Err(anyhow!("parlwork: zero bills parsed, refusing to write"));
     }
 
-    let detail_opts = FetchOpts::min_interval(1500).with_header("user-agent", BROWSER_UA);
+    let detail_opts = endpoints.opts(1500).with_header("user-agent", BROWSER_UA);
     let mut written = 0;
     let mut detailed = 0;
     for item in &items {
@@ -119,12 +121,14 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64) -> Result<()> {
             let existing_value: Value = serde_json::from_str(existing_raw)?;
             let existing: Bill = serde_json::from_str(existing_raw)?;
             let timeline_present = !existing.timeline.is_empty();
+            // Whatever happens below, fields this source does not own survive.
+            bill = merge_existing(&existing, bill);
             if existing.list_updated.as_deref() == Some(list_updated.as_str()) && timeline_present {
                 // Unchanged upstream. Self-heal newly-extracted fields from the stored
                 // raw detail when older canonical records predate them.
                 let fields_missing = existing_value.get("sponsors").is_none()
                     || existing_value.get("movers").is_none();
-                if fields_missing {
+                if fields_missing || carries_html_entity(&existing) {
                     if let Some(raw) = store
                         .get_json::<ParlWorkDetail>(&format!("raw/aph/bill-{id}.json"))
                         .await?
@@ -139,11 +143,7 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64) -> Result<()> {
         }
 
         // Detail fetch: dated per-chamber progress plus the ParlInfo record link.
-        match fetch_json::<Value>(
-            &format!("https://parlwork.aph.gov.au/api/bills/{id}"),
-            &detail_opts,
-        )
-        .await
+        match fetch_json::<Value>(&format!("{}/bills/{id}", endpoints.parlwork), &detail_opts).await
         {
             Ok(detail_raw) => {
                 store
@@ -170,6 +170,23 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64) -> Result<()> {
 
 /// `{ ...existing, ...toBill(item) }`: fresh list fields win; only the fields
 /// the list response never carries survive from the stored record.
+/// True when stored prose still carries an HTML entity, so the record predates
+/// the decoding fix and is worth rebuilding from the cached raw response.
+fn carries_html_entity(bill: &Bill) -> bool {
+    static ENTITY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"&(#\d+|#x[0-9a-fA-F]+|[a-zA-Z]+);").unwrap());
+    let mut prose = vec![bill.title.as_str(), bill.status.as_str()];
+    prose.extend(bill.timeline.iter().map(|s| s.event.as_str()));
+    prose.extend(
+        bill.sponsors
+            .iter()
+            .chain(bill.movers.iter())
+            .map(|r| r.name.as_str()),
+    );
+    prose.extend(bill.summary.as_deref());
+    prose.iter().any(|text| ENTITY.is_match(text))
+}
+
 fn merge_existing(existing: &Bill, fresh: Bill) -> Bill {
     Bill {
         bill_type: existing.bill_type.clone(),
@@ -183,7 +200,7 @@ fn merge_existing(existing: &Bill, fresh: Bill) -> Bill {
 fn to_bill(item: &ParlWorkBill, parliament: i64) -> Bill {
     Bill {
         id: item.id.clone().unwrap_or_default(),
-        title: item.title.clone().unwrap_or_default(),
+        title: item.title.as_deref().map(strip_html).unwrap_or_default(),
         parliament,
         chamber: if item
             .formatted_originating_chamber
@@ -206,7 +223,9 @@ fn to_bill(item: &ParlWorkBill, parliament: i64) -> Bill {
         ai_summary: None,
         status: item
             .status
-            .clone()
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(strip_html)
             .unwrap_or_else(|| "Before parliament".to_string()),
         timeline: Vec::new(),
         links: BillLinks {
@@ -239,8 +258,8 @@ fn with_detail(bill: Bill, detail: &ParlWorkDetail) -> Bill {
             timeline.push(TimelineStep {
                 date,
                 event: match group.formatted_chamber.as_deref().filter(|c| !c.is_empty()) {
-                    Some(chamber) => format!("{description} ({chamber})"),
-                    None => description.to_string(),
+                    Some(chamber) => strip_html(&format!("{description} ({chamber})")),
+                    None => strip_html(description),
                 },
             });
         }
@@ -280,8 +299,12 @@ const HONORIFICS: [&str; 10] = [
 /// "ALBANESE, the Hon. Anthony Norman" → { name: "Anthony Albanese", phid }.
 pub fn to_raiser(p: &ParlWorkPerson) -> BillRaiser {
     static FIRST_LETTERS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(^|[\s\-'])([a-z])").unwrap());
-    let display = p.display_name.as_deref().unwrap_or("");
+        LazyLock::new(|| Regex::new(r"(^|[\s\-'\u{2019}])([a-z])").unwrap());
+    let display = &p
+        .display_name
+        .as_deref()
+        .map(strip_html)
+        .unwrap_or_default();
     // Only the first two comma-separated segments matter: post-nominals like
     // ", MP" in "JOYCE, Barnaby, MP" are discarded.
     let mut parts = display.split(',');
@@ -386,6 +409,44 @@ pub fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::{LocalStore, Store};
+    use crate::test_http::{Response, TestServer};
+    use std::path::PathBuf;
+
+    fn new_store(name: &str) -> Store {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/aph-bill-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Store::Local(LocalStore::new(dir))
+    }
+
+    fn list_item(id: &str, title: &str, updated: &str) -> serde_json::Value {
+        serde_json::json!({
+            "Id": id,
+            "Title": title,
+            "Status": "Before the House",
+            "Summary": "<p>Amends the Act</p>",
+            "FormattedOriginatingChamber": "House of Representatives",
+            "LastUpdatedDateTime": updated
+        })
+    }
+
+    fn detail_body(description: &str) -> serde_json::Value {
+        serde_json::json!({ "Bill": {
+            "ParlInfoUrl": "https://parlinfo.aph.gov.au/r7354",
+            "Sponsors": [{ "DisplayName": "PATERSON, the Hon. Alexandra", "Id": "PHID1" }],
+            "Movers": [],
+            "GroupedProgressStates": [{
+                "FormattedChamber": "House of Reps",
+                "ProgressStates": [{
+                    "UpdateDate": "/Date(1764075600000+1100)/",
+                    "Description": description
+                }]
+            }]
+        } })
+    }
 
     fn list_bill(json: &str) -> ParlWorkBill {
         serde_json::from_str(json).expect("list bill fixture")
@@ -626,5 +687,372 @@ mod tests {
         }
         eprintln!("checked {checked} bills against the reference store");
         assert!(checked > 200);
+    }
+
+    #[test]
+    fn parlwork_prose_is_decoded_wherever_it_lands() {
+        // The live bug: "Australia&rsquo;s Foreign Relations ..." rendered as
+        // typed, because only the summary was ever decoded.
+        let item: ParlWorkBill = serde_json::from_str(
+            r#"{"Id":"r7354",
+                "Title":"Australia&rsquo;s Foreign Relations (State and Territory Arrangements) Amendment Bill 2026",
+                "Status":"Before the House &amp; awaiting debate",
+                "Summary":"<p>Amends the Act &#8212; see the note</p>",
+                "FormattedOriginatingChamber":"House of Representatives"}"#,
+        )
+        .expect("list item fixture");
+        let bill = to_bill(&item, 48);
+        assert_eq!(
+            bill.title,
+            "Australia\u{2019}s Foreign Relations (State and Territory Arrangements) Amendment Bill 2026"
+        );
+        assert_eq!(bill.status, "Before the House & awaiting debate");
+        assert_eq!(
+            bill.summary.as_deref(),
+            Some("Amends the Act \u{2014} see the note")
+        );
+
+        // Timeline events are prose from the same API.
+        let detail: ParlWorkDetail = serde_json::from_str(
+            r#"{"Bill":{"GroupedProgressStates":[{"FormattedChamber":"House of Reps",
+                "ProgressStates":[{"UpdateDate":"/Date(1764075600000+1100)/",
+                "Description":"Second reading &ndash; agreed to"}]}]}}"#,
+        )
+        .expect("detail fixture");
+        let with_timeline = with_detail(bill, &detail);
+        assert_eq!(
+            with_timeline.timeline[0].event,
+            "Second reading \u{2013} agreed to (House of Reps)"
+        );
+    }
+
+    #[test]
+    fn an_encoded_apostrophe_in_a_name_still_capitalises_the_next_letter() {
+        let person: ParlWorkPerson = serde_json::from_str(
+            r#"{"DisplayName":"O&rsquo;NEIL, the Hon. Clare Ellen","Id":"PHID1"}"#,
+        )
+        .expect("person fixture");
+        let raiser = to_raiser(&person);
+        // Decoding turns the entity into a curly apostrophe, which then has to
+        // count as a word boundary or the surname reads "O’neil".
+        assert_eq!(raiser.name, "Clare O\u{2019}Neil");
+        assert_eq!(raiser.phid.as_deref(), Some("PHID1"));
+
+        // The straight apostrophe was already handled and must stay handled.
+        let straight: ParlWorkPerson =
+            serde_json::from_str(r#"{"DisplayName":"O'BRIEN, Mr Ted"}"#).expect("fixture");
+        assert_eq!(to_raiser(&straight).name, "Ted O'Brien");
+    }
+
+    #[test]
+    fn stored_records_carrying_an_entity_are_flagged_for_rebuild() {
+        let clean: Bill = serde_json::from_str(
+            r#"{"id":"r1","title":"A Clean Bill 2026","parliament":48,
+                "chamber":"representatives","status":"Act"}"#,
+        )
+        .expect("fixture");
+        assert!(!carries_html_entity(&clean));
+
+        // Every prose field is checked, not just the title.
+        for field in ["title", "status"] {
+            let mut bill = clean.clone();
+            match field {
+                "title" => bill.title = "Australia&rsquo;s Bill".to_string(),
+                _ => bill.status = "Before the House &amp; waiting".to_string(),
+            }
+            assert!(carries_html_entity(&bill), "{field} is not checked");
+        }
+        let mut with_step = clean.clone();
+        with_step.timeline = vec![TimelineStep {
+            date: "2026-08-19".to_string(),
+            event: "Second reading &ndash; agreed".to_string(),
+        }];
+        assert!(carries_html_entity(&with_step));
+
+        let mut with_raiser = clean.clone();
+        with_raiser.movers = vec![BillRaiser {
+            name: "Clare O&rsquo;Neil".to_string(),
+            phid: None,
+            slug: None,
+        }];
+        assert!(carries_html_entity(&with_raiser));
+
+        let mut numeric = clean.clone();
+        numeric.summary = Some("Amends the Act &#8212; see note".to_string());
+        assert!(carries_html_entity(&numeric), "numeric entities count too");
+
+        // A bare ampersand in ordinary prose is not an entity.
+        let mut plain = clean;
+        plain.title = "Fish & Chips Bill 2026".to_string();
+        assert!(!carries_html_entity(&plain));
+    }
+
+    #[tokio::test]
+    async fn a_sync_lists_bills_fetches_detail_and_keeps_both_raw() {
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                // One short page ends the pagination.
+                if req.query("Page").as_deref() == Some("1") {
+                    return Response::json(
+                        serde_json::json!([list_item(
+                            "r7354",
+                            "Australia&rsquo;s Bill 2026",
+                            "2026-08-19"
+                        )])
+                        .to_string(),
+                    );
+                }
+                return Response::json("[]");
+            }
+            if req.path.starts_with("/parlwork/bills/") {
+                return Response::json(detail_body("Second reading &ndash; agreed to").to_string());
+            }
+            Response::status(404, "unexpected path")
+        });
+        let store = new_store("sync");
+
+        sync_aph_bills(&store, 48, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let bill: Bill = store
+            .get_json("canonical/bills/r7354.json")
+            .await
+            .unwrap()
+            .expect("bill stored");
+        assert_eq!(
+            bill.title, "Australia\u{2019}s Bill 2026",
+            "entities decoded"
+        );
+        assert_eq!(bill.parliament, 48);
+        assert_eq!(bill.chamber, House::Representatives);
+        assert_eq!(bill.timeline.len(), 1);
+        assert_eq!(
+            bill.timeline[0].event,
+            "Second reading \u{2013} agreed to (House of Reps)"
+        );
+        assert_eq!(bill.sponsors[0].name, "Alexandra Paterson");
+        assert_eq!(bill.sponsors[0].phid.as_deref(), Some("PHID1"));
+        assert_eq!(
+            bill.links.parlinfo.as_deref(),
+            Some("https://parlinfo.aph.gov.au/r7354")
+        );
+        assert_eq!(bill.list_updated.as_deref(), Some("2026-08-19"));
+
+        assert!(store
+            .get_json::<Value>("raw/aph/bills-page-1.json")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get_json::<Value>("raw/aph/bill-r7354.json")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_bill_is_not_refetched_and_a_moved_one_is() {
+        let stage = std::sync::Arc::new(std::sync::Mutex::new("2026-08-19".to_string()));
+        let marker = std::sync::Arc::clone(&stage);
+        let server = TestServer::start(move |req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                let updated = marker.lock().unwrap().clone();
+                return Response::json(
+                    serde_json::json!([list_item("r7354", "A Bill 2026", &updated)]).to_string(),
+                );
+            }
+            Response::json(detail_body("Second reading").to_string())
+        });
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("incremental");
+
+        sync_aph_bills(&store, 48, &endpoints).await.expect("first");
+        let after_first = server.hits();
+        sync_aph_bills(&store, 48, &endpoints)
+            .await
+            .expect("second");
+        assert_eq!(
+            server.hits() - after_first,
+            1,
+            "an unchanged listUpdated marker skips the detail fetch"
+        );
+
+        *stage.lock().unwrap() = "2026-08-20".to_string();
+        let before = server.hits();
+        sync_aph_bills(&store, 48, &endpoints).await.expect("third");
+        assert_eq!(
+            server.hits() - before,
+            2,
+            "a moved marker refetches the detail"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stored_bill_still_carrying_an_entity_is_healed_from_the_cached_raw() {
+        // The live defect: 266 bills were already stored with "&rsquo;" in the
+        // title, and the unchanged-marker path used to skip them forever.
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                return Response::json(
+                    serde_json::json!([list_item(
+                        "r7354",
+                        "Australia&rsquo;s Bill 2026",
+                        "2026-08-19"
+                    )])
+                    .to_string(),
+                );
+            }
+            panic!("the heal must not need a detail refetch: {}", req.path);
+        });
+        let store = new_store("heal");
+
+        // A record as the old code left it: entity in the title, marker current,
+        // timeline present, and the raw detail still cached.
+        let stale: Bill = serde_json::from_str(
+            r#"{"id":"r7354","title":"Australia&rsquo;s Bill 2026","parliament":48,
+                "chamber":"representatives","status":"Before the House",
+                "timeline":[{"date":"2026-08-19","event":"Second reading"}],
+                "listUpdated":"2026-08-19","sponsors":[],"movers":[],"divisionIds":[]}"#,
+        )
+        .expect("stale fixture");
+        store
+            .put_json("canonical/bills/r7354.json", &stale)
+            .await
+            .unwrap();
+        store
+            .put_json(
+                "raw/aph/bill-r7354.json",
+                &detail_body("Second reading &ndash; agreed to"),
+            )
+            .await
+            .unwrap();
+
+        sync_aph_bills(&store, 48, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let healed: Bill = store
+            .get_json("canonical/bills/r7354.json")
+            .await
+            .unwrap()
+            .expect("bill");
+        assert_eq!(
+            healed.title, "Australia\u{2019}s Bill 2026",
+            "title decoded in place"
+        );
+        assert_eq!(
+            healed.timeline[0].event, "Second reading \u{2013} agreed to (House of Reps)",
+            "the timeline is rebuilt from the cached raw detail"
+        );
+        assert_eq!(healed.sponsors[0].name, "Alexandra Paterson");
+    }
+
+    #[tokio::test]
+    async fn curated_fields_survive_a_resync() {
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                return Response::json(
+                    serde_json::json!([list_item("r7354", "A Bill 2026", "2026-08-20")])
+                        .to_string(),
+                );
+            }
+            Response::json(detail_body("Second reading").to_string())
+        });
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("curated");
+
+        sync_aph_bills(&store, 48, &endpoints).await.expect("first");
+        // Fields this source does not own are added by other steps.
+        let mut bill: Bill = store
+            .get_json("canonical/bills/r7354.json")
+            .await
+            .unwrap()
+            .expect("bill");
+        bill.bill_type = Some("Government".to_string());
+        bill.portfolio = Some("Foreign Affairs".to_string());
+        bill.ai_summary = Some(
+            serde_json::from_str(
+                r#"{"text":"A note.","model":"m","generatedAt":"2026-08-19T00:00:00.000Z"}"#,
+            )
+            .expect("ai fixture"),
+        );
+        bill.list_updated = Some("2026-08-19".to_string());
+        store
+            .put_json("canonical/bills/r7354.json", &bill)
+            .await
+            .unwrap();
+
+        sync_aph_bills(&store, 48, &endpoints)
+            .await
+            .expect("second");
+        let merged: Bill = store
+            .get_json("canonical/bills/r7354.json")
+            .await
+            .unwrap()
+            .expect("bill");
+        assert_eq!(merged.bill_type.as_deref(), Some("Government"));
+        assert_eq!(merged.portfolio.as_deref(), Some("Foreign Affairs"));
+        assert!(merged.ai_summary.is_some(), "the AI layer is not clobbered");
+    }
+
+    #[tokio::test]
+    async fn a_response_that_is_not_a_list_or_is_empty_refuses_to_write() {
+        let wrong_shape = TestServer::start(|_| Response::json(r#"{"error":"nope"}"#));
+        let store = new_store("wrongshape");
+        let err = sync_aph_bills(&store, 48, &Endpoints::at(&wrong_shape.base))
+            .await
+            .expect_err("an object is not a bill list");
+        assert!(
+            err.to_string().contains("unexpected response shape"),
+            "got {err}"
+        );
+
+        let empty = TestServer::start(|_| Response::json("[]"));
+        let store = new_store("emptylist");
+        let err = sync_aph_bills(&store, 48, &Endpoints::at(&empty.base))
+            .await
+            .expect_err("zero bills means something is wrong upstream");
+        assert!(err.to_string().contains("refusing to write"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn a_detail_fetch_that_fails_still_stores_the_listed_bill() {
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                return Response::json(
+                    serde_json::json!([list_item("r7354", "A Bill 2026", "2026-08-19")])
+                        .to_string(),
+                );
+            }
+            Response::status(404, "no detail")
+        });
+        let store = new_store("nodetail");
+
+        sync_aph_bills(&store, 48, &Endpoints::at(&server.base))
+            .await
+            .expect("a missing detail is not fatal");
+        let bill: Bill = store
+            .get_json("canonical/bills/r7354.json")
+            .await
+            .unwrap()
+            .expect("bill stored anyway");
+        assert!(
+            bill.timeline.is_empty(),
+            "no timeline rather than a wrong one"
+        );
+        assert_eq!(bill.title, "A Bill 2026");
     }
 }

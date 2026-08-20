@@ -1,12 +1,16 @@
 mod derive;
+mod endpoints;
 mod http;
 mod js_url;
 mod manifest;
 mod sources;
 mod store;
 mod summarise;
+#[cfg(test)]
+mod test_http;
 
 use anyhow::Result;
+use endpoints::Endpoints;
 use manifest::record_sync;
 use pollywiki_schema::Person;
 use store::{LocalStore, S3Store, Store};
@@ -66,7 +70,14 @@ async fn run(command: &str, options: &Options) -> Result<()> {
     let mut failures = 0;
 
     if command == "sync" || command == "all" {
-        failures = sync(&store, &options.sources, &options.event, options.rebuild).await?;
+        failures = sync(
+            &store,
+            &options.sources,
+            &options.event,
+            options.rebuild,
+            &Endpoints::default(),
+        )
+        .await?;
     }
     if command == "summarise" || (command == "all" && std::env::var("GEMINI_API_KEY").is_ok()) {
         let people = load_people(&store).await?;
@@ -88,7 +99,13 @@ async fn run(command: &str, options: &Options) -> Result<()> {
     Ok(())
 }
 
-async fn sync(store: &Store, sources: &[String], event: &str, rebuild: bool) -> Result<usize> {
+async fn sync(
+    store: &Store,
+    sources: &[String],
+    event: &str,
+    rebuild: bool,
+    endpoints: &Endpoints,
+) -> Result<usize> {
     let mut people: Vec<Person> = Vec::new();
     let mut failures = 0;
 
@@ -112,7 +129,7 @@ async fn sync(store: &Store, sources: &[String], event: &str, rebuild: bool) -> 
     let has = |name: &str| sources.iter().any(|s| s == name);
 
     if has("wikidata") {
-        match sources::wikidata::sync_wikidata(store).await {
+        match sources::wikidata::sync_wikidata(store, endpoints).await {
             Ok(result) => {
                 people = result;
                 record_sync(store, "wikidata", true, None).await?;
@@ -128,11 +145,14 @@ async fn sync(store: &Store, sources: &[String], event: &str, rebuild: bool) -> 
     }
     if has("aec") {
         for id in event.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            run_source!("aec", sources::aec::sync_aec(store, id));
+            run_source!("aec", sources::aec::sync_aec(store, id, endpoints));
         }
     }
     if has("aph") {
-        run_source!("aph-bills", sources::aph_bills::sync_aph_bills(store, 48));
+        run_source!(
+            "aph-bills",
+            sources::aph_bills::sync_aph_bills(store, 48, endpoints)
+        );
     }
     if has("handbook") {
         if people.is_empty() {
@@ -140,13 +160,13 @@ async fn sync(store: &Store, sources: &[String], event: &str, rebuild: bool) -> 
         }
         run_source!(
             "handbook",
-            sources::handbook::sync_handbook(store, &mut people)
+            sources::handbook::sync_handbook(store, &mut people, endpoints)
         );
     }
     if has("aec-profiles") {
         run_source!(
             "aec-profiles",
-            sources::aec_profiles::sync_aec_profiles(store, "31496")
+            sources::aec_profiles::sync_aec_profiles(store, "31496", endpoints)
         );
     }
     if has("tvfy") {
@@ -156,7 +176,7 @@ async fn sync(store: &Store, sources: &[String], event: &str, rebuild: bool) -> 
             }
             run_source!(
                 "tvfy",
-                sources::tvfy::sync_tvfy(store, &mut people, rebuild)
+                sources::tvfy::sync_tvfy(store, &mut people, rebuild, endpoints)
             );
         } else {
             println!("tvfy: skipped (TVFY_API_KEY not set)");

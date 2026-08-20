@@ -1,4 +1,5 @@
-use crate::http::{fetch_bytes, fetch_json, FetchOpts};
+use crate::endpoints::Endpoints;
+use crate::http::{fetch_bytes, fetch_json};
 use crate::js_url::encode_uri_component;
 use crate::store::Store;
 use anyhow::Result;
@@ -10,9 +11,6 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::LazyLock;
-
-const SPARQL_ENDPOINT: &str = "https://query.wikidata.org/sparql";
-const COMMONS_API: &str = "https://commons.wikimedia.org/w/api.php";
 
 fn house_position(q: &str) -> Option<House> {
     match q {
@@ -57,12 +55,13 @@ fn binding_value<'a>(binding: &'a Value, key: &str) -> Option<&'a str> {
     binding.get(key)?.get("value")?.as_str()
 }
 
-pub async fn sync_wikidata(store: &Store) -> Result<Vec<Person>> {
+pub async fn sync_wikidata(store: &Store, endpoints: &Endpoints) -> Result<Vec<Person>> {
     let url = format!(
-        "{SPARQL_ENDPOINT}?query={}",
+        "{}?query={}",
+        endpoints.wikidata_sparql,
         encode_uri_component(MEMBERS_QUERY)
     );
-    let mut opts = FetchOpts::min_interval(2000);
+    let mut opts = endpoints.opts(2000);
     opts.accept = Some("application/sparql-results+json".to_string());
     let data: Value = fetch_json(&url, &opts).await?;
     store.put_json("raw/wikidata/members.json", &data).await?;
@@ -98,12 +97,12 @@ pub async fn sync_wikidata(store: &Store) -> Result<Vec<Person>> {
         .iter()
         .filter_map(|m| m.commons_file.clone())
         .collect();
-    let licences = fetch_commons_licences(&files).await?;
-    let mut people = people_from_members(&members, &licences);
+    let licences = fetch_commons_licences(&files, endpoints).await?;
+    let mut people = people_from_members(endpoints, &members, &licences);
 
     for person in &mut people {
         if person.photo.is_some() {
-            mirror_photo(store, person).await?;
+            mirror_photo(store, person, endpoints).await?;
         }
         // Other sources enrich people (e.g. the TVFY id crosswalk); merge rather
         // than clobber what this source does not own.
@@ -131,12 +130,12 @@ pub async fn sync_wikidata(store: &Store) -> Result<Vec<Person>> {
         }
     }
 
-    sync_party_facts(store, &people).await?;
+    sync_party_facts(store, &people, endpoints).await?;
     Ok(people)
 }
 
 /// Founding dates, websites and Wikipedia links for parliamentary groups.
-async fn sync_party_facts(store: &Store, people: &[Person]) -> Result<()> {
+async fn sync_party_facts(store: &Store, people: &[Person], endpoints: &Endpoints) -> Result<()> {
     let mut groups: IndexMap<String, String> = IndexMap::new();
     for p in people {
         if p.group_slug != "independent" {
@@ -160,10 +159,14 @@ SELECT ?label ?inception ?website ?article WHERE {{
   OPTIONAL {{ ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> . }}
 }}"#
     );
-    let mut opts = FetchOpts::min_interval(2000);
+    let mut opts = endpoints.opts(2000);
     opts.accept = Some("application/sparql-results+json".to_string());
     let data: Value = fetch_json(
-        &format!("{SPARQL_ENDPOINT}?query={}", encode_uri_component(&query)),
+        &format!(
+            "{}?query={}",
+            endpoints.wikidata_sparql,
+            encode_uri_component(&query)
+        ),
         &opts,
     )
     .await?;
@@ -224,6 +227,7 @@ fn load_overrides() -> IndexMap<String, Value> {
 }
 
 pub fn people_from_members(
+    endpoints: &Endpoints,
     members: &[RawMember],
     licences: &IndexMap<String, CommonsLicence>,
 ) -> Vec<Person> {
@@ -252,7 +256,7 @@ pub fn people_from_members(
         let photo = match (&m.commons_file, licence) {
             (Some(file), Some(lic)) if FREE_LICENCES.is_match(&lic.licence) => Some(Photo {
                 commons_file: file.clone(),
-                url: thumb_url(file, 400),
+                url: thumb_url(endpoints, file, 400),
                 licence: lic.licence.clone(),
                 attribution: lic.attribution.clone(),
                 thumb: None,
@@ -363,9 +367,10 @@ fn as_state(label: Option<&str>) -> Option<StateCode> {
     code.or_else(|| StateCode::parse(label))
 }
 
-fn thumb_url(file: &str, width: u32) -> String {
+fn thumb_url(endpoints: &Endpoints, file: &str, width: u32) -> String {
     format!(
-        "https://commons.wikimedia.org/wiki/Special:FilePath/{}?width={width}",
+        "{}/wiki/Special:FilePath/{}?width={width}",
+        endpoints.commons_files,
         encode_uri_component(file)
     )
 }
@@ -381,7 +386,7 @@ struct PhotoMarker {
 /// Mirrors Commons thumbnails into the store so CloudFront serves them
 /// same-origin (the deploy job copies derived/img/ to the site prefix).
 /// Hotlinking Commons meant a redirect chain per avatar and no edge caching.
-async fn mirror_photo(store: &Store, person: &mut Person) -> Result<()> {
+async fn mirror_photo(store: &Store, person: &mut Person, endpoints: &Endpoints) -> Result<()> {
     let Some(photo) = person.photo.as_mut() else {
         return Ok(());
     };
@@ -392,8 +397,8 @@ async fn mirror_photo(store: &Store, person: &mut Person) -> Result<()> {
         let mut ok = true;
         for size in THUMB_SIZES {
             match fetch_bytes(
-                &thumb_url(&photo.commons_file, size),
-                &FetchOpts::min_interval(400),
+                &thumb_url(endpoints, &photo.commons_file, size),
+                &endpoints.opts(400),
             )
             .await
             {
@@ -432,7 +437,10 @@ pub struct CommonsLicence {
     pub attribution: String,
 }
 
-async fn fetch_commons_licences(files: &[String]) -> Result<IndexMap<String, CommonsLicence>> {
+async fn fetch_commons_licences(
+    files: &[String],
+    endpoints: &Endpoints,
+) -> Result<IndexMap<String, CommonsLicence>> {
     let mut out = IndexMap::new();
     for batch in files.chunks(40) {
         let titles = batch
@@ -441,10 +449,11 @@ async fn fetch_commons_licences(files: &[String]) -> Result<IndexMap<String, Com
             .collect::<Vec<_>>()
             .join("|");
         let url = format!(
-            "{COMMONS_API}?action=query&prop=imageinfo&iiprop=extmetadata&iiextmetadatafilter=LicenseShortName|Artist&format=json&titles={}",
+            "{}?action=query&prop=imageinfo&iiprop=extmetadata&iiextmetadatafilter=LicenseShortName|Artist&format=json&titles={}",
+            endpoints.commons_api,
             encode_uri_component(&titles)
         );
-        let data: Value = fetch_json(&url, &FetchOpts::min_interval(1500)).await?;
+        let data: Value = fetch_json(&url, &endpoints.opts(1500)).await?;
         let pages = data
             .pointer("/query/pages")
             .and_then(Value::as_object)
@@ -494,6 +503,45 @@ fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::LocalStore;
+    use crate::test_http::{Response, TestServer};
+    use std::path::PathBuf;
+
+    fn new_store(name: &str) -> Store {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wikidata-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Store::Local(LocalStore::new(dir))
+    }
+
+    fn sparql(rows: serde_json::Value) -> String {
+        serde_json::json!({ "results": { "bindings": rows } }).to_string()
+    }
+
+    /// One SPARQL binding in the shape the members query returns.
+    fn member_row(
+        qid: &str,
+        name: &str,
+        electorate: &str,
+        party: &str,
+        file: Option<&str>,
+    ) -> serde_json::Value {
+        let mut row = serde_json::json!({
+            "person": { "value": format!("http://www.wikidata.org/entity/{qid}") },
+            "personLabel": { "value": name },
+            "houseQ": { "value": "http://www.wikidata.org/entity/Q18912794" },
+            "electorateLabel": { "value": electorate },
+            "partyLabel": { "value": party }
+        });
+        if let Some(file) = file {
+            row["img"] = serde_json::json!({
+                "value": format!("http://commons.wikimedia.org/wiki/Special:FilePath/{file}")
+            });
+        }
+        row
+    }
 
     fn bindings(json: &str) -> Vec<Value> {
         serde_json::from_str(json).expect("bindings fixture")
@@ -527,10 +575,11 @@ mod tests {
     #[test]
     fn thumbnails_percent_encode_the_commons_file_name() {
         assert_eq!(
-            thumb_url("Jane Smith 2026.jpg", 96),
+            thumb_url(&Endpoints::default(), "Jane Smith 2026.jpg", 96),
             "https://commons.wikimedia.org/wiki/Special:FilePath/Jane%20Smith%202026.jpg?width=96"
         );
-        assert!(thumb_url("Caf\u{e9}.jpg", 320).contains("Caf%C3%A9.jpg?width=320"));
+        assert!(thumb_url(&Endpoints::default(), "Caf\u{e9}.jpg", 320)
+            .contains("Caf%C3%A9.jpg?width=320"));
     }
 
     #[test]
@@ -623,7 +672,7 @@ mod tests {
             licence("All rights reserved", "Someone"),
         );
 
-        let people = people_from_members(&members, &licences);
+        let people = people_from_members(&Endpoints::default(), &members, &licences);
         assert_eq!(people.len(), 3);
 
         // A member gets an electorate slug; a senator gets a state instead.
@@ -663,7 +712,7 @@ mod tests {
                "electorateLabel":{"value":"Tasmania"}}
             ]"#,
         ));
-        let people = people_from_members(&members, &IndexMap::new());
+        let people = people_from_members(&Endpoints::default(), &members, &IndexMap::new());
         let slugs: Vec<&str> = people.iter().map(|p| p.slug.as_str()).collect();
         assert_eq!(slugs, vec!["jane-smith", "jane-smith-tasmania"]);
     }
@@ -702,7 +751,7 @@ mod tests {
                 m.name = name.to_string();
             }
         }
-        let people = people_from_members(&members, &IndexMap::new());
+        let people = people_from_members(&Endpoints::default(), &members, &IndexMap::new());
 
         // Index the canonical store by wikidata id so a name-override added
         // after the store was written (a rename) still pairs up.
@@ -785,5 +834,278 @@ mod tests {
             226,
             "expected the full current membership"
         );
+    }
+
+    /// A server answering the members query, the Commons licence lookup, the
+    /// party-facts query and the thumbnail fetches.
+    fn wikidata_server() -> TestServer {
+        TestServer::start(|req| {
+            if req.path.starts_with("/sparql") {
+                // The party-facts query is the one mentioning inception.
+                if req.path.contains("inception") || req.path.contains("P571") {
+                    return Response::json(sparql(serde_json::json!([{
+                        "label": { "value": "Example Party" },
+                        "inception": { "value": "1901-05-08T00:00:00Z" },
+                        "website": { "value": "https://example.org.au" },
+                        "article": { "value": "https://en.wikipedia.org/wiki/Example_Party" }
+                    }])));
+                }
+                return Response::json(sparql(serde_json::json!([
+                    member_row(
+                        "Q1",
+                        "Alex Paterson",
+                        "Sampleford",
+                        "Example Party",
+                        Some("Alex.jpg")
+                    ),
+                    member_row(
+                        "Q2",
+                        "Jordan Nguyen",
+                        "Placeholder Bay",
+                        "Independent",
+                        None
+                    )
+                ])));
+            }
+            if req.path.starts_with("/commons-files") {
+                return Response::bytes(vec![0xff, 0xd8, 0xff, 0xd9], "image/jpeg");
+            }
+            if req.path.starts_with("/commons") {
+                return Response::json(
+                    serde_json::json!({ "query": { "pages": { "-1": {
+                        "title": "File:Alex.jpg",
+                        "imageinfo": [{ "extmetadata": {
+                            "LicenseShortName": { "value": "CC BY-SA 4.0" },
+                            "Artist": { "value": "A Photographer" }
+                        } }]
+                    } } } })
+                    .to_string(),
+                );
+            }
+            Response::status(404, "unexpected path")
+        })
+    }
+
+    #[tokio::test]
+    async fn a_sync_writes_people_mirrors_photos_and_records_party_facts() {
+        let server = wikidata_server();
+        let store = new_store("sync");
+
+        let people = sync_wikidata(&store, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        assert_eq!(people.len(), 2);
+
+        let alex: Person = store
+            .get_json("canonical/people/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("person stored");
+        assert_eq!(alex.name, "Alex Paterson");
+        assert_eq!(alex.electorate.as_deref(), Some("sampleford"));
+        assert_eq!(alex.group, "Example Party");
+        assert_eq!(alex.ids.wikidata.as_deref(), Some("Q1"));
+
+        // A free licence means the photo is kept and mirrored to local thumbs.
+        let photo = alex.photo.expect("photo kept");
+        assert_eq!(photo.licence, "CC BY-SA 4.0");
+        assert_eq!(photo.attribution, "A Photographer");
+        assert_eq!(
+            photo.thumb.as_deref(),
+            Some("/img/people/alex-paterson-96.jpg")
+        );
+        assert_eq!(
+            photo.thumb_large.as_deref(),
+            Some("/img/people/alex-paterson-320.jpg")
+        );
+        // The thumbs are JPEG bytes, so they are checked by key rather than read
+        // back as text.
+        let mirrored = store.list("derived/img/people/").await.unwrap();
+        for size in THUMB_SIZES {
+            let key = format!("derived/img/people/alex-paterson-{size}.jpg");
+            assert!(mirrored.contains(&key), "{size}px thumb mirrored");
+        }
+
+        // Independents are not looked up as parties.
+        let facts: PartyFacts = store
+            .get_json("canonical/party-facts/example-party.json")
+            .await
+            .unwrap()
+            .expect("party facts stored");
+        assert_eq!(facts.founded.as_deref(), Some("1901-05-08"));
+        assert_eq!(facts.website.as_deref(), Some("https://example.org.au"));
+        assert!(store
+            .get_json::<PartyFacts>("canonical/party-facts/independent.json")
+            .await
+            .unwrap()
+            .is_none());
+
+        // The raw response is kept for replay.
+        assert!(store
+            .get_json::<Value>("raw/wikidata/members.json")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn ids_from_other_sources_survive_a_resync() {
+        let server = wikidata_server();
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("merge");
+
+        sync_wikidata(&store, &endpoints).await.expect("first");
+        // Another source stamps its own id onto the person.
+        let mut alex: Person = store
+            .get_json("canonical/people/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("person");
+        alex.ids.tvfy = Some(10001);
+        alex.ids.aph = Some("ABC123".to_string());
+        store
+            .put_json("canonical/people/alex-paterson.json", &alex)
+            .await
+            .unwrap();
+
+        sync_wikidata(&store, &endpoints).await.expect("second");
+        let merged: Person = store
+            .get_json("canonical/people/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("person");
+        assert_eq!(
+            merged.ids.tvfy,
+            Some(10001),
+            "this source does not own the tvfy id"
+        );
+        assert_eq!(merged.ids.aph.as_deref(), Some("ABC123"));
+        assert_eq!(merged.ids.wikidata.as_deref(), Some("Q1"));
+    }
+
+    #[tokio::test]
+    async fn a_member_who_is_no_longer_current_is_pruned() {
+        let server = wikidata_server();
+        let store = new_store("prune");
+        let departed: Person = serde_json::from_str(
+            r#"{"slug":"departed-member","name":"Departed Member","house":"representatives",
+                "group":"Example Party","groupSlug":"example-party","ids":{},"links":{}}"#,
+        )
+        .expect("fixture");
+        store
+            .put_json("canonical/people/departed-member.json", &departed)
+            .await
+            .unwrap();
+
+        sync_wikidata(&store, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        assert!(
+            store
+                .get_json::<Person>("canonical/people/departed-member.json")
+                .await
+                .unwrap()
+                .is_none(),
+            "people are owned entirely by this source"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_photo_is_not_refetched_while_the_marker_matches() {
+        let server = wikidata_server();
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("marker");
+
+        sync_wikidata(&store, &endpoints).await.expect("first");
+        let after_first = server.hits();
+        sync_wikidata(&store, &endpoints).await.expect("second");
+        // Members query, licence lookup and party query run again; the two
+        // thumbnails do not.
+        assert_eq!(
+            server.hits() - after_first,
+            3,
+            "an unchanged photo is not re-downloaded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_thumbnail_leaves_the_commons_url_as_the_fallback() {
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/commons-files") {
+                return Response::status(404, "file gone");
+            }
+            if req.path.starts_with("/commons") {
+                return Response::json(
+                    serde_json::json!({ "query": { "pages": { "-1": {
+                        "title": "File:Alex.jpg",
+                        "imageinfo": [{ "extmetadata": {
+                            "LicenseShortName": { "value": "CC BY-SA 4.0" },
+                            "Artist": { "value": "A Photographer" }
+                        } }]
+                    } } } })
+                    .to_string(),
+                );
+            }
+            if req.path.contains("inception") || req.path.contains("P571") {
+                return Response::json(sparql(serde_json::json!([])));
+            }
+            Response::json(sparql(serde_json::json!([member_row(
+                "Q1",
+                "Alex Paterson",
+                "Sampleford",
+                "Example Party",
+                Some("Alex.jpg")
+            )])))
+        });
+        let store = new_store("nothumb");
+
+        let people = sync_wikidata(&store, &Endpoints::at(&server.base))
+            .await
+            .expect("a missing thumbnail is not fatal");
+        let photo = people[0].photo.as_ref().expect("photo record kept");
+        assert!(
+            photo.thumb.is_none(),
+            "no local thumb is claimed when the mirror failed"
+        );
+        assert!(
+            photo.url.contains("Special:FilePath"),
+            "the Commons URL stays as the fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_label_less_item_is_reported_rather_than_stored_as_a_bare_id() {
+        let server = TestServer::start(|req| {
+            if req.path.contains("inception") || req.path.contains("P571") {
+                return Response::json(sparql(serde_json::json!([])));
+            }
+            // The label service hands back the entity id when there is no
+            // English label, which is what an override file exists to fix.
+            Response::json(sparql(serde_json::json!([member_row(
+                "Q99",
+                "Q99",
+                "Farrer",
+                "Example Party",
+                None
+            )])))
+        });
+        let store = new_store("nolabel");
+        let people = sync_wikidata(&store, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].name, "Q99", "the bare id is surfaced, not hidden");
+    }
+
+    #[tokio::test]
+    async fn a_sparql_endpoint_that_is_down_fails_the_sync() {
+        let server = TestServer::start(|_| Response::status(503, "endpoint busy"));
+        let store = new_store("down");
+        let mut endpoints = Endpoints::at(&server.base);
+        endpoints.backoff_ms = Some(1);
+        let err = sync_wikidata(&store, &endpoints)
+            .await
+            .expect_err("a down endpoint is a failed sync");
+        assert!(err.to_string().contains("503"), "got {err}");
     }
 }

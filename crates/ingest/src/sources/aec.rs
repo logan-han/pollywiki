@@ -1,4 +1,5 @@
-use crate::http::{fetch_text, FetchOpts};
+use crate::endpoints::Endpoints;
+use crate::http::fetch_text;
 use crate::store::Store;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -33,11 +34,11 @@ struct EventRows {
     tcp: Vec<AecRow>,
 }
 
-pub async fn sync_aec(store: &Store, event_id: &str) -> Result<()> {
+pub async fn sync_aec(store: &Store, event_id: &str, endpoints: &Endpoints) -> Result<()> {
     let rows = if BY_ELECTIONS.contains(&event_id) {
-        fetch_by_election(store, event_id).await?
+        fetch_by_election(store, event_id, endpoints).await?
     } else {
-        fetch_general(store, event_id).await?
+        fetch_general(store, event_id, endpoints).await?
     };
 
     let event_name = event_name(event_id)
@@ -94,7 +95,7 @@ pub async fn sync_aec(store: &Store, event_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_general(store: &Store, event_id: &str) -> Result<EventRows> {
+async fn fetch_general(store: &Store, event_id: &str, endpoints: &Endpoints) -> Result<EventRows> {
     let files = [
         ("HouseFirstPrefsByCandidateByVoteTypeDownload", true),
         ("HouseTcpByCandidateByVoteTypeDownload", false),
@@ -106,9 +107,11 @@ async fn fetch_general(store: &Store, event_id: &str) -> Result<EventRows> {
             store,
             event_id,
             &format!(
-                "https://results.aec.gov.au/{event_id}/Website/Downloads/{file}-{event_id}.csv"
+                "{}/{event_id}/Website/Downloads/{file}-{event_id}.csv",
+                endpoints.aec_results
             ),
             file,
+            endpoints,
         )
         .await?;
         if is_first_prefs {
@@ -120,13 +123,18 @@ async fn fetch_general(store: &Store, event_id: &str) -> Result<EventRows> {
     Ok(EventRows { first_prefs, tcp })
 }
 
-async fn fetch_by_election(store: &Store, event_id: &str) -> Result<EventRows> {
-    let base = format!("https://results.aec.gov.au/{event_id}/Website/Downloads");
+async fn fetch_by_election(
+    store: &Store,
+    event_id: &str,
+    endpoints: &Endpoints,
+) -> Result<EventRows> {
+    let base = format!("{}/{event_id}/Website/Downloads", endpoints.aec_results);
     let candidates = fetch_csv(
         store,
         event_id,
         &format!("{base}/HouseCandidatesDownload-{event_id}.csv"),
         "HouseCandidatesDownload",
+        endpoints,
     )
     .await?;
     let state = candidates
@@ -139,6 +147,7 @@ async fn fetch_by_election(store: &Store, event_id: &str) -> Result<EventRows> {
         event_id,
         &format!("{base}/HouseStateFirstPrefsByPollingPlaceDownload-{event_id}-{state}.csv"),
         "HouseStateFirstPrefsByPollingPlaceDownload",
+        endpoints,
     )
     .await?;
     let tcp_pp = fetch_csv(
@@ -146,6 +155,7 @@ async fn fetch_by_election(store: &Store, event_id: &str) -> Result<EventRows> {
         event_id,
         &format!("{base}/HouseTcpByCandidateByPollingPlaceDownload-{event_id}.csv"),
         "HouseTcpByCandidateByPollingPlaceDownload",
+        endpoints,
     )
     .await?;
     Ok(EventRows {
@@ -175,8 +185,14 @@ fn aggregate_polling_places(rows: &[AecRow]) -> Vec<AecRow> {
     by_candidate.into_values().collect()
 }
 
-async fn fetch_csv(store: &Store, event_id: &str, url: &str, file: &str) -> Result<Vec<AecRow>> {
-    let csv = fetch_text(url, &FetchOpts::min_interval(1500)).await?;
+async fn fetch_csv(
+    store: &Store,
+    event_id: &str,
+    url: &str,
+    file: &str,
+    endpoints: &Endpoints,
+) -> Result<Vec<AecRow>> {
+    let csv = fetch_text(url, &endpoints.opts(1500)).await?;
     store
         .put_raw(&format!("raw/aec/{event_id}/{file}.csv"), csv.as_bytes())
         .await?;
@@ -296,6 +312,29 @@ fn round2(n: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::LocalStore;
+    use crate::test_http::{Response, TestServer};
+    use std::path::PathBuf;
+
+    fn new_store(name: &str) -> Store {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/aec-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Store::Local(LocalStore::new(dir))
+    }
+
+    /// AEC downloads carry a metadata title line above the real header.
+    fn csv(header: &str, rows: &[&str]) -> String {
+        let mut out = String::from("Information for this file is current as at some date\n");
+        out.push_str(header);
+        for row in rows {
+            out.push('\n');
+            out.push_str(row);
+        }
+        out
+    }
 
     fn row(pairs: &[(&str, &str)]) -> AecRow {
         pairs
@@ -378,5 +417,180 @@ mod tests {
         assert_eq!(round2(33.333333), 33.33);
         assert_eq!(round2(33.335), 33.34);
         assert_eq!(round2(50.0), 50.0);
+    }
+
+    #[tokio::test]
+    async fn a_general_election_defines_the_seats_and_stores_both_result_tables() {
+        let server = TestServer::start(|req| {
+            if req
+                .path
+                .contains("HouseFirstPrefsByCandidateByVoteTypeDownload")
+            {
+                return Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,TotalVotes,Swing",
+                    &[
+                        "VIC,Sampleford,101,PATERSON,ALEXANDRA,Example Party,EX,45000,2.5",
+                        "VIC,Sampleford,102,NGUYEN,JORDAN,Placeholder Alliance,PA,30000,-1.5",
+                    ],
+                ));
+            }
+            if req.path.contains("HouseTcpByCandidateByVoteTypeDownload") {
+                return Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,TotalVotes,Swing",
+                    &["VIC,Sampleford,101,PATERSON,ALEXANDRA,Example Party,EX,52000,1.8"],
+                ));
+            }
+            Response::status(404, "unexpected file")
+        });
+        let store = new_store("general");
+
+        sync_aec(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        // The current general election is the one that defines the seat map.
+        let electorate: Electorate = store
+            .get_json("canonical/electorates/sampleford.json")
+            .await
+            .unwrap()
+            .expect("electorate defined");
+        assert_eq!(electorate.name, "Sampleford");
+        assert_eq!(electorate.state.as_str(), "VIC");
+
+        let result: pollywiki_schema::ElectorateResult = store
+            .get_json("canonical/elections/31496/sampleford.json")
+            .await
+            .unwrap()
+            .expect("result stored");
+        assert_eq!(result.event_name, "2025 federal election");
+        assert_eq!(result.first_prefs.len(), 2);
+        assert_eq!(result.first_prefs[0].name, "Alexandra Paterson");
+        assert_eq!(result.first_prefs[0].votes, 45000);
+        assert_eq!(result.tcp.len(), 1);
+        assert_eq!(result.tcp[0].votes, 52000);
+
+        // The raw downloads are kept alongside the parsed records.
+        assert!(store
+            .get_raw("raw/aec/31496/HouseFirstPrefsByCandidateByVoteTypeDownload.csv")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_historical_event_adds_results_without_redefining_the_seat_map() {
+        let server = TestServer::start(|_| {
+            Response::text(csv(
+                "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,TotalVotes,Swing",
+                &["VIC,Sampleford,101,PATERSON,ALEXANDRA,Example Party,EX,40000,0"],
+            ))
+        });
+        let store = new_store("historical");
+
+        sync_aec(&store, "27966", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        assert!(
+            store
+                .get_json::<Electorate>("canonical/electorates/sampleford.json")
+                .await
+                .unwrap()
+                .is_none(),
+            "only the current general election defines seats"
+        );
+        assert!(store
+            .get_json::<pollywiki_schema::ElectorateResult>(
+                "canonical/elections/27966/sampleford.json"
+            )
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_by_election_is_aggregated_from_its_polling_place_files() {
+        let server = TestServer::start(|req| {
+            if req.path.contains("HouseCandidatesDownload") {
+                return Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm",
+                    &["NSW,Farrer,201,FARLEY,DAVID"],
+                ));
+            }
+            if req
+                .path
+                .contains("HouseStateFirstPrefsByPollingPlaceDownload")
+            {
+                // By-elections publish per-booth rows only; the same candidate
+                // appears once per polling place and must be summed.
+                assert!(
+                    req.path.contains("-NSW.csv"),
+                    "state comes from the candidate file"
+                );
+                return Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,OrdinaryVotes,Swing",
+                    &[
+                        "NSW,Farrer,201,FARLEY,DAVID,Example Party,EX,1200,3.1",
+                        "NSW,Farrer,201,FARLEY,DAVID,Example Party,EX,800,2.0",
+                        "NSW,Farrer,202,OTHER,SAM,Placeholder Alliance,PA,500,-1.0",
+                    ],
+                ));
+            }
+            if req
+                .path
+                .contains("HouseTcpByCandidateByPollingPlaceDownload")
+            {
+                return Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,OrdinaryVotes,Swing",
+                    &["NSW,Farrer,201,FARLEY,DAVID,Example Party,EX,1500,1.0"],
+                ));
+            }
+            Response::status(404, "unexpected file")
+        });
+        let store = new_store("byelection");
+
+        sync_aec(&store, "31633", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let result: pollywiki_schema::ElectorateResult = store
+            .get_json("canonical/elections/31633/farrer.json")
+            .await
+            .unwrap()
+            .expect("result stored");
+        assert_eq!(result.event_name, "2026 Farrer by-election");
+        let farley = result
+            .first_prefs
+            .iter()
+            .find(|c| c.name == "David Farley")
+            .expect("candidate aggregated");
+        assert_eq!(farley.votes, 2000, "booth rows are summed");
+        // Per-booth swings do not aggregate, so the field is left empty.
+        assert!(farley.swing.is_none(), "swing is not summed across booths");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_state_code_stops_the_sync_rather_than_writing_a_bad_seat() {
+        let server = TestServer::start(|_| {
+            Response::text(csv(
+                "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,TotalVotes,Swing",
+                &["ZZ,Nowhere,101,SOMEONE,SAM,Example Party,EX,10,0"],
+            ))
+        });
+        let store = new_store("badstate");
+        let err = sync_aec(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect_err("an unknown state is fatal");
+        assert!(err.to_string().contains("invalid state code"), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_download_fails_the_sync() {
+        let server = TestServer::start(|_| Response::status(404, "no such event"));
+        let store = new_store("missing");
+        let err = sync_aec(&store, "31496", &Endpoints::at(&server.base))
+            .await
+            .expect_err("a missing file is a failed sync");
+        assert!(err.to_string().contains("404"), "got {err}");
     }
 }
