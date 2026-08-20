@@ -21,5 +21,7 @@ regex.workspace = true
 chrono.workspace = true
 csv = "1"
 percent-encoding = "2"
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls", "sso"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+# "rustls" selects the SDK's legacy connector, which pins rustls 0.21 and its
+# unpatched rustls-webpki 0.101; "default-https-client" is the modern stack.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client", "sso"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
