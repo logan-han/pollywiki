@@ -1,13 +1,26 @@
 // Bills index: status pills plus a text box, combinable. ?q= pre-fills the
 // text box so /search/ and the quick-search footer row can hand off here.
+// Month divider rows recount as rows hide, and drop out once their month is
+// empty.
 const text = document.getElementById('bill-filter')
 const statusGroup = document.getElementById('bill-status')
-const rows = [...document.querySelectorAll('#bill-rows > li')]
+const items = [...document.querySelectorAll('#bill-rows > li')]
 const list = document.getElementById('bill-rows')
 const legend = document.querySelector('#bill-rows + .dots-legend')
 const count = document.getElementById('filter-count')
 const empty = document.getElementById('filter-empty')
 const clear = document.getElementById('filter-clear')
+
+// A month row owns every bill row that follows it up to the next one.
+const months = []
+for (const item of items) {
+  if (item.dataset.month !== undefined) {
+    months.push({ row: item, rows: [], label: item.querySelector('.n') })
+  } else if (months.length) {
+    months[months.length - 1].rows.push(item)
+  }
+}
+const rows = items.filter((item) => item.dataset.status !== undefined)
 
 let status = ''
 
@@ -20,6 +33,11 @@ function apply() {
       (!status || row.dataset.status === status)
     row.style.display = match ? '' : 'none'
     if (match) shown += 1
+  }
+  for (const month of months) {
+    const visible = month.rows.filter((row) => row.style.display !== 'none').length
+    month.row.style.display = visible ? '' : 'none'
+    if (month.label) month.label.textContent = `${visible} bill${visible === 1 ? '' : 's'}`
   }
   const filtered = Boolean(needle || status)
   if (count) count.textContent = filtered ? `Showing ${shown} of ${rows.length} bills` : ''

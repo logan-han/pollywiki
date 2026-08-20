@@ -110,12 +110,15 @@ pub fn ledger_row(division: &Division) -> String {
     )
 }
 
-/// Month divider for the divisions ledger: mono-caps month, hairline, count.
-pub fn ledger_month(month: &str, count: usize) -> String {
+/// Month divider for a dated index: mono-caps month, hairline, count. The
+/// noun names what is being counted ("division", "bill"); it is pluralised by
+/// appending an s.
+pub fn ledger_month(month: &str, count: usize, noun: &str) -> String {
     format!(
-        "<li class=\"ledger-month\" data-month=\"{key}\"><span class=\"m\">{label}</span><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} division{plural}</span></li>",
+        "<li class=\"ledger-month\" data-month=\"{key}\"><span class=\"m\">{label}</span><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} {noun}{plural}</span></li>",
         key = esc_attr(month),
         label = esc(&month_label(month)),
+        noun = esc(noun),
         plural = if count == 1 { "" } else { "s" },
     )
 }
@@ -435,9 +438,10 @@ mod tests {
 
     #[test]
     fn month_divider_counts_agree_with_the_run() {
-        let row = ledger_month("2026-07", 1);
+        let row = ledger_month("2026-07", 1, "division");
         assert!(row.contains("July 2026"));
         assert!(row.contains("1 division<"));
-        assert!(ledger_month("2026-07", 5).contains("5 divisions<"));
+        assert!(ledger_month("2026-07", 5, "division").contains("5 divisions<"));
+        assert!(ledger_month("2026-07", 5, "bill").contains("5 bills<"));
     }
 }

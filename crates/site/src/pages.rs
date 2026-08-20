@@ -123,6 +123,9 @@ pub fn latest_step(bill: &Bill) -> Option<&pollywiki_schema::TimelineStep> {
     bill.timeline.iter().max_by(|a, b| a.date.cmp(&b.date))
 }
 
+/// Index row: when the bill last moved, title, chamber, progress, status. The
+/// date drops its year because the month divider above the run already carries
+/// it; the full date stays machine-readable in the <time> element.
 fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
     let li = if with_filter_text {
         format!(
@@ -136,8 +139,21 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
     } else {
         "<li>".to_string()
     };
+    let when = match latest_step(bill) {
+        Some(step) => format!(
+            "<span class=\"when\" title=\"{}\"><time datetime=\"{}\">{}</time></span>",
+            esc_attr(&format!(
+                "{} \u{b7} {}",
+                event_description(&step.event),
+                format_date(&step.date)
+            )),
+            esc_attr(&step.date),
+            esc(&short_date(&step.date)),
+        ),
+        None => "<span class=\"when\"></span>".to_string(),
+    };
     format!(
-        "{li}<span><a href=\"/bills/{id}/\">{title}</a></span><span class=\"chamber\">{chamber}</span><span>{dots}</span><span class=\"{status_class}\">{status}</span></li>",
+        "{li}{when}<span><a href=\"/bills/{id}/\">{title}</a></span><span class=\"chamber\">{chamber}</span><span>{dots}</span><span class=\"{status_class}\">{status}</span></li>",
         id = bill.id,
         title = esc(&bill.title),
         chamber = chamber_word(bill.chamber),
@@ -692,7 +708,7 @@ pub fn divisions_index(data: &SiteData) -> Page {
         }
         body.push_str("<ul class=\"ledger\" id=\"division-list\">");
         for (month, rows) in &months {
-            body.push_str(&ledger_month(month, rows.len()));
+            body.push_str(&ledger_month(month, rows.len(), "division"));
             for d in rows {
                 body.push_str(&ledger_row(d));
             }
@@ -900,16 +916,42 @@ pub fn bills_index(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>Bills</h1><p class=\"lede\">");
     body.push_str(&format!(
-        "{} bills of the 48th Parliament, from the official APH record.",
+        "{} bills of the 48th Parliament, from the official APH record, most recently moved first.",
         data.bills.len()
     ));
     body.push_str("</p></div>");
     body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" aria-label=\"Filter bills\"></div>");
     body.push_str(&filter_feedback("No bills match these filters."));
     if !data.bills.is_empty() {
+        // The bundle arrives alphabetically, so the ledger order is built here.
+        // The sort is stable, which keeps that alphabetical order inside a
+        // month and among any bills the APH record has yet to date.
+        let mut by_activity: Vec<&Bill> = data.bills.iter().collect();
+        by_activity.sort_by(|a, b| {
+            latest_step(b)
+                .map(|s| s.date.as_str())
+                .cmp(&latest_step(a).map(|s| s.date.as_str()))
+        });
+        // Sorted newest first, so each month is one run. Undated bills land in
+        // a final run of their own; "undated" is not a month key, so it never
+        // collides with one, and month_label passes it through to the divider.
+        let mut months: Vec<(&str, Vec<&Bill>)> = Vec::new();
+        for b in by_activity {
+            let key = latest_step(b)
+                .map(|s| s.date.get(..7).unwrap_or(s.date.as_str()))
+                .unwrap_or("undated");
+            if months.last().map(|(m, _)| *m) == Some(key) {
+                months.last_mut().expect("just matched").1.push(b);
+            } else {
+                months.push((key, vec![b]));
+            }
+        }
         body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
-        for b in &data.bills {
-            body.push_str(&bill_row(b, true));
+        for (month, rows) in &months {
+            body.push_str(&ledger_month(month, rows.len(), "bill"));
+            for b in rows {
+                body.push_str(&bill_row(b, true));
+            }
         }
         body.push_str("</ul>");
         body.push_str(BILL_DOTS_LEGEND);

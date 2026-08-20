@@ -294,6 +294,53 @@ fn divisions_index_groups_into_months_that_match_their_runs() {
 }
 
 #[test]
+fn bills_index_reads_newest_activity_first_under_month_dividers() {
+    let data = sample_data();
+    let html = render(&data, &pages::bills_index(&data));
+
+    // Every month divider reports the number of bill rows that follow it.
+    let mut months: Vec<(String, usize)> = Vec::new();
+    for chunk in html.split("<li class=\"ledger-month\"").skip(1) {
+        let key_start = chunk.find("data-month=\"").expect("month key") + 12;
+        let key = chunk[key_start..].split('"').next().expect("month key end");
+        let claimed: usize = chunk
+            .split("class=\"n\">")
+            .nth(1)
+            .and_then(|s| s.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .expect("month count");
+        let rows = chunk
+            .split("<li class=\"ledger-month\"")
+            .next()
+            .unwrap_or(chunk)
+            .matches("<li data-status=")
+            .count();
+        assert_eq!(claimed, rows, "month {key} claims {claimed} but has {rows}");
+        months.push((key.to_string(), rows));
+    }
+    assert!(months.len() >= 2, "sample data should span several months");
+    let keys: Vec<&String> = months.iter().map(|(k, _)| k).collect();
+    let mut sorted = keys.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(keys, sorted, "months are not newest first");
+    assert_eq!(
+        months.iter().map(|(_, n)| n).sum::<usize>(),
+        data.bills.len()
+    );
+
+    // Rows carry the last recorded step, newest first down the whole list.
+    let dates: Vec<&str> = html
+        .match_indices("<span class=\"when\" title=")
+        .filter_map(|(i, _)| html[i..].split_once("<time datetime=\""))
+        .map(|(_, rest)| rest.split('"').next().expect("date end"))
+        .collect();
+    assert_eq!(dates.len(), data.bills.len(), "every row dated");
+    let mut newest_first = dates.clone();
+    newest_first.sort_by(|a, b| b.cmp(a));
+    assert_eq!(dates, newest_first, "bills are not newest first");
+}
+
+#[test]
 fn bills_index_pills_cover_every_row() {
     let data = sample_data();
     let html = render(&data, &pages::bills_index(&data));
@@ -757,8 +804,8 @@ fn dot_strips_agree_with_the_stage_they_report() {
 #[test]
 fn month_dividers_label_and_pluralise() {
     assert_eq!(month_label("2026-08"), "August 2026");
-    assert!(ledger_month("2026-08", 1).contains("1 division<"));
-    assert!(ledger_month("2026-08", 12).contains("12 divisions<"));
+    assert!(ledger_month("2026-08", 1, "division").contains("1 division<"));
+    assert!(ledger_month("2026-08", 12, "division").contains("12 divisions<"));
 }
 
 #[test]
