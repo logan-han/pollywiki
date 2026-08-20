@@ -65,6 +65,19 @@ fn breadcrumb(site_url: &str, trail: &[(&str, &str)]) -> serde_json::Value {
     })
 }
 
+/// Newest division date in the bundle. ISO dates sort lexically.
+fn newest_division_date(data: &SiteData) -> Option<String> {
+    data.divisions.iter().map(|d| d.date.clone()).max()
+}
+
+/// Newest timeline step across every bill.
+fn newest_bill_date(data: &SiteData) -> Option<String> {
+    data.bills
+        .iter()
+        .filter_map(|b| latest_step(b).map(|s| s.date.clone()))
+        .max()
+}
+
 fn chamber_word(house: House) -> &'static str {
     match house {
         House::Senate => "Senate",
@@ -217,6 +230,7 @@ pub fn home(data: &SiteData) -> Page {
     }
 
     let mut page = Page::new("pollywiki", None, "/", body);
+    page.lastmod = newest_division_date(data).max(newest_bill_date(data));
     page.jsonld = Some(jsonld_script(vec![serde_json::json!({
         "@context": "https://schema.org",
         "@type": "WebSite",
@@ -639,6 +653,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         person_ld["sameAs"] = serde_json::json!(wikipedia);
     }
     let mut page = Page::new(person.name.clone(), Some(description), path.clone(), body);
+    page.lastmod = votes.iter().map(|v| v.division.date.clone()).max();
     page.og_type = "profile";
     page.jsonld = Some(jsonld_script(vec![
         person_ld,
@@ -692,6 +707,7 @@ pub fn divisions_index(data: &SiteData) -> Page {
         "/divisions/",
         body,
     );
+    page.lastmod = newest_division_date(data);
     page.page_script = Some(DIVISION_FILTER_JS);
     page
 }
@@ -906,6 +922,7 @@ pub fn bills_index(data: &SiteData) -> Page {
         "/bills/",
         body,
     );
+    page.lastmod = newest_bill_date(data);
     page.page_script = Some(BILL_FILTER_JS);
     page
 }
@@ -1518,7 +1535,7 @@ pub fn search_page() -> Page {
     body.push_str("<link href=\"/pagefind/pagefind-ui.css\" rel=\"stylesheet\"><script src=\"/pagefind/pagefind-ui.js\"></script><div id=\"search\" style=\"margin-top: 1.4rem;\"></div><script>");
     body.push_str(SEARCH_INLINE_JS);
     body.push_str("</script>");
-    Page::new(
+    let mut page = Page::new(
         "Search",
         Some(
             "Search people, divisions, bills and electorates across the federal record."
@@ -1526,12 +1543,18 @@ pub fn search_page() -> Page {
         ),
         "/search/",
         body,
-    )
+    );
+    // A search box holds no record of its own, and indexed result pages are
+    // exactly what search engines ask you not to publish.
+    page.robots = Some("noindex, follow");
+    page
 }
 
 pub fn not_found() -> Page {
     let body = "<div class=\"masthead\"><h1>Not on the record.</h1><p class=\"motto\">This page doesn't exist. Try <a href=\"/search/\">searching the record</a> or start from the <a href=\"/\">front page</a>.</p></div>".to_string();
-    Page::new("Page not found", None, "/404/", body)
+    let mut page = Page::new("Page not found", None, "/404/", body);
+    page.robots = Some("noindex, follow");
+    page
 }
 
 pub fn about_index() -> Page {

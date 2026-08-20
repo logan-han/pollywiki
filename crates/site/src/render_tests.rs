@@ -185,6 +185,14 @@ fn every_page_carries_the_shared_head_and_landmarks() {
         );
         assert!(html.contains("href=\"/divisions/feed.xml\""), "{where_}");
         assert!(html.contains("rel=\"preload\""), "{where_}");
+        assert!(
+            html.contains("property=\"og:site_name\" content=\"pollywiki\""),
+            "{where_}"
+        );
+        assert!(
+            html.contains("property=\"og:locale\" content=\"en_AU\""),
+            "{where_}"
+        );
 
         if let Some(value) = jsonld(&html) {
             assert!(
@@ -833,11 +841,12 @@ fn the_sitemap_sorts_naturally_and_dates_what_it_can() {
         .collect();
     assert_eq!(
         locs.len(),
-        all_pages(&data).len() - 1,
-        "404 is not in the sitemap"
+        all_pages(&data).len() - 2,
+        "the 404 and the search page are not in the sitemap"
     );
     assert!(locs.iter().all(|l| l.starts_with(SITE_URL)));
     assert!(!xml.contains("/404/"));
+    assert!(!xml.contains("/search/"), "noindex pages stay out");
 
     // Digit runs compare numerically, so s996 precedes s1138.
     let index: Vec<usize> = ["/bills/sample-1/", "/bills/sample-2/", "/bills/sample-3/"]
@@ -869,7 +878,53 @@ fn the_sitemap_sorts_naturally_and_dates_what_it_can() {
     }
     assert!(xml.contains(&format!("<loc>{SITE_URL}/about/</loc></url>")));
 
+    // Every member with a recorded vote is dated by their newest division.
+    for person in &data.people {
+        let url = format!("{SITE_URL}/people/{}/", person.slug);
+        let newest = data
+            .votes_for_person(&person.slug)
+            .iter()
+            .map(|v| v.division.date.clone())
+            .max();
+        match newest {
+            Some(date) => assert!(
+                xml.contains(&format!("<loc>{url}</loc><lastmod>{date}</lastmod>")),
+                "no lastmod for {url}"
+            ),
+            None => assert!(xml.contains(&format!("<loc>{url}</loc></url>"))),
+        }
+    }
+
+    // The index points at the child sitemap and dates it from the newest page,
+    // which is whichever moved last: a division or a bill step.
+    let index = std::fs::read_to_string(out.join("sitemap-index.xml")).expect("index");
+    let newest = xml
+        .match_indices("<lastmod>")
+        .map(|(i, m)| xml[i + m.len()..].split('<').next().expect("lastmod"))
+        .max()
+        .expect("sample pages carry dates");
+    assert!(index.contains(&format!("{SITE_URL}/sitemap-0.xml</loc><lastmod>{newest}")));
+    // The front page turns over with them.
+    assert!(xml.contains(&format!(
+        "<loc>{SITE_URL}/</loc><lastmod>{newest}</lastmod>"
+    )));
+
     std::fs::remove_dir_all(&out).ok();
+}
+
+#[test]
+fn navigation_pages_ask_not_to_be_indexed() {
+    let data = sample_data();
+    let robots = |page: &Page| {
+        crate::layout::render(&data, SITE_URL, "/site.css", page)
+            .contains("<meta name=\"robots\" content=\"noindex, follow\">")
+    };
+    assert!(robots(&pages::search_page()), "search page needs noindex");
+    assert!(robots(&pages::not_found()), "404 needs noindex");
+    assert!(
+        !robots(&pages::home(&data)),
+        "the record itself is indexable"
+    );
 }
 
 #[test]

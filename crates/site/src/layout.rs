@@ -55,6 +55,9 @@ pub struct Page {
     pub jsonld: Option<String>,
     /// ISO date for the sitemap entry; omitted when the page has no natural one.
     pub lastmod: Option<String>,
+    /// Robots directive for pages that should stay out of the index. A page
+    /// carrying "noindex" is also left out of the sitemap.
+    pub robots: Option<&'static str>,
 }
 
 impl Page {
@@ -75,6 +78,7 @@ impl Page {
             og_type: "website",
             jsonld: None,
             lastmod: None,
+            robots: None,
         }
     }
 }
@@ -94,7 +98,11 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     out.push_str(&esc(&title_tag));
     out.push_str("</title><meta name=\"description\" content=\"");
     out.push_str(&esc_attr(description));
-    out.push_str("\"><meta name=\"theme-color\" content=\"#fafaf7\"><meta name=\"theme-color\" content=\"#191d1b\" media=\"(prefers-color-scheme: dark)\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">");
+    out.push_str("\">");
+    if let Some(robots) = page.robots {
+        out.push_str(&format!("<meta name=\"robots\" content=\"{robots}\">"));
+    }
+    out.push_str("<meta name=\"theme-color\" content=\"#fafaf7\"><meta name=\"theme-color\" content=\"#191d1b\" media=\"(prefers-color-scheme: dark)\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">");
     for font in PRELOAD_FONTS {
         out.push_str(&format!(
             "<link rel=\"preload\" href=\"{font}\" as=\"font\" type=\"font/woff2\" crossorigin>"
@@ -112,7 +120,7 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     out.push_str(&esc_attr(&format!("{origin}{}", page.path)));
     out.push_str("\"><meta property=\"og:image\" content=\"");
     out.push_str(&esc_attr(&format!("{origin}{og_image}")));
-    out.push_str("\"><meta property=\"og:image:width\" content=\"1200\"><meta property=\"og:image:height\" content=\"630\"><meta name=\"twitter:card\" content=\"summary_large_image\"><meta name=\"generator\" content=\"pollywiki\">");
+    out.push_str("\"><meta property=\"og:image:width\" content=\"1200\"><meta property=\"og:image:height\" content=\"630\"><meta property=\"og:site_name\" content=\"pollywiki\"><meta property=\"og:locale\" content=\"en_AU\"><meta name=\"twitter:card\" content=\"summary_large_image\"><meta name=\"generator\" content=\"pollywiki\">");
     out.push_str("<link rel=\"stylesheet\" href=\"");
     out.push_str(css_href);
     out.push_str("\">");

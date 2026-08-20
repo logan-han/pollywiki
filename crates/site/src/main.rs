@@ -138,7 +138,10 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
         let file = out_dir.join(rel).join("index.html");
         std::fs::create_dir_all(file.parent().unwrap())?;
         std::fs::write(&file, html)?;
-        sitemap_urls.push((page.path.clone(), page.lastmod.clone()));
+        // A page told not to index itself has no business in the sitemap.
+        if !page.robots.is_some_and(|r| r.contains("noindex")) {
+            sitemap_urls.push((page.path.clone(), page.lastmod.clone()));
+        }
     }
 
     // The not-found page lives at /404.html, outside the sitemap.
@@ -221,7 +224,7 @@ fn write_sitemap(
     // sitemap: /bills/s996/ sorts before /bills/s1138/.
     urls.sort_by_key(|(url, _)| natural_key(url));
     let mut sitemap = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:news=\"http://www.google.com/schemas/sitemap-news/0.9\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\" xmlns:image=\"http://www.google.com/schemas/sitemap-image/1.1\" xmlns:video=\"http://www.google.com/schemas/sitemap-video/1.1\">",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">",
     );
     for (url, lastmod) in &urls {
         match lastmod {
@@ -233,10 +236,16 @@ fn write_sitemap(
     }
     sitemap.push_str("</urlset>");
     std::fs::write(out_dir.join("sitemap-0.xml"), sitemap)?;
+    let index_lastmod = urls
+        .iter()
+        .filter_map(|(_, lastmod)| *lastmod)
+        .max()
+        .map(|date| format!("<lastmod>{date}</lastmod>"))
+        .unwrap_or_default();
     std::fs::write(
         out_dir.join("sitemap-index.xml"),
         format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><sitemap><loc>{origin}/sitemap-0.xml</loc></sitemap></sitemapindex>"
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><sitemap><loc>{origin}/sitemap-0.xml</loc>{index_lastmod}</sitemap></sitemapindex>"
         ),
     )?;
     Ok(())

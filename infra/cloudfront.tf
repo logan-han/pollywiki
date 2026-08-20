@@ -5,8 +5,10 @@ resource "aws_cloudfront_origin_access_control" "site" {
   signing_protocol                  = "sigv4"
 }
 
-# Edge request handling: canonicalise www to the apex, and rewrite /path/
-# to /path/index.html because S3 REST origins do not serve directory indexes.
+# Edge request handling: every page has exactly one URL, the apex host with a
+# trailing slash, so www and slashless paths are 301s rather than second copies
+# a crawler can index. Canonical /path/ then becomes /path/index.html because
+# S3 REST origins do not serve directory indexes.
 resource "aws_cloudfront_function" "index_rewrite" {
   name    = "${var.project}-index-rewrite"
   runtime = "cloudfront-js-2.0"
@@ -15,20 +17,34 @@ resource "aws_cloudfront_function" "index_rewrite" {
     function handler(event) {
       var request = event.request;
       var host = request.headers.host && request.headers.host.value;
-      if (host === 'www.${var.domains[0]}') {
+      var uri = request.uri;
+      // Extension-less paths are page routes; files keep their own URL.
+      var addSlash = !uri.endsWith('/') && !uri.includes('.');
+      if (host === 'www.${var.domains[0]}' || addSlash) {
+        // Carry the query string through; /search?q=x has to keep its term.
+        var query = '';
+        for (var name in request.querystring) {
+          var param = request.querystring[name];
+          var values = param.multiValue || [param];
+          for (var i = 0; i < values.length; i++) {
+            query += (query === '' ? '?' : '&') + name;
+            if (values[i].value !== '') {
+              query += '=' + values[i].value;
+            }
+          }
+        }
         return {
           statusCode: 301,
           statusDescription: 'Moved Permanently',
           headers: {
-            location: { value: 'https://${var.domains[0]}' + request.uri }
+            location: {
+              value: 'https://${var.domains[0]}' + uri + (addSlash ? '/' : '') + query
+            }
           }
         };
       }
-      var uri = request.uri;
       if (uri.endsWith('/')) {
         request.uri = uri + 'index.html';
-      } else if (!uri.includes('.')) {
-        request.uri = uri + '/index.html';
       }
       return request;
     }
