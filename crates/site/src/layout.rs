@@ -176,7 +176,7 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
             &data.meta.generated_at.chars().take(10).collect::<String>()
         ))
     ));
-    out.push_str("</div><nav aria-label=\"About\"><a href=\"/about/\">About</a><a href=\"/about/data-sources/\">Data sources</a><a href=\"/about/methodology/\">Methodology</a><a href=\"/about/corrections/\">Corrections</a><a href=\"/divisions/feed.xml\">Divisions feed</a><a href=\"/bills/feed.xml\">Bills feed</a><a href=\"https://github.com/logan-han/pollywiki\">Source code</a></nav><p class=\"legal\">Voting data © <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> (ODbL). Election data © AEC (CC BY 4.0). Photos via Wikimedia Commons, credited per page.</p></div></footer><script type=\"module\">");
+    out.push_str("</div><nav aria-label=\"About\"><a href=\"/about/\">About</a><a href=\"/about/data-sources/\">Data sources</a><a href=\"/about/methodology/\">Methodology</a><a href=\"/about/corrections/\">Corrections</a><a href=\"/divisions/feed.xml\">Divisions feed</a><a href=\"/bills/feed.xml\">Bills feed</a><a href=\"https://github.com/logan-han/pollywiki\">Source code</a><a href=\"https://coffee.han.life\" target=\"_blank\" rel=\"noopener\">\u{2615} Buy me a coffee</a></nav><p class=\"legal\">Voting data © <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> (ODbL). Election data © AEC (CC BY 4.0). Photos via Wikimedia Commons, credited per page.</p></div></footer><script type=\"module\">");
     out.push_str(QUICK_SEARCH_JS);
     out.push_str("</script></body></html>");
     out
