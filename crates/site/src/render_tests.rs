@@ -15,6 +15,7 @@ use crate::og;
 use crate::pages;
 use crate::procedures::procedure_for;
 use pollywiki_schema::{DivisionResult, House};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 const SITE_URL: &str = "https://pollywiki.test";
@@ -1105,6 +1106,110 @@ fn command_line_arguments_parse_to_the_documented_defaults() {
 
     assert!(args(&["--help"]).help);
     assert!(args(&["-h"]).help);
+}
+
+/// Records outlive the people and the seats they name: a member leaves, a seat
+/// is abolished at a redistribution, a replacement is sworn in before the
+/// people source has caught up. Every one of those used to leave pages linking
+/// at a URL the build never wrote.
+#[test]
+fn no_internal_link_points_at_a_page_the_build_does_not_emit() {
+    let data = sample_data();
+    let pages = all_pages(&data);
+    let emitted: HashSet<&str> = pages.iter().map(|p| p.path.as_str()).collect();
+
+    let href = regex::Regex::new("href=\"(/[^\"#?]*)\"").expect("literal pattern");
+    let mut broken: Vec<String> = Vec::new();
+    for page in &pages {
+        let html = render(&data, page);
+        for capture in href.captures_iter(&html) {
+            let target = &capture[1];
+            // Assets, feeds and the search index are files, not pages.
+            if !target.ends_with('/') || emitted.contains(target) {
+                continue;
+            }
+            broken.push(format!("{} -> {target}", page.path));
+        }
+    }
+    broken.sort();
+    broken.dedup();
+    assert!(broken.is_empty(), "links into nothing: {broken:#?}");
+}
+
+#[test]
+fn a_former_member_keeps_a_page_and_stays_out_of_the_sitting_counts() {
+    let data = sample_data();
+    let former = data
+        .people
+        .iter()
+        .find(|p| p.is_former())
+        .expect("sample bundles carry a member who has left");
+
+    let html = render(&data, &pages::person_page(&data, former));
+    assert!(html.contains("<strong>Former member:</strong>"));
+    assert!(html.contains("Former Member for Oldbridge"));
+    assert!(html.contains("21 May 2022 to 14 Mar 2026"));
+    // The seat was abolished, so the contest is named but not linked.
+    assert!(html.contains("<td>Oldbridge</td>"));
+    assert!(!html.contains("/electorates/oldbridge/"));
+    // Years served stop at the end of the term instead of running on.
+    assert!(html.contains("<span class=\"n\">3.8</span>"));
+
+    let index = render(&data, &pages::people_index(&data));
+    assert!(index.contains("<h2>Former members</h2>"));
+    assert!(index.contains(&format!(
+        "{} sitting parliamentarians",
+        data.sitting().count()
+    )));
+    assert!(
+        !index.contains(&format!("{} sitting parliamentarians", data.people.len())),
+        "the lede counts seats held, not pages published"
+    );
+
+    // Nothing that describes the parliament as it stands includes them.
+    for party in &data.parties {
+        assert!(
+            !data
+                .members_of_party(&party.slug)
+                .iter()
+                .any(|p| p.is_former()),
+            "a former member must not fill a seat on {}",
+            party.slug
+        );
+    }
+}
+
+#[test]
+fn a_vote_names_its_member_even_with_no_page_to_link_to() {
+    let data = sample_data();
+    let division = data
+        .divisions
+        .iter()
+        .find(|d| {
+            d.votes
+                .iter()
+                .any(|v| data.person_by_slug(&v.person_slug).is_none())
+        })
+        .expect("sample bundles carry a voter the people bundle does not");
+    let stray = division
+        .votes
+        .iter()
+        .find(|v| data.person_by_slug(&v.person_slug).is_none())
+        .expect("the vote the division was chosen for");
+
+    let html = render(&data, &pages::division_page(&data, division));
+    assert!(
+        html.contains(&format!("<li>{}</li>", stray.name)),
+        "the name on the record should render as plain text"
+    );
+    assert!(
+        !html.contains(&format!("/people/{}/", stray.person_slug)),
+        "no link into a page the build does not write"
+    );
+    assert!(
+        !html.contains(&stray.person_slug.replace('-', " ")),
+        "the slug fallback used to leak lowercase names into the vote list"
+    );
 }
 
 /// A unique scratch directory under the target dir, so tests never collide.

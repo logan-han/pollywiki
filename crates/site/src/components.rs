@@ -50,7 +50,8 @@ pub fn group_chip(data: &SiteData, group_slug: &str, group: &str, link: bool) ->
     let party = data.party_by_slug(group_slug);
     let colour = party.and_then(|p| p.colour.as_deref()).unwrap_or("#6e7b74");
     let label = party.map(|p| p.name.as_str()).unwrap_or(group);
-    if link {
+    // A group with no sitting members has no page, so the chip stays plain.
+    if link && party.is_some() {
         format!(
             "<a class=\"group-chip\" href=\"/parties/{group_slug}/\"><span class=\"dot\" style=\"background:{colour}\" aria-hidden=\"true\"></span>{}</a>",
             esc(label),
@@ -241,7 +242,8 @@ pub fn person_card(data: &SiteData, person: &Person) -> String {
             .as_deref()
             .and_then(|slug| data.electorate_by_slug(slug))
             .map(|e| e.name.clone())
-            .unwrap_or_default(),
+            // A seat abolished at a redistribution leaves the bundle behind.
+            .unwrap_or_else(|| crate::data::title_from_slug(person.electorate.as_deref())),
     };
     let party = data.party_by_slug(&person.group_slug);
     let sub = match party {

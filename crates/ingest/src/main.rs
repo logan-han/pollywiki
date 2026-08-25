@@ -35,6 +35,30 @@ pub fn reference_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(&dir).join(name)
 }
 
+/// Opening date of the newest parliament in the reference data. Division
+/// records begin there, so it bounds how far back departed members are kept.
+/// Without the file the cutoff sits in the future, which keeps only sitting
+/// members rather than pulling in every member since Federation.
+pub fn records_begin() -> String {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        opened: String,
+    }
+    let path = reference_path("parliaments.json");
+    let parsed: Option<indexmap::IndexMap<String, Entry>> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+    match parsed.and_then(|p| p.into_values().map(|e| e.opened).max()) {
+        Some(opened) => opened,
+        None => {
+            eprintln!(
+                "ingest: data/reference/parliaments.json unreadable, keeping sitting members only"
+            );
+            "9999-01-01".to_string()
+        }
+    }
+}
+
 struct Options {
     store: String,
     sources: Vec<String>,

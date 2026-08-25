@@ -8,7 +8,7 @@ use crate::components::{
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
-    parse_qualification, state_name, title_tier, to_fixed, Occupation, SiteData,
+    parse_qualification, state_name, title_from_slug, title_tier, to_fixed, Occupation, SiteData,
 };
 use crate::html::{esc, esc_attr};
 use crate::layout::Page;
@@ -207,7 +207,7 @@ pub fn home(data: &SiteData) -> Page {
     body.push_str("<h2>Composition of the 48th Parliament</h2>");
     body.push_str(&format!(
         "<p class=\"note\">{} sitting parliamentarians, grouped by parliamentary group.</p>",
-        data.people.len()
+        data.sitting().count()
     ));
     body.push_str(&seat_bar(data, House::Representatives));
     body.push_str(&seat_bar(data, House::Senate));
@@ -266,14 +266,21 @@ pub fn home(data: &SiteData) -> Page {
 }
 
 pub fn people_index(data: &SiteData) -> Page {
-    let mut sorted: Vec<&Person> = data.people.iter().collect();
-    sorted.sort_by(|a, b| pollywiki_schema::js_compare(&a.name, &b.name));
+    let by_name = |list: &mut Vec<&Person>| {
+        list.sort_by(|a, b| pollywiki_schema::js_compare(&a.name, &b.name));
+    };
+    let mut sorted: Vec<&Person> = data.sitting().collect();
+    by_name(&mut sorted);
+    // Members who have left sit outside the filters: the chamber and party
+    // controls describe the parliament as it stands.
+    let mut former: Vec<&Person> = data.former().collect();
+    by_name(&mut former);
 
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>People</h1><p class=\"lede\">");
     body.push_str(&format!(
         "{} sitting parliamentarians in the 48th Parliament.",
-        data.people.len()
+        sorted.len()
     ));
     body.push_str("</p></div>");
 
@@ -309,6 +316,24 @@ pub fn people_index(data: &SiteData) -> Page {
     }
     body.push_str("</div>");
 
+    if !former.is_empty() {
+        let one = former.len() == 1;
+        body.push_str(&format!(
+            "<h2>Former members</h2><p class=\"note\">{} sat in this parliament and {} since left. Their {} because the divisions they voted in are permanent.</p><div class=\"person-grid\">",
+            if one {
+                "One member".to_string()
+            } else {
+                format!("{} members", former.len())
+            },
+            if one { "has" } else { "have" },
+            if one { "page stays" } else { "pages stay" },
+        ));
+        for person in former {
+            body.push_str(&person_card(data, person));
+        }
+        body.push_str("</div>");
+    }
+
     let mut page = Page::new(
         "People",
         Some(
@@ -327,18 +352,29 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         .electorate
         .as_deref()
         .and_then(|slug| data.electorate_by_slug(slug));
-    let seat = match person.house {
-        House::Senate => format!(
-            "Senator for {}",
+    let (role, seat_name) = match person.house {
+        House::Senate => (
+            "Senator for",
             person
                 .state
                 .map(|s| state_name(s.as_str()).unwrap_or(s.as_str()))
                 .unwrap_or("")
+                .to_string(),
         ),
-        House::Representatives => format!(
-            "Member for {}",
-            electorate.map(|e| e.name.as_str()).unwrap_or("")
+        House::Representatives => (
+            "Member for",
+            match electorate {
+                Some(e) => e.name.clone(),
+                // A seat abolished at a redistribution leaves the bundle, but
+                // whoever sat for it still did.
+                None => title_from_slug(person.electorate.as_deref()),
+            },
         ),
+    };
+    let seat = if person.is_former() {
+        format!("Former {role} {seat_name}")
+    } else {
+        format!("{role} {seat_name}")
     };
     let votes = data.votes_for_person(&person.slug);
     let stats = person.stats.as_ref();
@@ -349,8 +385,12 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         .or(person.since.as_deref());
     let service_years = service_start.and_then(|start| {
         let start_ms = parse_js_date_millis(start)?;
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let years = (now_ms - start_ms) as f64 / 31_557_600_000.0;
+        // A finished term stops accruing years the day it ended.
+        let end_ms = match person.until.as_deref().and_then(parse_js_date_millis) {
+            Some(ms) => ms,
+            None => chrono::Utc::now().timestamp_millis(),
+        };
+        let years = (end_ms - start_ms) as f64 / 31_557_600_000.0;
         let fixed = to_fixed(years, 1);
         Some(fixed.strip_suffix(".0").unwrap_or(&fixed).to_string())
     });
@@ -398,11 +438,21 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         "<span data-pagefind-filter=\"chamber\">{}</span>",
         esc(&seat)
     ));
-    if let Some(since) = &person.since {
-        body.push_str(&format!(
+    match (&person.since, &person.until) {
+        (Some(since), Some(until)) => body.push_str(&format!(
+            "<span>· {} to {}</span>",
+            esc(&format_date(since)),
+            esc(&format_date(until))
+        )),
+        (Some(since), None) => body.push_str(&format!(
             "<span>· since {}</span>",
             esc(&format_date(since))
-        ));
+        )),
+        (None, Some(until)) => body.push_str(&format!(
+            "<span>· until {}</span>",
+            esc(&format_date(until))
+        )),
+        (None, None) => {}
     }
     body.push_str("</span></div>");
     body.push_str(&format!(
@@ -432,6 +482,14 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
     body.push_str("</div></div></div>");
 
+    if let Some(until) = &person.until {
+        body.push_str(&format!(
+            "<p class=\"procedure-note\"><strong>Former member:</strong> left the {} on {}. The page stays because the divisions recorded below are permanent.</p>",
+            chamber_word(person.house),
+            esc(&format_date(until))
+        ));
+    }
+
     if let Some(stats) = stats.filter(|s| s.divisions_eligible > 0) {
         body.push_str("<div class=\"stat-strip\">");
         body.push_str(&format!(
@@ -448,7 +506,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             ));
         }
         body.push_str("</div>");
-        body.push_str("<p class=\"note\">Absence from a division is not abstention: pairing arrangements, leave and parliamentary duties are not distinguished in the official record. <a href=\"/about/methodology/\">How these figures are computed.</a></p>");
+        body.push_str("<p class=\"note\">Counted against the divisions held while they sat, not the whole parliament. Absence from a division is not abstention: pairing arrangements, leave and parliamentary duties are not distinguished in the official record. <a href=\"/about/methodology/\">How these figures are computed.</a></p>");
     }
 
     if let Some(note) = &person.ai_note {
@@ -555,11 +613,20 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if let Some(elections) = person.elections.as_deref().filter(|e| !e.is_empty()) {
         body.push_str("<h2>Election history</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for e in elections {
+            // A seat abolished at a redistribution has no page of its own; the
+            // contest stays on the record as plain text.
+            let seat = match data.electorate_by_slug(&e.electorate_slug) {
+                Some(_) => format!(
+                    "<a href=\"/electorates/{}/\">{}</a>",
+                    e.electorate_slug,
+                    esc(&e.electorate_name)
+                ),
+                None => esc(&e.electorate_name),
+            };
             body.push_str(&format!(
-                "<tr><td>{}</td><td><a href=\"/electorates/{}/\">{}</a></td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
                 esc(&e.event_name),
-                e.electorate_slug,
-                esc(&e.electorate_name),
+                seat,
                 esc(&e.party),
                 to_fixed(e.pct.0, 1),
                 match e.swing {
@@ -754,10 +821,20 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         }
         _ => None,
     };
-    let name_for = |slug: &str| -> String {
-        data.person_by_slug(slug)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| slug.replace('-', " "))
+    // A vote can name someone the register has no page for: a member who
+    // arrived too recently for Wikidata to have recorded the seat. The record
+    // carries their name, so it renders as plain text rather than as a link
+    // into nothing.
+    let voter = |v: &pollywiki_schema::VoteCast| -> String {
+        match data.person_by_slug(&v.person_slug) {
+            Some(person) => format!(
+                "<a href=\"/people/{}/\">{}</a>",
+                person.slug,
+                esc(&person.name)
+            ),
+            None if !v.name.is_empty() => esc(&v.name),
+            None => esc(&v.person_slug.replace('-', " ")),
+        }
     };
 
     let mut body = String::new();
@@ -848,9 +925,8 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         ));
         for v in list.iter() {
             body.push_str(&format!(
-                "<li><a href=\"/people/{}/\">{}</a>{}</li>",
-                v.person_slug,
-                esc(&name_for(&v.person_slug)),
+                "<li>{}{}</li>",
+                voter(v),
                 if v.against_group_majority == Some(true) {
                     "<span class=\"note\"> · crossed</span>"
                 } else {
@@ -1705,7 +1781,7 @@ pub fn methodology() -> Page {
         "<h1>Methodology</h1>",
         "<p>pollywiki publishes official records verbatim plus simple arithmetic. This page defines every derived figure that appears on the site.</p>",
         "<h2>Divisions voted</h2>",
-        "<p>\"Voted in <em>n</em> of <em>m</em> divisions\" counts the divisions in the member's own chamber during this parliament (<em>m</em>) and the divisions where their name appears in the ayes or noes (<em>n</em>).</p>",
+        "<p>\"Voted in <em>n</em> of <em>m</em> divisions\" counts the divisions in the member's own chamber held while they sat (<em>m</em>) and the divisions where their name appears in the ayes or noes (<em>n</em>). A member sworn in at a by-election, or one who has since left, is measured against their own time in the seat, not the whole parliament.</p>",
         "<p><strong>Absence is not abstention.</strong> The official record does not distinguish pairing arrangements, approved leave, ministerial or committee duties, or illness from any other reason for not voting. A low attendance figure is not, by itself, evidence of anything. This caveat is shown wherever the figure appears.</p>",
         "<h2>Votes against party majority (\"crossed\")</h2>",
         "<p>For each division, each parliamentary group's majority position is the side (aye or no) with more of that group's votes. A member's vote is marked \"crossed\" when it lands on the other side. Groups that split evenly have no majority position, so no vote in that division is marked. Independents have no group majority and are never marked.</p>",

@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
+pub use pollywiki_schema::title_from_slug;
 use pollywiki_schema::{
     js_compare, Bill, Division, Electorate, ElectorateResult, Meta, Party, Person, Vote,
 };
@@ -149,11 +150,18 @@ impl SiteData {
             .map(|&i| &self.elections[i])
     }
 
+    /// Members who hold a seat right now. Former members keep their page, but
+    /// stay out of anything describing the parliament as it stands.
+    pub fn sitting(&self) -> impl Iterator<Item = &Person> {
+        self.people.iter().filter(|p| !p.is_former())
+    }
+
+    pub fn former(&self) -> impl Iterator<Item = &Person> {
+        self.people.iter().filter(|p| p.is_former())
+    }
+
     pub fn members_of_party(&self, slug: &str) -> Vec<&Person> {
-        self.people
-            .iter()
-            .filter(|p| p.group_slug == slug)
-            .collect()
+        self.sitting().filter(|p| p.group_slug == slug).collect()
     }
 
     /// Other divisions in the same chamber on the same sitting day, in order.

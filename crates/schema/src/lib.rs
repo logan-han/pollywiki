@@ -221,6 +221,11 @@ pub struct Person {
     pub group_slug: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
+    /// End of the seat this record describes. Set only once the term is over:
+    /// the register keeps the page, marked former, because the divisions the
+    /// person voted in are permanent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
     #[serde(default)]
     pub ids: PersonIds,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -241,6 +246,21 @@ pub struct Person {
     pub elections: Option<Vec<ElectionContest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<PersonStats>,
+}
+
+impl Person {
+    /// Whether this seat has ended. Former members keep their page but are
+    /// left out of anything describing the parliament as it stands.
+    pub fn is_former(&self) -> bool {
+        self.until.is_some()
+    }
+
+    /// Whether the person held the seat on an ISO date, used to decide which
+    /// divisions they could have voted in.
+    pub fn served_on(&self, date: &str) -> bool {
+        self.since.as_deref().is_none_or(|since| date >= since)
+            && self.until.as_deref().is_none_or(|until| date <= until)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +355,11 @@ pub enum Vote {
 #[serde(rename_all = "camelCase")]
 pub struct VoteCast {
     pub person_slug: String,
+    /// The member's name as the division record gave it. Kept so a vote still
+    /// reads correctly when no person entry matches the slug (a new member
+    /// Wikidata has not recorded yet).
+    #[serde(default)]
+    pub name: String,
     pub vote: Vote,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub teller: Option<bool>,
@@ -533,6 +558,27 @@ pub fn slugify(input: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// Readable name for a slug whose entity is no longer in the bundles, e.g. an
+/// electorate abolished at a redistribution. Not a true inverse of `slugify`:
+/// it only restores word boundaries and capitals.
+pub fn title_from_slug(slug: Option<&str>) -> String {
+    let Some(slug) = slug else {
+        return String::new();
+    };
+    let spaced = slug.replace('-', " ");
+    let mut out = String::with_capacity(spaced.len());
+    let mut at_boundary = true;
+    for c in spaced.chars() {
+        if at_boundary && c.is_ascii_lowercase() {
+            out.push(c.to_ascii_uppercase());
+        } else {
+            out.push(c);
+        }
+        at_boundary = !c.is_alphanumeric();
+    }
+    out
+}
+
 /// String comparison matching JavaScript's default localeCompare (ICU en).
 pub fn js_compare(a: &str, b: &str) -> std::cmp::Ordering {
     use icu::collator::{options::CollatorOptions, Collator, CollatorBorrowed};
@@ -576,6 +622,41 @@ mod tests {
         assert_eq!(serde_json::to_string(&JsNum(60.0)).unwrap(), "60");
         assert_eq!(serde_json::to_string(&JsNum(1.25)).unwrap(), "1.25");
         assert_eq!(serde_json::to_string(&JsNum(-0.0)).unwrap(), "0");
+    }
+
+    #[test]
+    fn title_from_slug_restores_words_and_capitals() {
+        assert_eq!(title_from_slug(Some("higgins")), "Higgins");
+        assert_eq!(title_from_slug(Some("north-sydney")), "North Sydney");
+        assert_eq!(title_from_slug(None), "");
+    }
+
+    #[test]
+    fn served_on_bounds_a_term_at_both_ends() {
+        let person: Person = serde_json::from_str(
+            r#"{"slug":"casey-obrien","name":"Casey O'Brien","house":"representatives",
+                "group":"Example Party","groupSlug":"example-party",
+                "since":"2022-05-21","until":"2026-03-14","ids":{},"links":{}}"#,
+        )
+        .expect("fixture");
+        assert!(person.is_former());
+        assert!(!person.served_on("2022-05-20"));
+        assert!(person.served_on("2022-05-21"), "the first day counts");
+        assert!(person.served_on("2026-03-14"), "so does the last");
+        assert!(!person.served_on("2026-03-15"));
+
+        // An open-ended record has no upper bound, and no start means no lower.
+        let sitting = Person {
+            until: None,
+            ..person.clone()
+        };
+        assert!(!sitting.is_former());
+        assert!(sitting.served_on("2030-01-01"));
+        let undated = Person {
+            since: None,
+            ..sitting
+        };
+        assert!(undated.served_on("1901-01-01"));
     }
 
     #[test]

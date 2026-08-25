@@ -6,10 +6,10 @@ use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonN
 use anyhow::Result;
 use indexmap::IndexMap;
 use pollywiki_schema::{
-    js_compare, slugify, AiText, Bill, Division, ElectionContest, Electorate, ElectorateResult,
-    House, Meta, Party, PartyFacts, PartySeats, Person, PersonStats, QuickSearchEntry, SummaryKind,
-    BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES,
-    BUNDLE_PEOPLE,
+    js_compare, slugify, title_from_slug, AiText, Bill, Division, ElectionContest, Electorate,
+    ElectorateResult, House, Meta, Party, PartyFacts, PartySeats, Person, PersonStats,
+    QuickSearchEntry, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS,
+    BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -40,7 +40,11 @@ pub async fn derive(store: &Store) -> Result<()> {
         if let Some(slug) = &person.electorate {
             if let Some(&i) = electorate_index.get(slug) {
                 person.state = Some(electorates[i].state);
-                electorates[i].member_slug = Some(person.slug.clone());
+                // Only whoever sits for the seat now is its member; a
+                // predecessor keeps the electorate on their own record.
+                if !person.is_former() {
+                    electorates[i].member_slug = Some(person.slug.clone());
+                }
             }
         }
     }
@@ -253,18 +257,23 @@ pub async fn derive(store: &Store) -> Result<()> {
         });
     }
     for p in &people {
+        let seat = match p.house {
+            House::Senate => format!(
+                "Senator \u{b7} {}",
+                p.state.map(|s| s.as_str()).unwrap_or("")
+            ),
+            House::Representatives => {
+                format!("MP \u{b7} {}", title_from_slug(p.electorate.as_deref()))
+            }
+        };
         quick_search.push(QuickSearchEntry {
             t: "person".to_string(),
             slug: p.slug.clone(),
             name: p.name.clone(),
-            sub: match p.house {
-                House::Senate => format!(
-                    "Senator \u{b7} {}",
-                    p.state.map(|s| s.as_str()).unwrap_or("")
-                ),
-                House::Representatives => {
-                    format!("MP \u{b7} {}", title_from_slug(p.electorate.as_deref()))
-                }
+            sub: if p.is_former() {
+                format!("Former {seat}")
+            } else {
+                seat
             },
         });
     }
@@ -281,8 +290,9 @@ pub async fn derive(store: &Store) -> Result<()> {
         .await?;
 
     println!(
-        "derive: {} people, {} parties, {} electorates, {} divisions, {} bills, {} electorate results",
+        "derive: {} people ({} former), {} parties, {} electorates, {} divisions, {} bills, {} electorate results",
         people.len(),
+        people.iter().filter(|p| p.is_former()).count(),
         parties.len(),
         electorates.len(),
         divisions.len(),
@@ -310,13 +320,14 @@ fn compute_vote_stats(people: &mut [Person], divisions: &[Division]) {
             }
         }
     }
-    let per_house = |house: House| divisions.iter().filter(|d| d.house == house).count() as i64;
-    let divisions_per_house = (per_house(House::Representatives), per_house(House::Senate));
     for person in people {
-        let eligible = match person.house {
-            House::Representatives => divisions_per_house.0,
-            House::Senate => divisions_per_house.1,
-        };
+        // Only divisions held while the person sat: someone who arrived at a
+        // by-election or left mid-term never had the chance to vote in the rest,
+        // and counting those against them would misread the record.
+        let eligible = divisions
+            .iter()
+            .filter(|d| d.house == person.house && person.served_on(&d.date))
+            .count() as i64;
         if eligible == 0 {
             continue;
         }
@@ -359,7 +370,9 @@ fn build_parties(people: &[Person]) -> Vec<Party> {
     };
 
     let mut groups: IndexMap<String, Party> = IndexMap::new();
-    for person in people {
+    // Seat counts describe the parliament as it stands, so former members are
+    // left out; a group only they belonged to drops off with them.
+    for person in people.iter().filter(|p| !p.is_former()) {
         let entry = groups.entry(person.group_slug.clone()).or_insert_with(|| {
             let default = PartyReferenceEntry::default();
             let reference_entry = reference.get(&person.group_slug).unwrap_or(&default);
@@ -416,24 +429,6 @@ fn sorted_by<T: Clone>(items: &[T], key: impl Fn(&T) -> String) -> Vec<T> {
         other => other,
     });
     keyed.into_iter().map(|(_, i)| i).collect()
-}
-
-fn title_from_slug(slug: Option<&str>) -> String {
-    let Some(slug) = slug else {
-        return String::new();
-    };
-    let spaced = slug.replace('-', " ");
-    let mut out = String::with_capacity(spaced.len());
-    let mut at_boundary = true;
-    for c in spaced.chars() {
-        if at_boundary && c.is_ascii_lowercase() {
-            out.push(c.to_ascii_uppercase());
-        } else {
-            out.push(c);
-        }
-        at_boundary = !c.is_alphanumeric();
-    }
-    out
 }
 
 #[cfg(test)]
@@ -772,6 +767,137 @@ mod tests {
             "bills are indexed by id"
         );
         assert!(quick.iter().any(|e| e.sub == "Before Senate"));
+    }
+
+    #[tokio::test]
+    async fn eligibility_and_seats_follow_each_member_s_own_term() {
+        let store = Store::Local(LocalStore::new(scratch("terms")));
+
+        // Sitting throughout, in a seat of their own.
+        put(
+            &store,
+            "canonical/people/alex-paterson.json",
+            r#"{
+            "slug":"alex-paterson","name":"Alex Paterson","house":"representatives",
+            "electorate":"placeholder-bay","group":"Example Party","groupSlug":"example-party",
+            "since":"2022-05-21","ids":{},"links":{}}"#,
+        )
+        .await;
+        // Left mid-parliament; the seat went to a by-election.
+        put(
+            &store,
+            "canonical/people/casey-obrien.json",
+            r#"{
+            "slug":"casey-obrien","name":"Casey O'Brien","house":"representatives",
+            "electorate":"sampleford","group":"Retired Party","groupSlug":"retired-party",
+            "since":"2022-05-21","until":"2026-03-14","ids":{},"links":{}}"#,
+        )
+        .await;
+        // Won that by-election, so the earlier division was never theirs to vote in.
+        put(
+            &store,
+            "canonical/people/dana-brooks.json",
+            r#"{
+            "slug":"dana-brooks","name":"Dana Brooks","house":"representatives",
+            "electorate":"sampleford","group":"Example Party","groupSlug":"example-party",
+            "since":"2026-05-09","ids":{},"links":{}}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/electorates/sampleford.json",
+            r#"{"slug":"sampleford","name":"Sampleford","state":"VIC"}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/electorates/placeholder-bay.json",
+            r#"{"slug":"placeholder-bay","name":"Placeholder Bay","state":"NSW"}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/divisions/a.json",
+            r#"{
+            "id":"representatives/2026-02-10/1","house":"representatives","date":"2026-02-10",
+            "number":1,"name":"Motions - Before the by-election","result":"passed",
+            "ayes":2,"noes":0,"links":{},
+            "votes":[{"personSlug":"alex-paterson","name":"Alex Paterson","vote":"aye"},
+                     {"personSlug":"casey-obrien","name":"Casey O'Brien","vote":"aye"}]}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/divisions/b.json",
+            r#"{
+            "id":"representatives/2026-06-15/1","house":"representatives","date":"2026-06-15",
+            "number":1,"name":"Motions - After the by-election","result":"passed",
+            "ayes":2,"noes":0,"links":{},
+            "votes":[{"personSlug":"alex-paterson","name":"Alex Paterson","vote":"aye"},
+                     {"personSlug":"dana-brooks","name":"Dana Brooks","vote":"aye"}]}"#,
+        )
+        .await;
+
+        derive(&store).await.expect("derive");
+
+        let people: Vec<Person> = lines(
+            &store
+                .get_raw("bundles/people.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let eligible = |slug: &str| {
+            people
+                .iter()
+                .find(|p| p.slug == slug)
+                .and_then(|p| p.stats.as_ref())
+                .map(|s| (s.divisions_eligible, s.divisions_voted))
+                .expect("stats")
+        };
+        assert_eq!(eligible("alex-paterson"), (2, 2), "sat for both divisions");
+        assert_eq!(
+            eligible("casey-obrien"),
+            (1, 1),
+            "a division held after they left was never theirs to vote in"
+        );
+        assert_eq!(
+            eligible("dana-brooks"),
+            (1, 1),
+            "a division held before they arrived is not a missed vote"
+        );
+
+        // The seat belongs to whoever holds it now.
+        let electorates: Vec<Electorate> = lines(
+            &store
+                .get_raw("bundles/electorates.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let sampleford = electorates
+            .iter()
+            .find(|e| e.slug == "sampleford")
+            .expect("sampleford");
+        assert_eq!(sampleford.member_slug.as_deref(), Some("dana-brooks"));
+
+        // Seat counts and party pages describe the parliament as it stands.
+        let parties: Vec<Party> = lines(
+            &store
+                .get_raw("bundles/parties.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(
+            parties.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(),
+            vec!["example-party"],
+            "a group only a former member belonged to holds no seats"
+        );
+        assert_eq!(
+            parties[0].seats.as_ref().map(|s| s.representatives),
+            Some(2)
+        );
     }
 
     #[tokio::test]

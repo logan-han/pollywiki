@@ -369,10 +369,11 @@ pub fn to_division(detail: &TvfyDivisionDetail, crosswalk: &IndexMap<String, i64
     }
     let mut votes: Vec<VoteCast> = Vec::new();
     for v in &detail.votes {
+        let name = format!("{} {}", v.member.first_name, v.member.last_name);
         let slug = id_by_slug
             .get(&v.member.person.id)
             .cloned()
-            .unwrap_or_else(|| slugify(&format!("{} {}", v.member.first_name, v.member.last_name)));
+            .unwrap_or_else(|| slugify(&name));
         let tally = group_tallies.get(&v.member.party);
         let majority = tally.and_then(|(aye, no)| {
             if aye == no {
@@ -385,6 +386,7 @@ pub fn to_division(detail: &TvfyDivisionDetail, crosswalk: &IndexMap<String, i64
         });
         votes.push(VoteCast {
             person_slug: slug,
+            name,
             vote: v.vote,
             teller: None,
             against_group_majority: match majority {

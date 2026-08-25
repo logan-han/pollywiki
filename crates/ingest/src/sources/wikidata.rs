@@ -20,20 +20,28 @@ fn house_position(q: &str) -> Option<House> {
     }
 }
 
-// Current members: an open P39 (position held) statement with no end date.
-const MEMBERS_QUERY: &str = r#"
-SELECT ?person ?personLabel ?houseQ ?partyLabel ?electorateLabel ?img ?start ?article WHERE {
-  VALUES ?houseQ { wd:Q18912794 wd:Q6814428 }
+// Everyone who has held a seat in the parliament the register covers: an open
+// P39 (position held) statement, or one that ended on or after `since`. Terms
+// that closed before then sit outside the division records the site holds, so
+// nothing on the site would link to them.
+fn members_query(since: &str) -> String {
+    format!(
+        r#"
+SELECT ?person ?personLabel ?houseQ ?partyLabel ?electorateLabel ?img ?start ?end ?article WHERE {{
+  VALUES ?houseQ {{ wd:Q18912794 wd:Q6814428 }}
   ?person p:P39 ?ps .
   ?ps ps:P39 ?houseQ .
-  FILTER NOT EXISTS { ?ps pq:P582 ?end . }
-  OPTIONAL { ?ps pq:P580 ?start . }
-  OPTIONAL { ?ps pq:P768 ?electorate . }
-  OPTIONAL { ?ps pq:P4100 ?party . }
-  OPTIONAL { ?person wdt:P18 ?img . }
-  OPTIONAL { ?article schema:about ?person ; schema:isPartOf <https://en.wikipedia.org/> . }
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "en" . }
-}"#;
+  OPTIONAL {{ ?ps pq:P582 ?end . }}
+  FILTER(!BOUND(?end) || ?end >= "{since}T00:00:00Z"^^xsd:dateTime)
+  OPTIONAL {{ ?ps pq:P580 ?start . }}
+  OPTIONAL {{ ?ps pq:P768 ?electorate . }}
+  OPTIONAL {{ ?ps pq:P4100 ?party . }}
+  OPTIONAL {{ ?person wdt:P18 ?img . }}
+  OPTIONAL {{ ?article schema:about ?person ; schema:isPartOf <https://en.wikipedia.org/> . }}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en" . }}
+}}"#
+    )
+}
 
 #[derive(Debug, Clone)]
 pub struct RawMember {
@@ -44,6 +52,7 @@ pub struct RawMember {
     pub district: Option<String>,
     pub commons_file: Option<String>,
     pub since: Option<String>,
+    pub until: Option<String>,
     pub wikipedia: Option<String>,
 }
 
@@ -59,7 +68,7 @@ pub async fn sync_wikidata(store: &Store, endpoints: &Endpoints) -> Result<Vec<P
     let url = format!(
         "{}?query={}",
         endpoints.wikidata_sparql,
-        encode_uri_component(MEMBERS_QUERY)
+        encode_uri_component(&members_query(&crate::records_begin()))
     );
     let mut opts = endpoints.opts(2000);
     opts.accept = Some("application/sparql-results+json".to_string());
@@ -117,8 +126,10 @@ pub async fn sync_wikidata(store: &Store, endpoints: &Endpoints) -> Result<Vec<P
         store.put_json(&key, person).await?;
     }
 
-    // People are owned entirely by this source; prune entries that no longer
-    // correspond to a current member (departures, renames, label fixes).
+    // People are owned entirely by this source; prune entries it no longer
+    // returns (renames, label fixes, and terms that ended before the records
+    // the site holds begin). A member who has just left is kept, marked former,
+    // because the divisions they voted in still link to them.
     let current: std::collections::HashSet<String> = people
         .iter()
         .map(|p| format!("canonical/people/{}.json", p.slug))
@@ -233,7 +244,13 @@ pub fn people_from_members(
 ) -> Vec<Person> {
     let mut people: Vec<Person> = Vec::new();
     let mut taken: IndexMap<String, ()> = IndexMap::new();
-    for m in members {
+    // Sitting members claim the plain slug first: someone else's departure must
+    // never push a current member's page onto a disambiguated URL.
+    let ordered = members
+        .iter()
+        .filter(|m| m.until.is_none())
+        .chain(members.iter().filter(|m| m.until.is_some()));
+    for m in ordered {
         let mut slug = slugify(&m.name);
         if taken.contains_key(&slug) {
             let extra = m
@@ -277,6 +294,7 @@ pub fn people_from_members(
             group: group.clone(),
             group_slug: slugify(&group),
             since: m.since.as_deref().map(|s| s.chars().take(10).collect()),
+            until: m.until.as_deref().map(|s| s.chars().take(10).collect()),
             ids: PersonIds {
                 wikidata: Some(m.wikidata.clone()),
                 ..Default::default()
@@ -297,6 +315,7 @@ pub fn people_from_members(
 
 pub fn dedupe(bindings: &[Value]) -> Vec<RawMember> {
     struct Entry {
+        open: bool,
         start: String,
         member: RawMember,
     }
@@ -315,9 +334,13 @@ pub fn dedupe(bindings: &[Value]) -> Vec<RawMember> {
             continue;
         };
         let start = binding_value(b, "start").unwrap_or("").to_string();
-        // A person can carry several open statements; keep the most recent seat.
+        let end = binding_value(b, "end").unwrap_or("").to_string();
+        let open = end.is_empty();
+        // A person can carry several statements: someone who moved from the
+        // House to the Senate holds both. A seat they still hold always wins,
+        // then the most recent start.
         if let Some(existing) = by_id.get(uri) {
-            if existing.start >= start {
+            if (existing.open, existing.start.as_str()) >= (open, start.as_str()) {
                 continue;
             }
         }
@@ -334,6 +357,7 @@ pub fn dedupe(bindings: &[Value]) -> Vec<RawMember> {
         by_id.insert(
             uri.to_string(),
             Entry {
+                open,
                 start: start.clone(),
                 member: RawMember {
                     wikidata: uri.rsplit('/').next().unwrap_or(uri).to_string(),
@@ -343,6 +367,7 @@ pub fn dedupe(bindings: &[Value]) -> Vec<RawMember> {
                     district: binding_value(b, "electorateLabel").map(str::to_string),
                     commons_file,
                     since: if start.is_empty() { None } else { Some(start) },
+                    until: if open { None } else { Some(end) },
                     wikipedia: binding_value(b, "article").map(str::to_string),
                 },
             },
@@ -587,6 +612,32 @@ mod tests {
         assert_eq!(strip_html("<a href=\"x\">Jane Smith</a>"), "Jane Smith");
         assert_eq!(strip_html("<span></span>"), "Wikimedia Commons");
         assert_eq!(strip_html("   "), "Wikimedia Commons");
+    }
+
+    #[test]
+    fn dedupe_prefers_a_seat_still_held_over_one_that_has_ended() {
+        // Someone who moved from the House to the Senate carries both, and the
+        // ended House term can be the one that started later.
+        let members = dedupe(&bindings(
+            r#"[
+              {"person":{"value":"http://www.wikidata.org/entity/Q1"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q6814428"},
+               "electorateLabel":{"value":"Victoria"},
+               "start":{"value":"2019-07-01T00:00:00Z"}},
+              {"person":{"value":"http://www.wikidata.org/entity/Q1"},
+               "personLabel":{"value":"Jane Smith"},
+               "houseQ":{"value":"http://www.wikidata.org/entity/Q18912794"},
+               "electorateLabel":{"value":"Sampleford"},
+               "start":{"value":"2025-05-03T00:00:00Z"},
+               "end":{"value":"2026-03-14T00:00:00Z"}}
+            ]"#,
+        ));
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].house, House::Senate, "the seat still held wins");
+        assert_eq!(members[0].district.as_deref(), Some("Victoria"));
+        assert!(members[0].until.is_none());
     }
 
     #[test]
@@ -850,6 +901,9 @@ mod tests {
                         "article": { "value": "https://en.wikipedia.org/wiki/Example_Party" }
                     }])));
                 }
+                let mut departed =
+                    member_row("Q3", "Casey O'Brien", "Oldbridge", "Example Party", None);
+                departed["end"] = serde_json::json!({ "value": "2026-03-14T00:00:00Z" });
                 return Response::json(sparql(serde_json::json!([
                     member_row(
                         "Q1",
@@ -864,7 +918,8 @@ mod tests {
                         "Placeholder Bay",
                         "Independent",
                         None
-                    )
+                    ),
+                    departed
                 ])));
             }
             if req.path.starts_with("/commons-files") {
@@ -894,7 +949,7 @@ mod tests {
         let people = sync_wikidata(&store, &Endpoints::at(&server.base))
             .await
             .expect("sync");
-        assert_eq!(people.len(), 2);
+        assert_eq!(people.len(), 3, "two sitting members and one who has left");
 
         let alex: Person = store
             .get_json("canonical/people/alex-paterson.json")
@@ -984,7 +1039,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_member_who_is_no_longer_current_is_pruned() {
+    async fn a_member_whose_term_has_ended_is_kept_and_marked_former() {
+        let server = wikidata_server();
+        let store = new_store("former");
+
+        let people = sync_wikidata(&store, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let casey = people
+            .iter()
+            .find(|p| p.slug == "casey-obrien")
+            .expect("the departed member is still written");
+        assert_eq!(casey.until.as_deref(), Some("2026-03-14"));
+        assert!(casey.is_former());
+        assert!(!casey.served_on("2026-03-15"));
+        assert!(casey.served_on("2026-03-14"));
+        // Divisions still link to them, so the page has to survive the sync.
+        assert!(store
+            .get_json::<Person>("canonical/people/casey-obrien.json")
+            .await
+            .unwrap()
+            .is_some());
+
+        for sitting in ["alex-paterson", "jordan-nguyen"] {
+            let person = people
+                .iter()
+                .find(|p| p.slug == sitting)
+                .expect("sitting member");
+            assert!(!person.is_former(), "{sitting} still holds the seat");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_person_the_source_no_longer_returns_is_pruned() {
         let server = wikidata_server();
         let store = new_store("prune");
         let departed: Person = serde_json::from_str(
