@@ -4,7 +4,7 @@
 
 use crate::components::{
     avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, person_card,
-    result_chip, result_word, seat_bar, vote_bar, BILL_DOTS_LEGEND,
+    result_chip, result_word, seat_bar, series_row, vote_bar, BILL_DOTS_LEGEND,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
@@ -213,11 +213,13 @@ pub fn home(data: &SiteData) -> Page {
     body.push_str(&seat_bar(data, House::Senate));
 
     body.push_str("<div class=\"section-head\"><h2>Latest divisions</h2><a href=\"/divisions/\">All divisions →</a></div>");
-    let latest: Vec<&Division> = data.divisions.iter().take(8).collect();
+    // One row per matter, not per division: a contested bill can be put ten
+    // times in a sitting day and would otherwise fill the list on its own.
+    let latest = data.latest_series(8);
     if !latest.is_empty() {
         body.push_str("<ul class=\"ledger\">");
-        for d in latest {
-            body.push_str(&ledger_row(d));
+        for series in &latest {
+            body.push_str(&series_row(data, series));
         }
         body.push_str("</ul>");
     } else {
@@ -567,21 +569,34 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             body.push_str("</tbody></table></div>");
         }
         if !background.occupations.is_empty() {
-            body.push_str("<h3 style=\"font-size:.95rem; margin-top:1.2rem;\">Occupations before parliament</h3><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Organisation</th><th class=\"num\" scope=\"col\">Period</th></tr></thead><tbody>");
-            for o in &background.occupations {
-                match parse_occupation(o) {
-                    Occupation::Raw(raw) => {
-                        body.push_str(&format!("<tr><td colspan=\"3\">{}</td></tr>", esc(&raw)));
-                    }
-                    Occupation::Parsed { role, org, period } => {
-                        body.push_str(&format!(
-                            "<tr><td>{}</td><td>{}</td><td class=\"num\" style=\"white-space: nowrap;\">{}</td></tr>",
-                            esc(&role),
-                            esc(&org),
-                            esc(&period)
-                        ));
-                    }
+            let rows: Vec<Occupation> = background
+                .occupations
+                .iter()
+                .map(|o| parse_occupation(o))
+                .collect();
+            // A career of bare titles gets a one-column table, not two empty ones.
+            let has_org = rows.iter().any(|o| !o.org.is_empty());
+            let has_period = rows.iter().any(|o| !o.period.is_empty());
+            body.push_str("<h3 style=\"font-size:.95rem; margin-top:1.2rem;\">Occupations before parliament</h3><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th>");
+            if has_org {
+                body.push_str("<th scope=\"col\">Organisation</th>");
+            }
+            if has_period {
+                body.push_str("<th class=\"num\" scope=\"col\">Period</th>");
+            }
+            body.push_str("</tr></thead><tbody>");
+            for o in &rows {
+                body.push_str(&format!("<tr><td>{}</td>", esc(&o.role)));
+                if has_org {
+                    body.push_str(&format!("<td>{}</td>", esc(&o.org)));
                 }
+                if has_period {
+                    body.push_str(&format!(
+                        "<td class=\"num\" style=\"white-space: nowrap;\">{}</td>",
+                        esc(&o.period)
+                    ));
+                }
+                body.push_str("</tr>");
             }
             body.push_str("</tbody></table></div>");
         }
@@ -1790,9 +1805,10 @@ pub fn methodology() -> Page {
         "<h2>Election percentages</h2>",
         "<p>First preference and two-candidate-preferred percentages are computed from AEC final totals per electorate. Swing figures are the AEC's own published swings.</p>",
         "<h2>AI summaries and notes</h2>",
-        "<p>Machine-written text appears in three places, always labelled \"AI-generated\".</p>",
+        "<p>Machine-written text appears in four places, always labelled \"AI-generated\".</p>",
         "<p><strong>Bill context.</strong> Each bill's page explains the official summary in plain terms. General knowledge of Australian parliamentary practice is used to explain the mechanism (what an appropriation bill is, for example); anything specific to the bill comes from its official summary only.</p>",
         "<p><strong>Division context.</strong> They Vote For You provides written context for most bill votes; for procedural motions their context field is a raw Hansard excerpt. For those, a one-to-two sentence note explains what the bill, amendment or motion was about and what question was being decided, grounded on that excerpt and the official bill summaries. It never restates the result, which the page already shows, and links to the full record.</p>",
+        "<p><strong>Series on the home page.</strong> When a chamber divides on one matter several times in a sitting day, the home page folds those divisions into one entry. Each vote in it is labelled with the first sentence of its context: They Vote For You's where volunteers have written it, otherwise the machine-written division note, marked AI. The sequence of amendments put and lost before the question itself then reads as one story.</p>",
         "<p><strong>Voting record in brief.</strong> Each member's page carries a short note describing patterns their voting table cannot show at a glance: the subject areas that recur among their votes and which way they voted on them, plus any divisions where they voted against their own party grouping. The generator is instructed to describe, never evaluate: no praise, no criticism, no motives, no ideology. Notes regenerate as the record grows.</p>",
         "<p>AI text is never part of the record. If a summary or note misstates the record,<a href=\"/about/corrections/\">request a correction</a> and it will be regenerated or removed.</p>",
         "<h2>What this site never does</h2>",

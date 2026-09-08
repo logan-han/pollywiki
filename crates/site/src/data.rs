@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use indexmap::IndexMap;
 pub use pollywiki_schema::title_from_slug;
 use pollywiki_schema::{
-    js_compare, Bill, Division, Electorate, ElectorateResult, Meta, Party, Person, Vote,
+    js_compare, Bill, Division, Electorate, ElectorateResult, House, Meta, Party, Person, Vote,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -418,74 +418,159 @@ pub fn parse_bill_summary(summary: &str) -> Option<Vec<BillSummaryGroup>> {
     }
 }
 
-pub enum Occupation {
-    Parsed {
-        role: String,
-        org: String,
-        period: String,
-    },
-    Raw(String),
+/// One row of the occupations table. Only the role is always present: the
+/// Handbook writes anything from a bare title ("Senior Manager") to a fully
+/// dated placement, and the table shows only the columns a person's rows fill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occupation {
+    pub role: String,
+    pub org: String,
+    pub period: String,
 }
 
-/// Handbook occupation strings follow "Role at|for|with Organisation from X to
-/// Y." or "Role of the Organisation from X to Y."; anything that doesn't match
-/// renders verbatim across the row.
-///
-/// at/for/with is tried before of, so "Member of the Board at Example Co"
-/// splits on "at" and keeps the whole title in the role column.
+/// Handbook occupation strings are prose: "Role at|for|with|to|in|of (the)
+/// Organisation from X to Y.", with dates as years, "Month YYYY" or
+/// "d.m.yyyy", and the year sometimes hung off the organisation instead ("UK
+/// Treasury, 2003"). The role keeps every word up to the first preposition
+/// that introduces something organisation-shaped (see `organisation`), tried
+/// in order of confidence: at/for/with/to first, then in, then of, then a bare
+/// comma. So "Chief of Staff to Senator B Joyce" splits at "to", "Cash in
+/// Transit Officer for Linfox Armaguard" at "for", and "Head of Partnerships"
+/// not at all. Whatever cannot be split stays whole in the role column.
 pub fn parse_occupation(text: &str) -> Occupation {
     use regex::Regex;
     use std::sync::LazyLock;
-    static AT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(.+?) (?:at|for|with) (?:the )?(.+?)(?: from (.+?))?(?: to (.+))?$").unwrap()
+    const DATE: &str = r"(?:\d{1,2}\.\d{1,2}\.\d{4}|(?:January|February|March|April|May|June|July|August|September|October|November|December)(?:\s+\d{4})?|\d{4})";
+    // "from X", "from X to Y" or a bare "to Y", only when what follows the
+    // preposition is a date: "Adviser to Senator M Watt" is a placement.
+    static PERIOD: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!(
+            r"^(.*?),?\s+(?:from\s+({DATE})(?:\s+to\s+({DATE}))?|to\s+({DATE}))$"
+        ))
+        .unwrap()
     });
-    static OF: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(.+?) of (?:the )?(.+?)(?: from (.+?))?(?: to (.+))?$").unwrap()
-    });
-    // A year or year range left dangling on the organisation, e.g.
-    // "UK Treasury, 2003", which the Handbook writes instead of "from ... to".
+    // A year or year range left dangling on the end, e.g. "UK Treasury, 2003".
     static TRAILING_YEARS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r"^(.*?),\s*((?:1[89]|20)\d{2})(?:\s*[-\u{2013}\u{2014}]\s*((?:1[89]|20)\d{2}))?$",
+            r"^(.*?[^\s,])\s*,?\s+((?:1[89]|20)\d{2})(?:\s*[-\u{2013}\u{2014}]\s*((?:1[89]|20)\d{2}))?$",
         )
         .unwrap()
     });
 
     let trimmed = text.trim();
-    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
-    let Some(caps) = AT.captures(trimmed).or_else(|| OF.captures(trimmed)) else {
-        return Occupation::Raw(text.to_string());
+    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed).trim();
+    let (body, mut period) = match PERIOD.captures(trimmed) {
+        Some(caps) if caps.get(1).is_some_and(|m| !m.as_str().trim().is_empty()) => {
+            let period = match (caps.get(2), caps.get(3), caps.get(4)) {
+                (Some(from), Some(to), _) => format!(
+                    "{} \u{2013} {}",
+                    dotted_date(from.as_str()),
+                    dotted_date(to.as_str())
+                ),
+                (Some(from), None, _) => format!("from {}", dotted_date(from.as_str())),
+                (None, _, Some(to)) => format!("to {}", dotted_date(to.as_str())),
+                _ => String::new(),
+            };
+            (caps[1].to_string(), period)
+        }
+        _ => (trimmed.to_string(), String::new()),
     };
-    let (Some(role), Some(org)) = (caps.get(1), caps.get(2)) else {
-        return Occupation::Raw(text.to_string());
-    };
-    let from = caps.get(3).map(|m| m.as_str());
-    let to = caps.get(4).map(|m| m.as_str());
-    let mut period = match (from, to) {
-        (Some(from), Some(to)) => format!("{} \u{2013} {}", dotted_date(from), dotted_date(to)),
-        (Some(from), None) => format!("from {}", dotted_date(from)),
-        _ => String::new(),
-    };
-
-    // Organisations arrive with the separator's trailing comma attached.
-    let mut org = org.as_str().trim().trim_end_matches(',').trim().to_string();
+    let mut body = tidy(&body);
     if period.is_empty() {
-        if let Some(years) = TRAILING_YEARS.captures(&org) {
-            period = match years.get(3) {
+        let dangling = TRAILING_YEARS.captures(&body).map(|years| {
+            let period = match years.get(3) {
                 Some(end) => format!("{} \u{2013} {}", &years[2], end.as_str()),
                 None => years[2].to_string(),
             };
-            org = years[1].trim().trim_end_matches(',').trim().to_string();
+            (tidy(&years[1]), period)
+        });
+        if let Some((rest, years)) = dangling {
+            body = rest;
+            period = years;
         }
     }
-    if org.is_empty() {
-        return Occupation::Raw(text.to_string());
+    let (role, org) = split_role(&body);
+    Occupation { role, org, period }
+}
+
+/// Where the role ends and the organisation begins, or the whole text as the
+/// role when no preposition introduces anything organisation-shaped.
+fn split_role(body: &str) -> (String, String) {
+    // In order of confidence. "at" and "with" name the employer; "for" and
+    // "to" often name a function or a minister first ("General Manager for
+    // Business Development at Perth Airport"); "in" and "of" sit inside titles
+    // ("Cash in Transit Officer", "Chief of Staff") and only split when nothing
+    // stronger does; a bare comma is the last resort.
+    const TIERS: [&[&str]; 5] = [
+        &[" at ", " with "],
+        &[" for ", " to "],
+        &[" in "],
+        &[" of "],
+        &[", "],
+    ];
+    let mut candidates: Vec<(usize, usize, &str)> = Vec::new();
+    for (tier, preps) in TIERS.iter().enumerate() {
+        for prep in preps.iter() {
+            candidates.extend(body.match_indices(prep).map(|(i, _)| (tier, i, *prep)));
+        }
     }
-    Occupation::Parsed {
-        role: role.as_str().trim().to_string(),
-        org,
-        period,
+    candidates.sort_unstable();
+    for (_, i, prep) in candidates {
+        let role = tidy(&body[..i]);
+        if role.is_empty() {
+            continue;
+        }
+        let Some(org) = organisation(&body[i + prep.len()..], prep == " of ") else {
+            continue;
+        };
+        // "Convener, Department of Juvenile Justice": the institution's head
+        // noun was left on the role, so the comma is the real boundary.
+        if let Some((head, tail)) = role.rsplit_once(", ") {
+            let one_capitalised_word =
+                !tail.contains(' ') && tail.chars().next().is_some_and(char::is_uppercase);
+            if one_capitalised_word && !head.trim().is_empty() {
+                let comma = i - role.len() + head.len();
+                let institution = &body[comma + 2..];
+                if let Some(org) = organisation(institution, false) {
+                    return (tidy(head), org);
+                }
+            }
+        }
+        return (role, org);
     }
+    (body.to_string(), String::new())
+}
+
+/// The text after a preposition, if it reads as an organisation rather than as
+/// the rest of a title: it starts with "the", a capital, a digit or an acronym.
+/// After "of", a lone capitalised word is not enough ("Head of Partnerships",
+/// "Director of Nursing"); it needs more words or the marks of a proper name.
+fn organisation(text: &str, after_of: bool) -> Option<String> {
+    let text = text.trim();
+    let (had_article, rest) = ["the ", "The ", "a ", "an "]
+        .iter()
+        .find_map(|article| text.strip_prefix(*article).map(|rest| (true, rest)))
+        .unwrap_or((false, text));
+    let rest = tidy(rest);
+    let first = rest.chars().next()?;
+    if !(first.is_uppercase() || first.is_ascii_digit()) {
+        return None;
+    }
+    if after_of && !had_article {
+        let marked = rest
+            .chars()
+            .any(|c| !c.is_alphabetic() && !c.is_whitespace())
+            || rest.chars().skip(1).any(char::is_uppercase);
+        if rest.split_whitespace().count() < 2 && !marked {
+            return None;
+        }
+    }
+    Some(rest)
+}
+
+/// Strip the whitespace and separator commas a split leaves on either side.
+fn tidy(text: &str) -> String {
+    text.trim().trim_end_matches(',').trim().to_string()
 }
 
 /// Handbook dates arrive as "29.8.2022"; render them in the site's style.
@@ -659,6 +744,95 @@ pub fn js_float(value: f64) -> String {
     }
 }
 
+/// The Hansard title before the first semicolon, which names what was being
+/// dealt with; the stage of the question follows it ("...; Second Reading").
+pub fn division_matter(name: &str) -> &str {
+    name.split_once(';')
+        .map_or(name, |(matter, _)| matter)
+        .trim()
+}
+
+/// The stage after the semicolon, if the name has one.
+pub fn division_stage(name: &str) -> Option<&str> {
+    name.split_once(';')
+        .map(|(_, stage)| stage.trim())
+        .filter(|stage| !stage.is_empty())
+}
+
+/// The divisions one chamber took on one matter in one sitting day, in the
+/// order it took them. Most matters get a single division; a contested bill
+/// can get ten, as each amendment is put and lost before the question itself.
+pub struct DivisionSeries<'a> {
+    pub house: House,
+    pub date: &'a str,
+    pub matter: &'a str,
+    pub divisions: Vec<&'a Division>,
+}
+
+impl SiteData {
+    /// The newest `limit` series, newest first. Divisions arrive newest first,
+    /// so a series sits where its latest division does.
+    pub fn latest_series(&self, limit: usize) -> Vec<DivisionSeries<'_>> {
+        let mut groups: IndexMap<(House, &str, &str), Vec<&Division>> = IndexMap::new();
+        for d in &self.divisions {
+            groups
+                .entry((d.house, d.date.as_str(), division_matter(&d.name)))
+                .or_default()
+                .push(d);
+        }
+        groups
+            .into_iter()
+            .take(limit)
+            .map(|((house, date, matter), mut divisions)| {
+                divisions.sort_by_key(|d| d.number);
+                DivisionSeries {
+                    house,
+                    date,
+                    matter,
+                    divisions,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Markdown reduced to its words: links keep their text, emphasis and quote
+/// marks go, whitespace collapses. For one-line labels, not for rendering.
+pub fn plain_text(markdown: &str) -> String {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\([^)]*\)").unwrap());
+    let unlinked = LINK.replace_all(markdown, "$1");
+    let mut words: Vec<&str> = Vec::new();
+    for line in unlinked.lines() {
+        let line = line.trim_start_matches(['>', '#', ' ']);
+        words.extend(line.split_whitespace());
+    }
+    words
+        .join(" ")
+        .replace(['*', '_', '`'], "")
+        .trim()
+        .to_string()
+}
+
+/// The first sentence of a note, for a one-line label. A stop only ends the
+/// sentence when a capital follows it, so "Bill (No. 2) 2025" stays whole.
+pub fn first_sentence(text: &str) -> &str {
+    let text = text.trim();
+    for (i, c) in text.char_indices() {
+        if c != '.' {
+            continue;
+        }
+        let mut rest = text[i + 1..].chars();
+        if let (Some(' '), Some(next)) = (rest.next(), rest.next()) {
+            if next.is_uppercase() {
+                return &text[..=i];
+            }
+        }
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,18 +884,54 @@ mod tests {
 
     #[test]
     fn occupations_parse_into_columns() {
-        match parse_occupation("Solicitor at Smith and Co from 1.2.2001 to 29.8.2022.") {
-            Occupation::Parsed { role, org, period } => {
-                assert_eq!(role, "Solicitor");
-                assert_eq!(org, "Smith and Co");
-                assert_eq!(period, "1 Feb 2001 \u{2013} 29 Aug 2022");
+        assert_eq!(
+            parse_occupation("Solicitor at Smith and Co from 1.2.2001 to 29.8.2022."),
+            Occupation {
+                role: "Solicitor".into(),
+                org: "Smith and Co".into(),
+                period: "1 Feb 2001 \u{2013} 29 Aug 2022".into(),
             }
-            Occupation::Raw(_) => panic!("expected parsed"),
-        }
-        assert!(matches!(
+        );
+        // No preposition and no date: the whole text is the role.
+        assert_eq!(
             parse_occupation("Freeform text"),
-            Occupation::Raw(_)
-        ));
+            Occupation {
+                role: "Freeform text".into(),
+                org: String::new(),
+                period: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn division_names_split_into_matter_and_stage() {
+        let name = "Bills \u{2014} Example Bill 2026; Second Reading";
+        assert_eq!(division_matter(name), "Bills \u{2014} Example Bill 2026");
+        assert_eq!(division_stage(name), Some("Second Reading"));
+        assert_eq!(
+            division_matter("Motions \u{2014} Economy"),
+            "Motions \u{2014} Economy"
+        );
+        assert_eq!(division_stage("Motions \u{2014} Economy"), None);
+        assert_eq!(division_stage("Trailing;"), None);
+    }
+
+    #[test]
+    fn plain_text_keeps_link_text_and_drops_markup() {
+        assert_eq!(
+            plain_text("> The majority voted for a [sample motion](https://example.com) to *demonstrate*.\n\n# Heading"),
+            "The majority voted for a sample motion to demonstrate. Heading"
+        );
+    }
+
+    #[test]
+    fn first_sentence_stops_at_a_capital_not_an_abbreviation() {
+        assert_eq!(
+            first_sentence("The Senate put the Example Bill (No. 2) 2025. It carried."),
+            "The Senate put the Example Bill (No. 2) 2025."
+        );
+        assert_eq!(first_sentence("  One sentence only "), "One sentence only");
+        assert_eq!(first_sentence("Ends with a stop."), "Ends with a stop.");
     }
 
     #[test]
@@ -735,61 +945,219 @@ mod tests {
 mod occupation_tests {
     use super::*;
 
+    fn parsed(text: &str) -> (String, String, String) {
+        let Occupation { role, org, period } = parse_occupation(text);
+        (role, org, period)
+    }
+
+    fn row(role: &str, org: &str, period: &str) -> (String, String, String) {
+        (role.to_string(), org.to_string(), period.to_string())
+    }
+
     /// The forms that appear on live Handbook profiles, including the ones that
     /// used to fall through to the verbatim row.
     #[test]
     fn occupations_handle_the_of_the_form_and_dangling_years() {
-        let parsed = |text: &str| match parse_occupation(text) {
-            Occupation::Parsed { role, org, period } => (role, org, period),
-            Occupation::Raw(raw) => panic!("expected a parse, got raw: {raw}"),
-        };
-
         assert_eq!(
             parsed("CEO of the Australian Business and Community Network from 2017 to 2021."),
-            (
-                "CEO".to_string(),
-                "Australian Business and Community Network".to_string(),
-                "2017 \u{2013} 2021".to_string()
+            row(
+                "CEO",
+                "Australian Business and Community Network",
+                "2017 \u{2013} 2021"
             )
         );
         assert_eq!(
             parsed("Managing Director of Carla Zampatti Pty. Ltd. from 2008 to 2016."),
-            (
-                "Managing Director".to_string(),
-                "Carla Zampatti Pty. Ltd.".to_string(),
-                "2008 \u{2013} 2016".to_string()
+            row(
+                "Managing Director",
+                "Carla Zampatti Pty. Ltd.",
+                "2008 \u{2013} 2016"
             )
         );
         // A year the Handbook hung off the organisation instead of "from ... to".
         assert_eq!(
             parsed("Policy Analyst at UK Treasury, 2003."),
-            (
-                "Policy Analyst".to_string(),
-                "UK Treasury".to_string(),
-                "2003".to_string()
-            )
+            row("Policy Analyst", "UK Treasury", "2003")
         );
         // The separator leaves a trailing comma on the organisation.
         assert_eq!(
             parsed("Change Leader at King's College Hospital, London, from 2005 to 2007."),
-            (
-                "Change Leader".to_string(),
-                "King's College Hospital, London".to_string(),
-                "2005 \u{2013} 2007".to_string()
+            row(
+                "Change Leader",
+                "King's College Hospital, London",
+                "2005 \u{2013} 2007"
             )
         );
         // at/for/with wins over of, so a title containing "of" stays intact.
         assert_eq!(
             parsed("Member of the Board at Example Co from 2010 to 2012."),
-            (
-                "Member of the Board".to_string(),
-                "Example Co".to_string(),
-                "2010 \u{2013} 2012".to_string()
+            row("Member of the Board", "Example Co", "2010 \u{2013} 2012")
+        );
+    }
+
+    /// A title is not a placement: "Head of Partnerships" was rendering as the
+    /// role "Head" at the organisation "Partnerships".
+    #[test]
+    fn titles_stay_whole_when_nothing_organisation_shaped_follows() {
+        assert_eq!(
+            parsed("Head of Partnerships"),
+            row("Head of Partnerships", "", "")
+        );
+        assert_eq!(
+            parsed("Director of Nursing"),
+            row("Director of Nursing", "", "")
+        );
+        assert_eq!(parsed("Senior Manager"), row("Senior Manager", "", ""));
+        assert_eq!(parsed("Mother of four"), row("Mother of four", "", ""));
+        assert_eq!(
+            parsed("Sales manager of truck and bus parts"),
+            row("Sales manager of truck and bus parts", "", "")
+        );
+        // A proper name after "of" does split: more than one word, an acronym,
+        // or a mark no common noun carries.
+        assert_eq!(
+            parsed("Chair of Screen NSW"),
+            row("Chair", "Screen NSW", "")
+        );
+        assert_eq!(
+            parsed("Board Member of HESTA"),
+            row("Board Member", "HESTA", "")
+        );
+        assert_eq!(
+            parsed("Owner of Nurses@Work"),
+            row("Owner", "Nurses@Work", "")
+        );
+        assert_eq!(
+            parsed("Director of the Productivity Commission from 2019 to 2022."),
+            row("Director", "Productivity Commission", "2019 \u{2013} 2022")
+        );
+    }
+
+    #[test]
+    fn a_dated_title_with_no_organisation_keeps_its_period() {
+        assert_eq!(
+            parsed("Journalist from 1991 to 2008."),
+            row("Journalist", "", "1991 \u{2013} 2008")
+        );
+        assert_eq!(
+            parsed("Associate Editor from January 2021."),
+            row("Associate Editor", "", "from January 2021")
+        );
+        assert_eq!(
+            parsed("Senior Project Officer for SA Health from December 2005 to December 2006."),
+            row(
+                "Senior Project Officer",
+                "SA Health",
+                "December 2005 \u{2013} December 2006"
             )
         );
-        assert!(matches!(
-            parse_occupation("Freeform text"),
-            Occupation::Raw(_)
-        ));
+        // An end with no start.
+        assert_eq!(
+            parsed("Non-Executive Director of the Cancer Council (WA) to 2016."),
+            row("Non-Executive Director", "Cancer Council (WA)", "to 2016")
+        );
+        assert_eq!(
+            parsed("Radio Presenter for 2KO, 1992."),
+            row("Radio Presenter", "2KO", "1992")
+        );
+        assert_eq!(parsed("Solicitor, 1999."), row("Solicitor", "", "1999"));
+    }
+
+    /// The staffer forms: "to" introduces whoever the adviser worked for, and
+    /// beats an "of" or "in" inside the title.
+    #[test]
+    fn staff_roles_split_at_to_not_at_of() {
+        assert_eq!(
+            parsed("Adviser to Senator S Mackay from 1996 to 1998."),
+            row("Adviser", "Senator S Mackay", "1996 \u{2013} 1998")
+        );
+        assert_eq!(
+            parsed("Chief of Staff to Senator B Joyce."),
+            row("Chief of Staff", "Senator B Joyce", "")
+        );
+        assert_eq!(
+            parsed("Chief of Staff in the Queensland Government"),
+            row("Chief of Staff", "Queensland Government", "")
+        );
+        assert_eq!(
+            parsed("Cash in Transit Officer for Linfox Armaguard"),
+            row("Cash in Transit Officer", "Linfox Armaguard", "")
+        );
+        // "at" names the employer even when "in" comes first.
+        assert_eq!(
+            parsed("Lecturer in the School of Education at the Central Coast Campus, University of Newcastle."),
+            row(
+                "Lecturer in the School of Education",
+                "Central Coast Campus, University of Newcastle",
+                ""
+            )
+        );
+        assert_eq!(
+            parsed("General Manager for Business Development at Perth Airport, 2007."),
+            row(
+                "General Manager for Business Development",
+                "Perth Airport",
+                "2007"
+            )
+        );
+        assert_eq!(
+            parsed("Business Support Officer at Hydro Tasmania 1998"),
+            row("Business Support Officer", "Hydro Tasmania", "1998")
+        );
+        assert_eq!(
+            parsed("Project Manager for the Investor Group on Climate Change , 2014."),
+            row(
+                "Project Manager",
+                "Investor Group on Climate Change",
+                "2014"
+            )
+        );
+        // Lower-case after the preposition is not an organisation.
+        assert_eq!(
+            parsed("Solicitor in private practice"),
+            row("Solicitor in private practice", "", "")
+        );
+    }
+
+    #[test]
+    fn a_comma_separates_role_from_organisation_when_nothing_else_does() {
+        assert_eq!(
+            parsed("Director and Lecturer, Institute of Environmental Studies (UNSW)"),
+            row(
+                "Director and Lecturer",
+                "Institute of Environmental Studies (UNSW)",
+                ""
+            )
+        );
+        assert_eq!(
+            parsed("Legal Counsel, the Electrical Trades Union of Australia"),
+            row("Legal Counsel", "Electrical Trades Union of Australia", "")
+        );
+        // The institution's head noun stays with the institution, not the role.
+        assert_eq!(
+            parsed("Assistant Secretary (Africa Branch), Department of Foreign Affairs and Trade from 2012 to 2013."),
+            row(
+                "Assistant Secretary (Africa Branch)",
+                "Department of Foreign Affairs and Trade",
+                "2012 \u{2013} 2013"
+            )
+        );
+        assert_eq!(
+            parsed("President, Board Chair and Board Member of Hills Community Aid & Information Service"),
+            row(
+                "President, Board Chair and Board Member",
+                "Hills Community Aid & Information Service",
+                ""
+            )
+        );
+        // A list of trades is not a role and an organisation.
+        assert_eq!(
+            parsed("Organic market gardener, shepherd, fruit picker to 1999"),
+            row(
+                "Organic market gardener, shepherd, fruit picker",
+                "",
+                "to 1999"
+            )
+        );
     }
 }

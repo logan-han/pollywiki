@@ -333,6 +333,12 @@ p {
   padding: 2.6rem 0 1.6rem;
 }
 
+/* The first section heading sits close under its masthead: the lede has
+   already made the break, so the usual section gap reads as a hole. */
+.masthead + h2 {
+  margin-top: 1.1rem;
+}
+
 .motto {
   font-family: var(--serif);
   font-style: italic;
@@ -576,6 +582,162 @@ p {
   font-size: 0.6875rem;
   color: var(--faint);
   white-space: nowrap;
+}
+
+/* Series rows: one matter a chamber divided on several times in a day. The
+   summary line is laid out as an ordinary ledger row; the steps under it sit
+   in the title column, one per question put, in the order they were decided. */
+.ledger li.ledger-series {
+  display: block;
+  padding: 0;
+}
+
+.ledger-series summary {
+  display: grid;
+  grid-template-columns: 5.75rem minmax(0, 1fr) minmax(12rem, auto);
+  gap: 0.3rem 0.875rem;
+  align-items: baseline;
+  padding: 0.7rem 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ledger-series summary::-webkit-details-marker {
+  display: none;
+}
+
+.ledger-series .series-note {
+  display: block;
+  margin-top: 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ledger-series .series-note::before {
+  content: '\25B8';
+  display: inline-block;
+  width: 1em;
+  color: var(--faint);
+}
+
+.ledger-series details[open] .series-note::before {
+  content: '\25BE';
+}
+
+.ledger-series summary:hover .series-note {
+  color: var(--ink);
+}
+
+.outcome-strip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 7.5rem;
+  vertical-align: middle;
+}
+
+.outcome-strip i {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  box-sizing: border-box;
+}
+
+.outcome-strip i.carried {
+  background: var(--aye);
+}
+
+.outcome-strip i.negatived {
+  border: 1.5px solid var(--no);
+}
+
+.series-steps {
+  list-style: none;
+  margin: 0 0 0.6rem;
+  padding: 0 0 0 6.625rem;
+}
+
+.series-steps li {
+  display: grid;
+  grid-template-columns: 5.75rem minmax(0, 1fr) minmax(12rem, auto);
+  gap: 0.2rem 0.875rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-top: 1px dashed var(--hair);
+  font-size: 0.875rem;
+}
+
+.series-steps .n {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.series-steps .what {
+  min-width: 0;
+}
+
+.series-steps .q {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.series-steps .ai-mark {
+  margin-left: 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  border: 1px solid var(--hair-strong);
+  border-radius: 3px;
+  padding: 0 4px;
+  vertical-align: 0.1em;
+}
+
+.series-steps .tally {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.series-credit {
+  margin: 0 0 0.8rem;
+  padding-left: 6.625rem;
+  font-size: 0.78125rem;
+  color: var(--faint);
+}
+
+.series-credit .ai-tag {
+  margin-right: 0.4rem;
+}
+
+@media (max-width: 40rem) {
+  .ledger-series summary,
+  .series-steps li {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
+
+  .series-steps,
+  .series-credit {
+    padding-left: 0;
+  }
+
+  .series-steps .tally {
+    justify-self: start;
+  }
 }
 
 /* Proportion bars: neutral ink-vs-paper, sized per context. */
@@ -979,7 +1141,8 @@ td.num.zero {
   color: var(--muted);
 }
 
-.context-box .ai-tag {
+.context-box .ai-tag,
+.series-credit .ai-tag {
   font-family: var(--mono);
   font-size: 0.6875rem;
   font-weight: 600;

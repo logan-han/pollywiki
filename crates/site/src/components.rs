@@ -1,6 +1,9 @@
-use crate::data::{division_key, format_date, js_float, SiteData};
+use crate::data::{
+    division_key, division_stage, first_sentence, format_date, js_float, plain_text,
+    DivisionSeries, SiteData,
+};
 use crate::html::{esc, esc_attr};
-use pollywiki_schema::{Bill, Division, DivisionResult, House, Person};
+use pollywiki_schema::{Bill, Division, DivisionResult, House, Person, SummaryKind};
 
 pub fn avatar(person: &Person, large: bool) -> String {
     match &person.photo {
@@ -108,6 +111,179 @@ pub fn ledger_row(division: &Division) -> String {
         ayes = division.ayes,
         noes = division.noes,
         bar = vote_bar(division.ayes, division.noes, false),
+    )
+}
+
+/// One ledger entry per series. A lone division renders as the plain row. A
+/// run of them folds into the matter, its outcomes in the order they were
+/// decided, and one step per question, so a bill amended and put again reads
+/// as one story instead of ten identical lines.
+pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
+    if let [single] = series.divisions.as_slice() {
+        return ledger_row(single);
+    }
+    let chamber = match series.house {
+        House::Senate => "Senate",
+        House::Representatives => "House",
+    };
+    let carried = series
+        .divisions
+        .iter()
+        .filter(|d| d.result == DivisionResult::Passed)
+        .count();
+    let negatived = series.divisions.len() - carried;
+
+    // A stage every division shares belongs in the title; only a stage that
+    // varies tells the steps apart.
+    let stages: Vec<Option<&str>> = series
+        .divisions
+        .iter()
+        .map(|d| division_stage(&d.name))
+        .collect();
+    let shared_stage = stages
+        .windows(2)
+        .all(|pair| pair[0] == pair[1])
+        .then(|| stages[0])
+        .flatten();
+    let title = match shared_stage {
+        Some(stage) => format!("{}; {}", series.matter, stage),
+        None => series.matter.to_string(),
+    };
+    // The title links to the bill when the whole series is about one bill the
+    // register has a page for.
+    let bill_href = series
+        .divisions
+        .iter()
+        .map(|d| d.bill_ids.as_slice())
+        .reduce(|a, b| if a == b { a } else { &[] })
+        .and_then(|ids| match ids {
+            [id] => data
+                .bill_by_id(id)
+                .map(|bill| format!("/bills/{}/", bill.id)),
+            _ => None,
+        });
+    let title_html = match &bill_href {
+        Some(href) => format!("<a href=\"{}\">{}</a>", esc_attr(href), esc(&title)),
+        None => esc(&title),
+    };
+
+    let mut text = title.to_lowercase();
+    let mut steps = String::new();
+    let (mut machine_written, mut volunteer_written) = (false, false);
+    for d in &series.divisions {
+        let href = esc_attr(&format!("/divisions/{}/{}/", d.house, division_key(d)));
+        let stage = if shared_stage.is_some() {
+            None
+        } else {
+            division_stage(&d.name)
+        };
+        let question = step_question(d);
+        let ai_mark = match question {
+            Some((_, true)) => {
+                machine_written = true;
+                "<span class=\"ai-mark\" title=\"AI-generated\">AI</span>"
+            }
+            Some((_, false)) => {
+                volunteer_written = true;
+                ""
+            }
+            None => "",
+        };
+        let question = question.map(|(text, _)| text);
+        let (label, note) = match (stage, question) {
+            (Some(stage), question) => (Some(stage.to_string()), question),
+            (None, Some(question)) => (Some(question), None),
+            (None, None) => (None, None),
+        };
+        if let Some(label) = &label {
+            text.push(' ');
+            text.push_str(&label.to_lowercase());
+        }
+        // The number identifies the step; the link sits on whatever describes
+        // it, and on the number only when nothing does.
+        let (number, what) = match label {
+            Some(label) => (
+                format!("Division {}", d.number),
+                format!(
+                    "<a href=\"{href}\">{}</a>{}",
+                    esc(&label),
+                    match note {
+                        Some(note) => format!("<span class=\"q\">{}{ai_mark}</span>", esc(&note)),
+                        None => ai_mark.to_string(),
+                    }
+                ),
+            ),
+            None => (
+                format!("<a href=\"{href}\">Division {}</a>", d.number),
+                String::new(),
+            ),
+        };
+        steps.push_str(&format!(
+            "<li><span class=\"n\">{number}</span><span class=\"what\">{what}</span><span class=\"tally\">{chip}{ayes}\u{2013}{noes}{bar}</span></li>",
+            chip = result_chip(d.result),
+            ayes = d.ayes,
+            noes = d.noes,
+            bar = vote_bar(d.ayes, d.noes, false),
+        ));
+    }
+    let mut credit = String::new();
+    if machine_written {
+        credit.push_str("<span class=\"ai-tag\">AI-generated</span> Descriptions marked AI are written by AI from the official record and may contain errors; the record is authoritative. <a href=\"/about/methodology/\">How this works.</a>");
+    }
+    if volunteer_written {
+        if machine_written {
+            credit.push(' ');
+        }
+        credit.push_str("Other descriptions are the first sentence of context written by <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> volunteers (ODbL).");
+    }
+    let credit = if credit.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"series-credit\">{credit}</p>")
+    };
+
+    format!(
+        "<li class=\"ledger-series\" data-house=\"{house}\" data-text=\"{text}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title_html}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{chamber}{strip}</span></summary><ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
+        house = series.house,
+        text = esc_attr(&text),
+        when = esc(&format_date(series.date)),
+        n = series.divisions.len(),
+        strip = outcome_strip(&series.divisions),
+    )
+}
+
+/// One sentence on what a division decided, and whether a machine wrote it.
+/// They Vote For You's written context comes first; where their field holds a
+/// Hansard excerpt instead, the machine-written note stands in.
+fn step_question(division: &Division) -> Option<(String, bool)> {
+    match (
+        &division.summary,
+        division.summary_kind,
+        &division.ai_summary,
+    ) {
+        (Some(summary), kind, _) if kind != Some(SummaryKind::Transcript) => {
+            let text = plain_text(summary);
+            (!text.is_empty()).then(|| (first_sentence(&text).to_string(), false))
+        }
+        (_, _, Some(ai)) => Some((first_sentence(&ai.text).to_string(), true)),
+        _ => None,
+    }
+}
+
+/// The outcomes of a series as a row of marks, oldest first: filled for
+/// carried, hollow for negatived, so the sequence reads without colour.
+fn outcome_strip(divisions: &[&Division]) -> String {
+    let label: Vec<&str> = divisions.iter().map(|d| result_word(d.result)).collect();
+    let marks: String = divisions
+        .iter()
+        .map(|d| match d.result {
+            DivisionResult::Passed => "<i class=\"carried\"></i>",
+            DivisionResult::Rejected => "<i class=\"negatived\"></i>",
+        })
+        .collect();
+    format!(
+        "<span class=\"outcome-strip\" role=\"img\" aria-label=\"In order: {}\">{marks}</span>",
+        esc_attr(&label.join(", "))
     )
 }
 

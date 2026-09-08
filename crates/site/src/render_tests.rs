@@ -255,6 +255,102 @@ fn home_lists_bill_activity_newest_first() {
 }
 
 #[test]
+fn home_folds_a_days_divisions_on_one_matter_into_a_series() {
+    let data = sample_data();
+    let html = render(&data, &pages::home(&data));
+    let section = html
+        .split("Latest divisions")
+        .nth(1)
+        .and_then(|s| s.split("Latest bill activity").next())
+        .expect("latest divisions section");
+
+    // Three Senate divisions on one bill in one day become one entry whose
+    // steps run in the order the chamber took them, each labelled by stage.
+    let senate = section
+        .split("<li class=\"ledger-series\" data-house=\"senate\"")
+        .nth(1)
+        .and_then(|s| s.split("</details></li>").next())
+        .expect("senate series");
+    assert!(senate.contains(
+        "<span class=\"matter\">Bills — Sex Discrimination Amendment (Restoring Common Sense and Recognising Biological Sex) Bill 2026</span>"
+    ));
+    assert!(senate.contains("3 divisions · 1 carried · 2 negatived"));
+    let order: Vec<usize> = ["Division 3<", "Division 4<", "Division 5<"]
+        .iter()
+        .map(|needle| senate.find(needle).expect(needle))
+        .collect();
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "steps are not in chamber order"
+    );
+    assert!(senate.contains("/divisions/senate/2025-08-05-4/\">Second Reading</a>"));
+    // The note under a stage is the first sentence of the machine-written
+    // context, marked as such.
+    assert!(senate.contains("<span class=\"q\">The Senate considered a second reading amendment moved by Senator Morgan Rossi.<span class=\"ai-mark\" title=\"AI-generated\">AI</span></span>"));
+    // Outcomes in order, readable without colour.
+    assert!(senate.contains("aria-label=\"In order: Negatived, Negatived, Carried\""));
+    assert!(senate.contains(
+        "<i class=\"negatived\"></i><i class=\"negatived\"></i><i class=\"carried\"></i>"
+    ));
+    // Machine-written labels carry the tag and the credit.
+    assert!(senate.contains("ai-tag"));
+    assert!(senate.contains("How this works."));
+
+    // Two House divisions with identical names: the title links to the bill,
+    // They Vote For You's written context labels the step that has it, and the
+    // machine-written note labels the other, marked.
+    let house = section
+        .split("<li class=\"ledger-series\" data-house=\"representatives\"")
+        .nth(1)
+        .and_then(|s| s.split("</details></li>").next())
+        .expect("house series");
+    assert!(house.contains(
+        "<a href=\"/bills/sample-1/\">Demonstration Data Bill 2025 - Second Reading</a>"
+    ));
+    assert!(house.contains(
+        "/divisions/representatives/2025-08-01-2/\">The majority voted in favour of a sample motion to demonstrate how context summaries render, which means it passed.</a>"
+    ));
+    assert!(house.contains(
+        "/divisions/representatives/2025-08-01-3/\">The House considered an amendment moved by Jordan Nguyen to the second reading motion.</a><span class=\"ai-mark\" title=\"AI-generated\">AI</span>"
+    ));
+    assert!(house.contains("They Vote For You</a> volunteers (ODbL)"));
+    assert!(
+        !house.contains("Division 2</a>"),
+        "a described step is not linked by number"
+    );
+
+    // With nothing to describe a step, the number itself carries the link
+    // rather than being repeated as the label.
+    let bare: Vec<pollywiki_schema::Division> = data
+        .divisions
+        .iter()
+        .filter(|d| d.house == pollywiki_schema::House::Representatives && d.date == "2025-08-01")
+        .map(|d| pollywiki_schema::Division {
+            summary: None,
+            summary_kind: None,
+            ai_summary: None,
+            ..d.clone()
+        })
+        .collect();
+    let series = crate::data::DivisionSeries {
+        house: pollywiki_schema::House::Representatives,
+        date: "2025-08-01",
+        matter: "Demonstration Data Bill 2025 - Second Reading",
+        divisions: bare.iter().collect(),
+    };
+    let row = crate::components::series_row(&data, &series);
+    assert!(row.contains(
+        "<span class=\"n\"><a href=\"/divisions/representatives/2025-08-01-3/\">Division 3</a></span><span class=\"what\"></span>"
+    ));
+    assert!(!row.contains("series-credit"), "no descriptions, no credit");
+
+    // A matter divided on once stays a plain ledger row.
+    assert!(section.contains("<li data-house=\"representatives\""));
+    assert!(section.contains("Sample Motion - That the example be noted"));
+    assert_eq!(section.matches("<li class=\"ledger-series\"").count(), 2);
+}
+
+#[test]
 fn divisions_index_groups_into_months_that_match_their_runs() {
     let data = sample_data();
     let html = render(&data, &pages::divisions_index(&data));
@@ -477,22 +573,50 @@ fn machine_written_context_is_always_labelled() {
 #[test]
 fn a_transcript_summary_is_never_shown_as_written_context() {
     let data = sample_data();
-    let transcript = data
+    let transcripts: Vec<&pollywiki_schema::Division> = data
         .divisions
         .iter()
-        .find(|d| d.summary_kind == Some(pollywiki_schema::SummaryKind::Transcript))
-        .expect("sample data has a transcript division");
-    let html = render(&data, &pages::division_page(&data, transcript));
+        .filter(|d| d.summary_kind == Some(pollywiki_schema::SummaryKind::Transcript))
+        .collect();
+    assert!(
+        !transcripts.is_empty(),
+        "sample data has a transcript division"
+    );
+    for transcript in transcripts {
+        let html = render(&data, &pages::division_page(&data, transcript));
+        // The Hansard excerpt itself must not be reproduced as TVFY context.
+        let excerpt = transcript.summary.as_deref().expect("transcript text");
+        assert!(
+            !html.contains(excerpt),
+            "{} reproduces its excerpt",
+            transcript.id
+        );
+        assert!(!html.contains("Context written by"));
+        // The machine-written replacement takes its place, labelled.
+        let note = transcript
+            .ai_summary
+            .as_ref()
+            .expect("sample transcripts carry notes");
+        assert!(html.contains("ai-tag"));
+        assert!(
+            html.contains(&pages_text(&note.text)),
+            "{} lacks its note",
+            transcript.id
+        );
+        // Both official links are offered in the footer note.
+        if let Some(tvfy) = &transcript.links.tvfy {
+            assert!(html.contains(tvfy.as_str()));
+        }
+        if transcript.links.hansard.is_some() {
+            assert!(html.contains("Hansard"));
+        }
+    }
+}
 
-    // The Hansard excerpt itself must not be reproduced as TVFY context.
-    assert!(!html.contains("The question is that the bill be read a first time"));
-    assert!(!html.contains("Context written by"));
-    // The machine-written replacement takes its place, labelled.
-    assert!(html.contains("ai-tag"));
-    assert!(html.contains("Machine-written context explaining"));
-    // Both official links are offered in the footer note.
-    assert!(html.contains("theyvoteforyou.org.au/divisions/senate/2025-08-05/3"));
-    assert!(html.contains("Hansard"));
+/// The first clause of a note as the page shows it: bill titles inside it are
+/// linked, so only the text up to the first bill title is safe to search for.
+fn pages_text(note: &str) -> String {
+    note.split(" Bill ").next().unwrap_or(note).to_string()
 }
 
 #[test]
@@ -729,7 +853,7 @@ fn leadership_lists_one_row_per_person_and_role() {
 }
 
 #[test]
-fn occupation_rows_fill_their_columns_or_span_them() {
+fn occupation_tables_show_only_the_columns_their_rows_fill() {
     let data = sample_data();
     let person = data
         .people
@@ -740,17 +864,41 @@ fn occupation_rows_fill_their_columns_or_span_them() {
                 .is_some_and(|b| !b.occupations.is_empty())
         })
         .expect("sample data has occupations");
-    let html = render(&data, &pages::person_page(&data, person));
-    let table = html
-        .split("Occupations before parliament")
-        .nth(1)
-        .and_then(|s| s.split("</table>").next())
-        .expect("occupations table");
-    // "CEO of the ..." used to fall through to the verbatim row.
-    assert!(table.contains("<td>CEO</td><td>Sample Business Network</td>"));
-    assert!(table.contains("<td>Policy Analyst</td><td>Example Treasury</td>"));
-    // Anything unparseable still spans the row rather than sitting under Role.
-    assert!(table.contains("<td colspan=\"3\">Grazier and small business owner</td>"));
+    let table = |person: &pollywiki_schema::Person| -> String {
+        let html = render(&data, &pages::person_page(&data, person));
+        html.split("Occupations before parliament")
+            .nth(1)
+            .and_then(|s| s.split("</table>").next())
+            .expect("occupations table")
+            .to_string()
+    };
+
+    // Dated placements fill all three columns; a bare trade sits in the role
+    // column with the others empty, never spanning them.
+    let full = table(person);
+    assert!(full.contains("<th scope=\"col\">Organisation</th>"));
+    assert!(full.contains("<th class=\"num\" scope=\"col\">Period</th>"));
+    assert!(full.contains("<td>CEO</td><td>Sample Business Network</td>"));
+    assert!(full.contains("<td>Policy Analyst</td><td>Example Treasury</td>"));
+    assert!(full.contains("<td>Grazier and small business owner</td><td></td>"));
+    assert!(!full.contains("colspan"));
+
+    // A career of titles alone gets a one-column table: "Head of Partnerships"
+    // used to render as the role "Head" at the organisation "Partnerships",
+    // above rows with two empty cells.
+    let mut titles_only = person.clone();
+    let background = titles_only.background.as_mut().expect("background");
+    background.occupations = vec![
+        "Head of Partnerships".to_string(),
+        "Senior Manager".to_string(),
+        "National Sales Manager".to_string(),
+    ];
+    let bare = table(&titles_only);
+    assert!(bare.contains("<th scope=\"col\">Role</th></tr>"));
+    assert!(!bare.contains("Organisation"));
+    assert!(!bare.contains("Period"));
+    assert!(bare.contains("<tr><td>Head of Partnerships</td></tr>"));
+    assert!(bare.contains("<tr><td>Senior Manager</td></tr>"));
 }
 
 #[test]
