@@ -65,6 +65,49 @@ fn breadcrumb(site_url: &str, trail: &[(&str, &str)]) -> serde_json::Value {
     })
 }
 
+/// The site node every page hangs off, so a crawler can tell an index of this
+/// site from a page that happens to list things.
+fn part_of_site(site_url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "@type": "WebSite",
+        "name": "pollywiki",
+        "url": format!("{site_url}/"),
+    })
+}
+
+/// A listing page, typed as what it collects and how much of it there is.
+fn collection_page(
+    site_url: &str,
+    name: &str,
+    description: &str,
+    path: &str,
+    count: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "CollectionPage",
+        "name": name,
+        "description": description,
+        "url": format!("{site_url}{path}"),
+        "inLanguage": "en-AU",
+        "isPartOf": part_of_site(site_url),
+        "mainEntity": { "@type": "ItemList", "numberOfItems": count },
+    })
+}
+
+/// A page of prose about the site itself.
+fn about_page(site_url: &str, name: &str, description: &str, path: &str) -> serde_json::Value {
+    serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "AboutPage",
+        "name": name,
+        "description": description,
+        "url": format!("{site_url}{path}"),
+        "inLanguage": "en-AU",
+        "isPartOf": part_of_site(site_url),
+    })
+}
+
 /// Newest division date in the bundle. ISO dates sort lexically.
 fn newest_division_date(data: &SiteData) -> Option<String> {
     data.divisions.iter().map(|d| d.date.clone()).max()
@@ -255,6 +298,7 @@ pub fn home(data: &SiteData) -> Page {
         "name": "pollywiki",
         "url": format!("{}/", data.site_url),
         "description": crate::layout::DEFAULT_DESCRIPTION,
+        "inLanguage": "en-AU",
         "potentialAction": {
             "@type": "SearchAction",
             "target": {
@@ -298,6 +342,7 @@ pub fn people_index(data: &SiteData) -> Page {
     body.push_str("</span><input type=\"search\" id=\"people-filter\" placeholder=\"Filter by name, electorate or state\" aria-label=\"Filter people\"></div>");
     body.push_str(&filter_feedback("No one matches these filters."));
 
+    let sitting_count = sorted.len();
     body.push_str("<div class=\"person-grid\" id=\"person-grid\">");
     for person in sorted {
         body.push_str(&format!(
@@ -336,16 +381,23 @@ pub fn people_index(data: &SiteData) -> Page {
         body.push_str("</div>");
     }
 
-    let mut page = Page::new(
-        "People",
-        Some(
-            "Every sitting member of the Australian House of Representatives and Senate."
-                .to_string(),
-        ),
-        "/people/",
-        body,
-    );
+    const DESCRIPTION: &str =
+        "Every sitting member of the Australian House of Representatives and Senate.";
+    let mut page = Page::new("People", Some(DESCRIPTION.to_string()), "/people/", body);
     page.page_script = Some(PEOPLE_FILTER_JS);
+    page.jsonld = Some(jsonld_script(vec![
+        collection_page(
+            &data.site_url,
+            "People",
+            DESCRIPTION,
+            "/people/",
+            sitting_count,
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[("pollywiki", "/"), ("People", "/people/")],
+        ),
+    ]));
     page
 }
 
@@ -799,14 +851,29 @@ pub fn divisions_index(data: &SiteData) -> Page {
     } else {
         body.push_str("<p class=\"note\">No division records loaded yet. They appear once the They Vote For You sync runs.</p>");
     }
+    const DESCRIPTION: &str =
+        "Recorded votes of the Australian House of Representatives and Senate.";
     let mut page = Page::new(
         "Divisions",
-        Some("Recorded votes of the Australian House of Representatives and Senate.".to_string()),
+        Some(DESCRIPTION.to_string()),
         "/divisions/",
         body,
     );
     page.lastmod = newest_division_date(data);
     page.page_script = Some(DIVISION_FILTER_JS);
+    page.jsonld = Some(jsonld_script(vec![
+        collection_page(
+            &data.site_url,
+            "Divisions",
+            DESCRIPTION,
+            "/divisions/",
+            data.divisions.len(),
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[("pollywiki", "/"), ("Divisions", "/divisions/")],
+        ),
+    ]));
     page
 }
 
@@ -1049,14 +1116,20 @@ pub fn bills_index(data: &SiteData) -> Page {
     } else {
         body.push_str("<p class=\"note\">No bill records loaded yet. They appear once the APH bills sync runs.</p>");
     }
-    let mut page = Page::new(
-        "Bills",
-        Some("Bills before the Australian federal parliament and their progress.".to_string()),
-        "/bills/",
-        body,
-    );
+    const DESCRIPTION: &str = "Bills before the Australian federal parliament and their progress.";
+    let mut page = Page::new("Bills", Some(DESCRIPTION.to_string()), "/bills/", body);
     page.lastmod = newest_bill_date(data);
     page.page_script = Some(BILL_FILTER_JS);
+    page.jsonld = Some(jsonld_script(vec![
+        collection_page(
+            &data.site_url,
+            "Bills",
+            DESCRIPTION,
+            "/bills/",
+            data.bills.len(),
+        ),
+        breadcrumb(&data.site_url, &[("pollywiki", "/"), ("Bills", "/bills/")]),
+    ]));
     page
 }
 
@@ -1334,13 +1407,27 @@ pub fn electorates_index(data: &SiteData) -> Page {
     }
     body.push_str("</tbody></table></div>");
 
+    const DESCRIPTION: &str = "All 150 federal electorates and their members.";
     let mut page = Page::new(
         "Electorates",
-        Some("All 150 federal electorates and their members.".to_string()),
+        Some(DESCRIPTION.to_string()),
         "/electorates/",
         body,
     );
     page.page_script = Some(ELECTORATE_FILTER_JS);
+    page.jsonld = Some(jsonld_script(vec![
+        collection_page(
+            &data.site_url,
+            "Electorates",
+            DESCRIPTION,
+            "/electorates/",
+            data.electorates.len(),
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[("pollywiki", "/"), ("Electorates", "/electorates/")],
+        ),
+    ]));
     page
 }
 
@@ -1502,12 +1589,22 @@ pub fn parties_index(data: &SiteData) -> Page {
         ));
     }
     body.push_str("</tbody></table></div>");
-    Page::new(
-        "Parties",
-        Some("Parliamentary groups of the 48th Parliament and their seat counts.".to_string()),
-        "/parties/",
-        body,
-    )
+    const DESCRIPTION: &str = "Parliamentary groups of the 48th Parliament and their seat counts.";
+    let mut page = Page::new("Parties", Some(DESCRIPTION.to_string()), "/parties/", body);
+    page.jsonld = Some(jsonld_script(vec![
+        collection_page(
+            &data.site_url,
+            "Parties",
+            DESCRIPTION,
+            "/parties/",
+            data.parties.len(),
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[("pollywiki", "/"), ("Parties", "/parties/")],
+        ),
+    ]));
+    page
 }
 
 static LEADERSHIP: LazyLock<Regex> = LazyLock::new(|| {
@@ -1690,7 +1787,7 @@ pub fn not_found() -> Page {
     page
 }
 
-pub fn about_index() -> Page {
+pub fn about_index(data: &SiteData) -> Page {
     let body = concat!(
         "<h1>About pollywiki</h1>",
         "<p>pollywiki is a public register of Australia's federal parliament: the people who sit in it, the divisions they voted in, the bills before it, and the results of the elections that put them there.</p>",
@@ -1702,12 +1799,13 @@ pub fn about_index() -> Page {
         "<p>Found something wrong? <a href=\"/about/corrections/\">Request a correction.</a></p>",
     )
     .to_string();
-    Page::new(
-        "About",
-        Some("What pollywiki is, what it is not, and how it works.".to_string()),
-        "/about/",
-        body,
-    )
+    const DESCRIPTION: &str = "What pollywiki is, what it is not, and how it works.";
+    let mut page = Page::new("About", Some(DESCRIPTION.to_string()), "/about/", body);
+    page.jsonld = Some(jsonld_script(vec![
+        about_page(&data.site_url, "About", DESCRIPTION, "/about/"),
+        breadcrumb(&data.site_url, &[("pollywiki", "/"), ("About", "/about/")]),
+    ]));
+    page
 }
 
 pub fn data_sources(data: &SiteData) -> Page {
@@ -1780,18 +1878,34 @@ pub fn data_sources(data: &SiteData) -> Page {
     body.push_str("</tbody></table></div>");
     body.push_str("<h2>Attribution and reuse</h2><p>Voting data is used under the ODbL: it is attributed on every page where it appears and derived data remains open. Election figures are © Commonwealth of Australia (AEC), CC BY 4.0, and this site does not use AEC branding. Parliamentary material is reproduced fairly and accurately with acknowledgement and without any implication of parliamentary endorsement. Photos come only from Wikimedia Commons under free licences, with the photographer credited on the page where the photo appears.</p>");
     body.push_str("<p>The site's own code is <a href=\"https://github.com/logan-han/pollywiki\">open source on GitHub</a>.</p>");
-    Page::new(
+    const DESCRIPTION: &str =
+        "Where every figure on pollywiki comes from, its licence and when it last synced.";
+    let mut page = Page::new(
         "Data sources",
-        Some(
-            "Where every figure on pollywiki comes from, its licence and when it last synced."
-                .to_string(),
-        ),
+        Some(DESCRIPTION.to_string()),
         "/about/data-sources/",
         body,
-    )
+    );
+    page.jsonld = Some(jsonld_script(vec![
+        about_page(
+            &data.site_url,
+            "Data sources",
+            DESCRIPTION,
+            "/about/data-sources/",
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("About", "/about/"),
+                ("Data sources", "/about/data-sources/"),
+            ],
+        ),
+    ]));
+    page
 }
 
-pub fn methodology() -> Page {
+pub fn methodology(data: &SiteData) -> Page {
     let body = concat!(
         "<h1>Methodology</h1>",
         "<p>pollywiki publishes official records verbatim plus simple arithmetic. This page defines every derived figure that appears on the site.</p>",
@@ -1815,15 +1929,33 @@ pub fn methodology() -> Page {
         "<p>No scoring, no ranking, no summarising of speeches, no inference of positions from votes. Where They Vote For You provides a plain-English description of a motion, it is shown with explicit attribution to them.</p>",
     )
     .to_string();
-    Page::new(
+    const DESCRIPTION: &str = "How every derived figure on pollywiki is computed, and what the official record cannot tell you.";
+    let mut page = Page::new(
         "Methodology",
-        Some("How every derived figure on pollywiki is computed, and what the official record cannot tell you.".to_string()),
+        Some(DESCRIPTION.to_string()),
         "/about/methodology/",
         body,
-    )
+    );
+    page.jsonld = Some(jsonld_script(vec![
+        about_page(
+            &data.site_url,
+            "Methodology",
+            DESCRIPTION,
+            "/about/methodology/",
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("About", "/about/"),
+                ("Methodology", "/about/methodology/"),
+            ],
+        ),
+    ]));
+    page
 }
 
-pub fn corrections() -> Page {
+pub fn corrections(data: &SiteData) -> Page {
     let body = concat!(
         "<h1>Corrections</h1>",
         "<p>Every page here is generated from official sources, but pipelines have bugs and sources have errors. If anything on this site is wrong, incomplete or misleading, report it and it will be fixed or taken down quickly.</p>",
@@ -1835,12 +1967,30 @@ pub fn corrections() -> Page {
         "<p>Where the error is in the source itself (Hansard, the AEC, Wikidata or They Vote For You), it needs fixing there; this site will pick up the fix on the next sync. Reports are forwarded upstream where possible.</p>",
     )
     .to_string();
-    Page::new(
+    const DESCRIPTION: &str = "How to report an error on pollywiki and what happens next.";
+    let mut page = Page::new(
         "Corrections",
-        Some("How to report an error on pollywiki and what happens next.".to_string()),
+        Some(DESCRIPTION.to_string()),
         "/about/corrections/",
         body,
-    )
+    );
+    page.jsonld = Some(jsonld_script(vec![
+        about_page(
+            &data.site_url,
+            "Corrections",
+            DESCRIPTION,
+            "/about/corrections/",
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("About", "/about/"),
+                ("Corrections", "/about/corrections/"),
+            ],
+        ),
+    ]));
+    page
 }
 
 /// new Date(str).getTime() for the two shapes the record contains:

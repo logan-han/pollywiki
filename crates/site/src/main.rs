@@ -99,10 +99,10 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
         pages::electorates_index(&data),
         pages::parties_index(&data),
         pages::search_page(),
-        pages::about_index(),
+        pages::about_index(&data),
         pages::data_sources(&data),
-        pages::methodology(),
-        pages::corrections(),
+        pages::methodology(&data),
+        pages::corrections(&data),
     ];
     for person in &data.people {
         page_list.push(pages::person_page(&data, person));
