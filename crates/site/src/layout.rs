@@ -6,6 +6,11 @@ pub const DEFAULT_DESCRIPTION: &str = "The Australian federal record, unedited. 
 /// Site-wide share card, shipped as a static asset (assets/public/og-default.png).
 pub const DEFAULT_OG_IMAGE: &str = "/og-default.png";
 
+pub const DEFAULT_OG_IMAGE_ALT: &str = "pollywiki: the Australian federal record";
+
+/// What an indexable page asks crawlers for. Pages that opt out set their own.
+pub const INDEXED_ROBOTS: &str = "index, follow, max-image-preview:large";
+
 const GTAG_SCRIPT: &str = "\n      window.dataLayer = window.dataLayer || []\n      function gtag() {\n        dataLayer.push(arguments)\n      }\n      gtag('js', new Date())\n      gtag('config', 'G-ZHJ3V1JWPX')\n    ";
 
 // Quick-search behaviour, inlined at the end of every page.
@@ -49,6 +54,9 @@ pub struct Page {
     pub footer_note: Option<String>,
     /// Site-relative override for the share card; falls back to the default.
     pub og_image: Option<String>,
+    /// What the share card shows, for screen readers and for the crawlers that
+    /// read image alternatives. Falls back to a description of the default card.
+    pub og_image_alt: Option<String>,
     /// og:type — "profile" for people, "article" for divisions and bills.
     pub og_type: &'static str,
     /// Rendered as <script type="application/ld+json"> when set.
@@ -75,6 +83,7 @@ impl Page {
             page_script: None,
             footer_note: None,
             og_image: None,
+            og_image_alt: None,
             og_type: "website",
             jsonld: None,
             lastmod: None,
@@ -92,6 +101,13 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     };
     let origin = site_url.trim_end_matches('/');
     let og_image = page.og_image.as_deref().unwrap_or(DEFAULT_OG_IMAGE);
+    let image_alt = match (&page.og_image_alt, &page.og_image) {
+        (Some(alt), _) => alt.clone(),
+        // A page with its own card gets a card about it; everything else
+        // shares the site-wide one.
+        (None, Some(_)) => format!("pollywiki share card: {}", page.title),
+        (None, None) => DEFAULT_OG_IMAGE_ALT.to_string(),
+    };
 
     let mut out = String::with_capacity(page.body.len() + 8 * 1024);
     out.push_str("<!DOCTYPE html><html lang=\"en-AU\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
@@ -99,10 +115,15 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     out.push_str("</title><meta name=\"description\" content=\"");
     out.push_str(&esc_attr(description));
     out.push_str("\">");
-    if let Some(robots) = page.robots {
-        out.push_str(&format!("<meta name=\"robots\" content=\"{robots}\">"));
-    }
+    // A page that stays out of the index says only that. Everything else asks
+    // for the large image preview, which is what puts a share card next to the
+    // result rather than a thumbnail.
+    let robots = page.robots.unwrap_or(INDEXED_ROBOTS);
+    out.push_str(&format!("<meta name=\"robots\" content=\"{robots}\">"));
     out.push_str("<meta name=\"theme-color\" content=\"#fafaf7\"><meta name=\"theme-color\" content=\"#191d1b\" media=\"(prefers-color-scheme: dark)\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">");
+    // The analytics tag is the only third-party origin on the page; opening
+    // the connection alongside the fonts keeps it off the critical path.
+    out.push_str("<link rel=\"preconnect\" href=\"https://www.googletagmanager.com\" crossorigin>");
     for font in PRELOAD_FONTS {
         out.push_str(&format!(
             "<link rel=\"preload\" href=\"{font}\" as=\"font\" type=\"font/woff2\" crossorigin>"
@@ -120,6 +141,8 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     out.push_str(&esc_attr(&format!("{origin}{}", page.path)));
     out.push_str("\"><meta property=\"og:image\" content=\"");
     out.push_str(&esc_attr(&format!("{origin}{og_image}")));
+    out.push_str("\"><meta property=\"og:image:alt\" content=\"");
+    out.push_str(&esc_attr(&image_alt));
     out.push_str("\"><meta property=\"og:image:width\" content=\"1200\"><meta property=\"og:image:height\" content=\"630\"><meta property=\"og:site_name\" content=\"pollywiki\"><meta property=\"og:locale\" content=\"en_AU\"><meta name=\"twitter:card\" content=\"summary_large_image\"><meta name=\"generator\" content=\"pollywiki\">");
     out.push_str("<link rel=\"stylesheet\" href=\"");
     out.push_str(css_href);
