@@ -40,12 +40,17 @@ pub fn reference_path(name: &str) -> std::path::PathBuf {
 /// Without the file the cutoff sits in the future, which keeps only sitting
 /// members rather than pulling in every member since Federation.
 pub fn records_begin() -> String {
+    records_begin_from(&reference_path("parliaments.json"))
+}
+
+/// Split out so the fallback and the happy path are both reachable from a
+/// test without moving the process's working directory.
+fn records_begin_from(path: &std::path::Path) -> String {
     #[derive(serde::Deserialize)]
     struct Entry {
         opened: String,
     }
-    let path = reference_path("parliaments.json");
-    let parsed: Option<indexmap::IndexMap<String, Entry>> = std::fs::read_to_string(&path)
+    let parsed: Option<indexmap::IndexMap<String, Entry>> = std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok());
     match parsed.and_then(|p| p.into_values().map(|e| e.opened).max()) {
@@ -91,21 +96,33 @@ async fn main() {
 
 async fn run(command: &str, options: &Options) -> Result<()> {
     let store = make_store(&options.store).await?;
+    run_on(command, options, &store, &Endpoints::default()).await
+}
+
+/// The command dispatch itself, against a store and endpoints the caller
+/// supplies. Tests drive this with a scratch directory and a local server
+/// rather than whatever `--store` and the live hosts would resolve to.
+async fn run_on(
+    command: &str,
+    options: &Options,
+    store: &Store,
+    endpoints: &Endpoints,
+) -> Result<()> {
     let mut failures = 0;
 
     if command == "sync" || command == "all" {
         failures = sync(
-            &store,
+            store,
             &options.sources,
             &options.event,
             options.rebuild,
-            &Endpoints::default(),
+            endpoints,
         )
         .await?;
     }
     if command == "summarise" || (command == "all" && std::env::var("GEMINI_API_KEY").is_ok()) {
-        let people = load_people(&store).await?;
-        if let Err(err) = summarise::summarise(&store, &people).await {
+        let people = load_people(store).await?;
+        if let Err(err) = summarise::summarise(store, &people).await {
             eprintln!("summarise: FAILED - {err}");
             // The AI layer is an enhancement: inside `all` its failure must never
             // block record updates from deploying. Pending items resume next run.
@@ -115,7 +132,7 @@ async fn run(command: &str, options: &Options) -> Result<()> {
         }
     }
     if command == "derive" || command == "all" {
-        derive::derive(&store).await?;
+        derive::derive(store).await?;
     }
     if failures > 0 {
         anyhow::bail!("{failures} source(s) failed");
@@ -246,6 +263,304 @@ fn parse_options(args: &[String]) -> Options {
             .collect(),
         event: get("event").unwrap_or_else(|| "31496".to_string()),
         rebuild: args.iter().any(|a| a == "--rebuild"),
+    }
+}
+
+#[cfg(test)]
+mod orchestration_tests {
+    //! The dispatch layer itself: which sources a run reaches, what it does
+    //! with a failure, and which commands each verb sets going. Every source
+    //! is pointed at a local server, so a run here touches no network.
+
+    use super::*;
+    use crate::manifest::read_manifest;
+    use crate::store::LocalStore;
+    use crate::test_http::{Response, TestServer};
+    use std::path::PathBuf;
+
+    const ALL_SOURCES: [&str; 6] = ["wikidata", "aec", "aph", "handbook", "aec-profiles", "tvfy"];
+
+    fn new_store(name: &str) -> Store {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/orchestration-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Store::Local(LocalStore::new(dir))
+    }
+
+    fn options(sources: &[&str], rebuild: bool) -> Options {
+        Options {
+            store: "local".to_string(),
+            sources: sources.iter().map(|s| s.to_string()).collect(),
+            event: "31496".to_string(),
+            rebuild,
+        }
+    }
+
+    /// Answers nothing, so every source fails on its first request.
+    fn dead_server() -> TestServer {
+        TestServer::start(|_| Response::status(404, "no such source"))
+    }
+
+    #[test]
+    fn the_cutoff_is_the_newest_parliament_and_the_future_when_unreadable() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/records-begin");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let path = dir.join("parliaments.json");
+        std::fs::write(
+            &path,
+            r#"{"47":{"opened":"2022-07-26"},"48":{"opened":"2025-07-22"}}"#,
+        )
+        .expect("fixture");
+        assert_eq!(records_begin_from(&path), "2025-07-22");
+
+        // A file that is missing, or there but not a parliament map, keeps the
+        // cutoff in the future so only sitting members survive the filter.
+        assert_eq!(records_begin_from(&dir.join("absent.json")), "9999-01-01");
+        std::fs::write(&path, "not json").expect("fixture");
+        assert_eq!(records_begin_from(&path), "9999-01-01");
+    }
+
+    #[tokio::test]
+    async fn every_named_source_runs_and_each_failure_is_counted_and_recorded() {
+        let server = dead_server();
+        let store = new_store("failures");
+        // --rebuild reaches tvfy without an API key, so all six run.
+        let failures = sync(
+            &store,
+            &options(&ALL_SOURCES, true).sources,
+            "31496",
+            true,
+            &Endpoints::at(&server.base),
+        )
+        .await
+        .expect("a source failure is not a run failure");
+        assert_eq!(failures, 6, "one per source");
+
+        let manifest = read_manifest(&store).await.expect("manifest");
+        let mut names: Vec<&String> = manifest.sources.keys().collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "aec",
+                "aec-profiles",
+                "aph-bills",
+                "handbook",
+                "tvfy",
+                "wikidata"
+            ],
+            "every source leaves a record of its attempt"
+        );
+        for (name, status) in &manifest.sources {
+            assert!(!status.ok, "{name} should be marked failed");
+            assert!(status.note.is_some(), "{name} should carry the reason");
+        }
+    }
+
+    #[tokio::test]
+    async fn one_aec_run_happens_per_event_id() {
+        let server = dead_server();
+        let store = new_store("events");
+        let failures = sync(
+            &store,
+            &["aec".to_string()],
+            "31496, 31633 ,",
+            false,
+            &Endpoints::at(&server.base),
+        )
+        .await
+        .expect("sync");
+        // Two ids, one empty entry dropped; both are attempted separately.
+        assert_eq!(failures, 2);
+    }
+
+    #[tokio::test]
+    async fn tvfy_is_skipped_rather_than_failed_without_a_key() {
+        if std::env::var("TVFY_API_KEY").is_ok() {
+            eprintln!("TVFY_API_KEY set; skipping the skip test");
+            return;
+        }
+        let server = dead_server();
+        let store = new_store("tvfy-skip");
+        let failures = sync(
+            &store,
+            &["tvfy".to_string()],
+            "31496",
+            false,
+            &Endpoints::at(&server.base),
+        )
+        .await
+        .expect("sync");
+        assert_eq!(failures, 0, "a skip is not a failure");
+        assert_eq!(server.hits(), 0, "nothing was fetched");
+        assert!(
+            read_manifest(&store)
+                .await
+                .expect("manifest")
+                .sources
+                .is_empty(),
+            "a skipped source leaves no sync record"
+        );
+    }
+
+    /// Answers the members query and the electorate profile scrape, so
+    /// wikidata and aec-profiles both succeed; anything else is a miss.
+    fn working_server() -> TestServer {
+        TestServer::start(|req| {
+            if req.path.starts_with("/sparql") {
+                if req.path.contains("P571") || req.path.contains("inception") {
+                    return Response::json(
+                        serde_json::json!({ "results": { "bindings": [] } }).to_string(),
+                    );
+                }
+                return Response::json(
+                    serde_json::json!({ "results": { "bindings": [{
+                        "person": { "value": "http://www.wikidata.org/entity/Q1" },
+                        "personLabel": { "value": "Alex Paterson" },
+                        "houseQ": { "value": "http://www.wikidata.org/entity/Q18912794" },
+                        "electorateLabel": { "value": "Sampleford" },
+                        "partyLabel": { "value": "Example Party" }
+                    }] } })
+                    .to_string(),
+                );
+            }
+            if req.path.contains("GeneralEnrolmentByDivisionDownload") {
+                return Response::text(
+                    "Enrolment as at some date\nStateAb,DivisionID,DivisionNm,Enrolment\nVIC,101,Sampleford,118432",
+                );
+            }
+            if req.path.starts_with("/aec/profiles/") {
+                return Response::html(
+                    "<dl><dt>Area:</dt><dd>52 sq km</dd><dt>Demographic rating:</dt>\
+                     <dd>Inner Metropolitan</dd></dl>",
+                );
+            }
+            Response::status(404, "unexpected path")
+        })
+    }
+
+    #[tokio::test]
+    async fn a_source_that_succeeds_is_recorded_ok_and_its_people_are_reused() {
+        let server = working_server();
+        let store = new_store("success");
+        let electorate: pollywiki_schema::Electorate =
+            serde_json::from_str(r#"{"slug":"sampleford","name":"Sampleford","state":"VIC"}"#)
+                .expect("electorate fixture");
+        store
+            .put_json("canonical/electorates/sampleford.json", &electorate)
+            .await
+            .expect("seed");
+
+        // handbook sits between the two so it sees the list wikidata returned.
+        let failures = sync(
+            &store,
+            &[
+                "wikidata".to_string(),
+                "handbook".to_string(),
+                "aec-profiles".to_string(),
+            ],
+            "31496",
+            false,
+            &Endpoints::at(&server.base),
+        )
+        .await
+        .expect("sync");
+        assert_eq!(failures, 1, "only the handbook had nothing to answer it");
+
+        let manifest = read_manifest(&store).await.expect("manifest");
+        assert!(manifest.sources["wikidata"].ok);
+        assert!(manifest.sources["aec-profiles"].ok);
+        assert!(manifest.sources["wikidata"].note.is_none());
+        assert!(!manifest.sources["handbook"].ok);
+
+        let people = load_people(&store).await.expect("people");
+        assert_eq!(people.len(), 1);
+        assert_eq!(people[0].name, "Alex Paterson");
+    }
+
+    #[tokio::test]
+    async fn sync_reports_its_failures_as_a_run_failure() {
+        let server = dead_server();
+        let store = new_store("run-sync");
+        let err = run_on(
+            "sync",
+            &options(&["wikidata"], false),
+            &store,
+            &Endpoints::at(&server.base),
+        )
+        .await
+        .expect_err("a failed source fails the run");
+        assert_eq!(err.to_string(), "1 source(s) failed");
+    }
+
+    #[tokio::test]
+    async fn derive_runs_on_its_own_and_as_part_of_all() {
+        let server = dead_server();
+        let store = new_store("run-derive");
+        let endpoints = Endpoints::at(&server.base);
+
+        run_on("derive", &options(&[], false), &store, &endpoints)
+            .await
+            .expect("derive over an empty store");
+        assert!(
+            store
+                .get_raw("bundles/people.jsonl")
+                .await
+                .expect("read")
+                .is_some(),
+            "derive writes the bundles"
+        );
+
+        // 'all' syncs first: no sources named, so nothing fails and derive runs.
+        run_on("all", &options(&[], false), &store, &endpoints)
+            .await
+            .expect("all over an empty store");
+        assert_eq!(server.hits(), 0);
+    }
+
+    #[tokio::test]
+    async fn summarise_without_a_key_fails_its_own_command_but_not_all() {
+        if std::env::var("GEMINI_API_KEY").is_ok() {
+            eprintln!("GEMINI_API_KEY set; skipping the no-key test");
+            return;
+        }
+        let server = dead_server();
+        let store = new_store("run-summarise");
+        let endpoints = Endpoints::at(&server.base);
+
+        let err = run_on("summarise", &options(&[], false), &store, &endpoints)
+            .await
+            .expect_err("no key is a failure for the summarise command");
+        assert_eq!(err.to_string(), "1 source(s) failed");
+
+        // Inside 'all' the AI layer is optional, so the same missing key is
+        // not even reached: records still derive and deploy.
+        run_on("all", &options(&[], false), &store, &endpoints)
+            .await
+            .expect("all tolerates a missing key");
+    }
+
+    #[tokio::test]
+    async fn the_default_store_is_a_local_directory_and_s3_needs_a_bucket() {
+        let Store::Local(_) = make_store("local").await.expect("local store") else {
+            panic!("--store local must open the development directory");
+        };
+        // Anything unrecognised is local too, rather than a hard failure.
+        let Store::Local(_) = make_store("").await.expect("default store") else {
+            panic!("an unknown store must fall back to local");
+        };
+        if std::env::var("POLLYWIKI_DATA_BUCKET").is_ok() {
+            eprintln!("POLLYWIKI_DATA_BUCKET set; skipping the missing-bucket test");
+            return;
+        }
+        let message = match make_store("s3").await {
+            Ok(_) => panic!("s3 without a bucket must fail"),
+            Err(err) => err.to_string(),
+        };
+        assert_eq!(message, "POLLYWIKI_DATA_BUCKET must be set for --store s3");
     }
 }
 
