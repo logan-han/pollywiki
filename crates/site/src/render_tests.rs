@@ -42,10 +42,10 @@ fn all_pages(data: &SiteData) -> Vec<Page> {
         pages::electorates_index(data),
         pages::parties_index(data),
         pages::search_page(),
-        pages::about_index(),
+        pages::about_index(data),
         pages::data_sources(data),
-        pages::methodology(),
-        pages::corrections(),
+        pages::methodology(data),
+        pages::corrections(data),
         pages::not_found(),
     ];
     for person in &data.people {
@@ -207,7 +207,7 @@ fn every_page_carries_the_shared_head_and_landmarks() {
 #[test]
 fn the_sample_banner_follows_the_meta_flag() {
     let mut data = sample_data();
-    let page = pages::about_index();
+    let page = pages::about_index(&data);
 
     data.meta.sample = true;
     assert!(render(&data, &page).contains("class=\"sample-banner\""));
@@ -1120,6 +1120,164 @@ fn navigation_pages_ask_not_to_be_indexed() {
     assert!(
         !robots(&pages::home(&data)),
         "the record itself is indexable"
+    );
+}
+
+#[test]
+fn every_other_page_asks_for_the_large_image_preview() {
+    let data = sample_data();
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        let where_ = &page.path;
+        let expected = page.robots.unwrap_or(layout::INDEXED_ROBOTS);
+        assert!(
+            html.contains(&format!("<meta name=\"robots\" content=\"{expected}\">")),
+            "robots wrong on {where_}"
+        );
+        // Exactly one directive, so a page cannot say both things at once.
+        assert_eq!(html.matches("<meta name=\"robots\"").count(), 1, "{where_}");
+        if page.robots.is_none() {
+            assert!(
+                html.contains("max-image-preview:large"),
+                "an indexable page wants its share card in the result: {where_}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_page_says_what_its_share_card_shows() {
+    let data = sample_data();
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        let where_ = &page.path;
+        // A page on the site-wide card describes the site; one with a card of
+        // its own names itself, which is what the card actually renders.
+        let expected = match &page.og_image {
+            None => layout::DEFAULT_OG_IMAGE_ALT.to_string(),
+            Some(_) => format!("pollywiki share card: {}", page.title),
+        };
+        assert!(
+            html.contains(&format!(
+                "<meta property=\"og:image:alt\" content=\"{}\">",
+                crate::html::esc_attr(&expected)
+            )),
+            "og:image:alt wrong on {where_}"
+        );
+    }
+
+    // A division carries its own card, so its alt names the division.
+    let division = data.divisions.first().expect("a sample division");
+    let mut page = pages::division_page(&data, division);
+    page.og_image = Some(og::card_path(division));
+    assert!(render(&data, &page).contains(&format!(
+        "og:image:alt\" content=\"pollywiki share card: {}\"",
+        crate::html::esc_attr(&division.name)
+    )));
+}
+
+#[test]
+fn the_analytics_origin_is_opened_early() {
+    let data = sample_data();
+    let html = render(&data, &pages::home(&data));
+    let preconnect =
+        "<link rel=\"preconnect\" href=\"https://www.googletagmanager.com\" crossorigin>";
+    assert!(html.contains(preconnect));
+    // It has to come before the tag that uses it, or it buys nothing.
+    assert!(
+        html.find(preconnect) < html.find("googletagmanager.com/gtag/js"),
+        "the preconnect must precede the script"
+    );
+}
+
+#[test]
+fn index_pages_declare_what_they_collect() {
+    let data = sample_data();
+    let cases: Vec<(Page, &str, usize)> = vec![
+        (pages::people_index(&data), "People", data.sitting().count()),
+        (
+            pages::divisions_index(&data),
+            "Divisions",
+            data.divisions.len(),
+        ),
+        (pages::bills_index(&data), "Bills", data.bills.len()),
+        (
+            pages::electorates_index(&data),
+            "Electorates",
+            data.electorates.len(),
+        ),
+        (pages::parties_index(&data), "Parties", data.parties.len()),
+    ];
+    for (page, name, count) in cases {
+        let where_ = page.path.clone();
+        let value = jsonld(&render(&data, &page)).unwrap_or_else(|| panic!("json-ld on {where_}"));
+        assert_eq!(
+            types(&value),
+            vec!["CollectionPage", "BreadcrumbList"],
+            "{where_}"
+        );
+        let collection = nodes(&value)[0];
+        assert_eq!(collection["name"], name, "{where_}");
+        assert_eq!(collection["url"], format!("{SITE_URL}{where_}"), "{where_}");
+        assert_eq!(collection["inLanguage"], "en-AU", "{where_}");
+        assert_eq!(collection["isPartOf"]["url"], format!("{SITE_URL}/"));
+        assert_eq!(
+            collection["mainEntity"]["numberOfItems"], count,
+            "the count must be what the page lists on {where_}"
+        );
+        assert!(count > 0, "the sample bundles should fill {where_}");
+
+        // Two steps home from an index, and the last one is the page itself.
+        let trail = nodes(&value)[1]["itemListElement"]
+            .as_array()
+            .expect("trail")
+            .clone();
+        assert_eq!(trail.len(), 2, "{where_}");
+        assert_eq!(trail[1]["item"], format!("{SITE_URL}{where_}"), "{where_}");
+    }
+}
+
+#[test]
+fn the_about_pages_are_typed_and_sit_under_about() {
+    let data = sample_data();
+    let leaves = [
+        pages::data_sources(&data),
+        pages::methodology(&data),
+        pages::corrections(&data),
+    ];
+    for page in leaves {
+        let where_ = page.path.clone();
+        let value = jsonld(&render(&data, &page)).unwrap_or_else(|| panic!("json-ld on {where_}"));
+        assert_eq!(
+            types(&value),
+            vec!["AboutPage", "BreadcrumbList"],
+            "{where_}"
+        );
+        let trail = nodes(&value)[1]["itemListElement"]
+            .as_array()
+            .expect("trail")
+            .clone();
+        assert_eq!(trail.len(), 3, "a leaf sits below /about/ on {where_}");
+        assert_eq!(trail[1]["item"], format!("{SITE_URL}/about/"), "{where_}");
+        assert_eq!(trail[2]["item"], format!("{SITE_URL}{where_}"), "{where_}");
+    }
+
+    // The section front page is one step from home.
+    let index = jsonld(&render(&data, &pages::about_index(&data))).expect("json-ld");
+    assert_eq!(types(&index), vec!["AboutPage", "BreadcrumbList"]);
+    assert_eq!(nodes(&index)[0]["url"], format!("{SITE_URL}/about/"));
+}
+
+#[test]
+fn the_home_page_declares_the_site_its_language_and_its_search() {
+    let data = sample_data();
+    let value = jsonld(&render(&data, &pages::home(&data))).expect("json-ld");
+    assert_eq!(types(&value), vec!["WebSite"]);
+    assert_eq!(value["url"], format!("{SITE_URL}/"));
+    assert_eq!(value["inLanguage"], "en-AU");
+    assert_eq!(
+        value["potentialAction"]["target"]["urlTemplate"],
+        format!("{SITE_URL}/search/?q={{search_term_string}}")
     );
 }
 
