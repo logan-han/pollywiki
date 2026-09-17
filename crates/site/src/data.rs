@@ -585,6 +585,7 @@ fn dotted_date(text: &str) -> String {
     format_date(&format!("{}-{:0>2}-{:0>2}", &caps[3], &caps[2], &caps[1]))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Qualification {
     pub qual: String,
     pub institution: String,
@@ -938,6 +939,168 @@ mod tests {
     fn format_date_renders_site_style() {
         assert_eq!(format_date("2025-05-03"), "3 May 2025");
         assert_eq!(format_date("not-a-date"), "not-a-date");
+        // A zero part and an impossible month are both left as they arrived.
+        assert_eq!(format_date("2025-00-03"), "2025-00-03");
+        assert_eq!(format_date("2025-13-03"), "2025-13-03");
+    }
+
+    #[test]
+    fn to_fixed_handles_a_carry_and_the_values_that_have_no_digits() {
+        // The carry walks left through a run of nines and grows the integer.
+        assert_eq!(to_fixed(9.999, 2), "10.00");
+        assert_eq!(to_fixed(0.96, 1), "1.0");
+        // Zero decimals is the integer alone, with no trailing point.
+        assert_eq!(to_fixed(2.5, 0), "3");
+        assert_eq!(to_fixed(-2.5, 0), "-3");
+        // Non-finite values are handed back the way JavaScript prints them.
+        assert_eq!(to_fixed(f64::NAN, 2), "NaN");
+        assert_eq!(to_fixed(f64::INFINITY, 2), "inf");
+    }
+
+    #[test]
+    fn locale_int_keeps_the_sign_outside_the_groups() {
+        assert_eq!(locale_int(-1234567), "-1,234,567");
+        assert_eq!(locale_int(-999), "-999");
+    }
+
+    #[test]
+    fn state_names_expand_every_code_and_stop_at_an_unknown_one() {
+        for (code, name) in [
+            ("NSW", "New South Wales"),
+            ("VIC", "Victoria"),
+            ("QLD", "Queensland"),
+            ("WA", "Western Australia"),
+            ("SA", "South Australia"),
+            ("TAS", "Tasmania"),
+            ("ACT", "Australian Capital Territory"),
+            ("NT", "Northern Territory"),
+        ] {
+            assert_eq!(state_name(code), Some(name));
+        }
+        assert_eq!(state_name("XYZ"), None);
+    }
+
+    #[test]
+    fn a_qualification_without_an_institution_is_all_qualification() {
+        assert_eq!(
+            parse_qualification("Diploma in Community Services, Victoria University"),
+            Qualification {
+                qual: "Diploma in Community Services".into(),
+                institution: "Victoria University".into(),
+            }
+        );
+        assert_eq!(
+            parse_qualification("Admitted to practice"),
+            Qualification {
+                qual: "Admitted to practice".into(),
+                institution: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn uri_components_round_trip_the_way_javascript_does() {
+        assert_eq!(
+            encode_uri_component("Treasury Laws Amendment (No. 2)"),
+            "Treasury%20Laws%20Amendment%20(No.%202)"
+        );
+        assert_eq!(
+            decode_uri_component("Treasury%20Laws%20Amendment"),
+            "Treasury Laws Amendment"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bill_link_tests {
+    use super::*;
+
+    fn bill(id: &str, title: &str) -> Bill {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": title,
+            "parliament": 48,
+            "chamber": "representatives",
+            "status": "Before the House",
+            "timeline": [],
+            "sponsors": [],
+            "movers": [],
+            "links": {},
+        }))
+        .expect("bill fixture")
+    }
+
+    fn data(name: &str, bills: Vec<Bill>) -> SiteData {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/bill-link-tests")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        std::fs::write(
+            dir.join("bills.jsonl"),
+            bills
+                .iter()
+                .map(|b| serde_json::to_string(b).expect("bill json"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("bundle");
+        SiteData::load(&dir, "https://pollywiki.test").expect("load")
+    }
+
+    #[test]
+    fn a_known_title_becomes_a_link_and_the_rest_is_escaped() {
+        let data = data("single", vec![bill("r1", "Example Bill 2026")]);
+        assert_eq!(
+            data.link_bill_titles("The Senate put the Example Bill 2026 & moved on."),
+            "The Senate put the <a href=\"/bills/r1/\">Example Bill 2026</a> &amp; moved on."
+        );
+        // Case is ignored, because generated text re-cases acronyms.
+        assert!(data
+            .link_bill_titles("the example bill 2026 passed")
+            .contains("<a href=\"/bills/r1/\">example bill 2026</a>"));
+    }
+
+    #[test]
+    fn the_longest_title_claims_its_span_and_overlaps_are_dropped() {
+        let data = data(
+            "overlap",
+            vec![
+                bill("r1", "Example Bill 2026"),
+                bill("r2", "Amended Example Bill 2026"),
+            ],
+        );
+        let linked = data.link_bill_titles("The Amended Example Bill 2026 was read.");
+        assert_eq!(
+            linked, "The <a href=\"/bills/r2/\">Amended Example Bill 2026</a> was read.",
+            "the longer title wins the overlap outright"
+        );
+    }
+
+    #[test]
+    fn a_repeated_family_name_links_to_the_filtered_index() {
+        let data = data(
+            "family",
+            vec![
+                bill("r1", "Treasury Laws Amendment (One) Bill 2026"),
+                bill("r2", "Treasury Laws Amendment (Two) Bill 2026"),
+                // One-off prefixes and single-word prefixes are not families.
+                bill("r3", "Migration Amendment (Three) Bill 2026"),
+                bill("r4", "Treasury (Four) Bill 2026"),
+            ],
+        );
+        let linked = data.link_bill_titles("The Treasury Laws Amendment bills were listed.");
+        assert!(
+            linked.contains(
+                "<a href=\"/bills/?q=Treasury%20Laws%20Amendment\">Treasury Laws Amendment bills</a>"
+            ),
+            "got {linked}"
+        );
+        assert_eq!(
+            data.link_bill_titles("The Migration Amendment bills were listed."),
+            "The Migration Amendment bills were listed.",
+            "one bill is not a family"
+        );
     }
 }
 

@@ -622,6 +622,51 @@ mod tests {
         assert_eq!(serde_json::to_string(&JsNum(60.0)).unwrap(), "60");
         assert_eq!(serde_json::to_string(&JsNum(1.25)).unwrap(), "1.25");
         assert_eq!(serde_json::to_string(&JsNum(-0.0)).unwrap(), "0");
+        // Beyond the safe integer range, and for anything not finite, the
+        // float form is the only one that survives the round trip.
+        assert_eq!(
+            serde_json::to_string(&JsNum(9_007_199_254_740_994.0)).unwrap(),
+            "9007199254740994.0"
+        );
+        // JSON has no infinity, and neither serde_json nor JSON.stringify
+        // invents one.
+        assert_eq!(
+            serde_json::to_string(&JsNum(f64::INFINITY)).unwrap(),
+            "null"
+        );
+        assert_eq!(JsNum::from(2.5), JsNum(2.5));
+    }
+
+    #[test]
+    fn every_state_code_round_trips_and_nothing_else_parses() {
+        for code in [
+            StateCode::NSW,
+            StateCode::VIC,
+            StateCode::QLD,
+            StateCode::WA,
+            StateCode::SA,
+            StateCode::TAS,
+            StateCode::ACT,
+            StateCode::NT,
+        ] {
+            assert_eq!(StateCode::parse(code.as_str()), Some(code));
+            assert_eq!(code.to_string(), code.as_str(), "Display matches as_str");
+        }
+        // Codes the AEC does not issue, including the lower-cased form.
+        assert_eq!(StateCode::parse("nsw"), None);
+        assert_eq!(StateCode::parse("JBT"), None);
+    }
+
+    #[test]
+    fn seat_counts_are_read_and_written_by_chamber() {
+        let mut seats = PartySeats {
+            representatives: 3,
+            senate: 1,
+        };
+        assert_eq!(seats.get(House::Representatives), 3);
+        assert_eq!(seats.get(House::Senate), 1);
+        *seats.get_mut(House::Senate) += 2;
+        assert_eq!(seats.get(House::Senate), 3);
     }
 
     #[test]

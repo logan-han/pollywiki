@@ -1,7 +1,9 @@
-# Coverage is reported, never gating. Every source sync now runs end to end in
-# tests against a local HTTP server (see crates/ingest/src/test_http.rs), which
-# each source reaches because its endpoint is a value rather than a constant.
-# What is left uncovered is main()'s argument dispatch and the live S3 client.
+# Coverage is reported, never gating. Every source sync runs end to end in tests
+# against a local HTTP server (see crates/ingest/src/test_http.rs), which each
+# source reaches because its endpoint is a value rather than a constant. The S3
+# store answers to the same stub, and both binaries' argument dispatch is driven
+# through the built executable (crates/*/tests/cli.rs). What is left uncovered is
+# the two fixture tests that only run against a local development store.
 coverage:
   status:
     project:

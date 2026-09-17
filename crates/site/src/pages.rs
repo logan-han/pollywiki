@@ -1929,6 +1929,51 @@ mod tests {
         assert!(out.contains("\\u003c/script\\u003e"));
     }
 
+    /// The sample bundles carry no party facts, so the block that renders them
+    /// is driven from a fixture: a website label with the scheme, the www and
+    /// the trailing slash stripped, and a Wikipedia title decoded out of its
+    /// URL.
+    #[test]
+    fn party_facts_render_a_readable_website_and_article_title() {
+        let data = crate::data::SiteData::load(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/sample/bundles"),
+            "https://pollywiki.test",
+        )
+        .expect("sample bundles load");
+
+        let party: Party = serde_json::from_value(serde_json::json!({
+            "slug": "example-party",
+            "name": "Example Party",
+            "facts": {
+                "founded": "1901-05-08",
+                "website": "https://www.example.org.au/",
+                "wikipedia": "https://en.wikipedia.org/wiki/Example_Party_(Australia)",
+            },
+        }))
+        .expect("party fixture");
+        let html = party_page(&data, &party).body;
+        assert!(
+            html.contains("<a href=\"https://www.example.org.au/\">example.org.au</a>"),
+            "the label drops the scheme, the www and the trailing slash: {html}"
+        );
+        assert!(
+            html.contains(
+                "<a href=\"https://en.wikipedia.org/wiki/Example_Party_(Australia)\">Example Party (Australia)</a>"
+            ),
+            "the article title is decoded and unescaped: {html}"
+        );
+
+        // A party with no facts at all renders no table.
+        let bare: Party = serde_json::from_value(serde_json::json!({
+            "slug": "example-party",
+            "name": "Example Party",
+        }))
+        .expect("party fixture");
+        assert!(!party_page(&data, &bare)
+            .body
+            .contains("table class=\"facts\""));
+    }
+
     #[test]
     fn breadcrumbs_are_absolute_and_ordered() {
         let value = breadcrumb(

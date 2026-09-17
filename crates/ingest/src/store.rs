@@ -151,17 +151,24 @@ pub struct S3Store {
     prefix: String,
 }
 
+/// Splits "bucket" or "bucket/prefix" into the bucket and a key prefix that
+/// already ends in a slash.
+fn split_bucket(bucket_with_prefix: &str) -> Result<(String, String)> {
+    let mut parts = bucket_with_prefix.splitn(2, '/');
+    let bucket = parts.next().unwrap_or_default().to_string();
+    if bucket.is_empty() {
+        anyhow::bail!("invalid bucket: {bucket_with_prefix}");
+    }
+    let prefix = match parts.next() {
+        Some(rest) if !rest.is_empty() => format!("{rest}/"),
+        _ => String::new(),
+    };
+    Ok((bucket, prefix))
+}
+
 impl S3Store {
     pub async fn new(bucket_with_prefix: &str) -> Result<Self> {
-        let mut parts = bucket_with_prefix.splitn(2, '/');
-        let bucket = parts.next().unwrap_or_default().to_string();
-        if bucket.is_empty() {
-            anyhow::bail!("invalid bucket: {bucket_with_prefix}");
-        }
-        let prefix = match parts.next() {
-            Some(rest) if !rest.is_empty() => format!("{rest}/"),
-            _ => String::new(),
-        };
+        let (bucket, prefix) = split_bucket(bucket_with_prefix)?;
         let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "ap-southeast-2".to_string());
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_config::Region::new(region))
@@ -169,6 +176,18 @@ impl S3Store {
             .await;
         Ok(S3Store {
             client: aws_sdk_s3::Client::new(&config),
+            bucket,
+            prefix,
+        })
+    }
+
+    /// The same store against a client the caller configured. Tests point one
+    /// at a local stub so every request the real one makes is exercised.
+    #[cfg(test)]
+    fn with_client(client: aws_sdk_s3::Client, bucket_with_prefix: &str) -> Result<Self> {
+        let (bucket, prefix) = split_bucket(bucket_with_prefix)?;
+        Ok(S3Store {
+            client,
             bucket,
             prefix,
         })
@@ -388,5 +407,262 @@ mod local_tests {
         );
         // An empty prefix lists nothing rather than failing.
         assert!(store.list("canonical/absent/").await.unwrap().is_empty());
+    }
+}
+
+/// The S3 half of the store, driven against a local stub that speaks just
+/// enough of the API to answer it. Everything the real client sends -- path
+/// style, signed, with checksums -- is sent here too; only the far end is
+/// local, so the request-building and response-parsing this file does are
+/// covered without an AWS account.
+#[cfg(test)]
+mod s3_tests {
+    use super::*;
+    use crate::test_http::{Request, Response, TestServer};
+    use indexmap::IndexMap;
+    use std::sync::{Arc, Mutex};
+
+    type Objects = Arc<Mutex<IndexMap<String, String>>>;
+
+    fn xml(status: u16, body: String) -> Response {
+        Response {
+            status,
+            content_type: "application/xml".to_string(),
+            body: body.into_bytes(),
+        }
+    }
+
+    fn no_such_key(key: &str) -> Response {
+        xml(
+            404,
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>NoSuchKey</Code>\
+                 <Message>The specified key does not exist.</Message><Key>{key}</Key>\
+                 <RequestId>stub</RequestId><HostId>stub</HostId></Error>"
+            ),
+        )
+    }
+
+    /// Path-style key: "/bucket/some/key" with the bucket dropped.
+    fn key_of(request: &Request) -> String {
+        let path = request.path.split('?').next().unwrap_or_default();
+        path.trim_start_matches('/')
+            .split_once('/')
+            .map(|(_bucket, key)| key.to_string())
+            .unwrap_or_default()
+    }
+
+    fn list_response(objects: &IndexMap<String, String>, request: &Request) -> Response {
+        let prefix = request
+            .query("prefix")
+            .map(|p| p.replace("%2F", "/"))
+            .unwrap_or_default();
+        let mut matching: Vec<&String> =
+            objects.keys().filter(|k| k.starts_with(&prefix)).collect();
+        matching.sort();
+        // One key per page, so the continuation loop runs for real. The token
+        // is an index rather than a key: S3 treats it as opaque, and a bare
+        // number survives the round trip through the query string intact.
+        let start: usize = request
+            .query("continuation-token")
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0);
+        let page = matching.get(start).copied();
+        let truncated = start + 1 < matching.len();
+
+        let mut body = String::from(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+             <Name>bucket</Name><MaxKeys>1</MaxKeys>",
+        );
+        if let Some(key) = page {
+            body.push_str(&format!(
+                "<Contents><Key>{key}</Key><Size>{}</Size>\
+                 <LastModified>2026-01-01T00:00:00.000Z</LastModified>\
+                 <StorageClass>STANDARD</StorageClass></Contents>",
+                objects[key].len()
+            ));
+        }
+        body.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
+        if truncated {
+            body.push_str(&format!(
+                "<NextContinuationToken>{}</NextContinuationToken>",
+                start + 1
+            ));
+        }
+        body.push_str("</ListBucketResult>");
+        xml(200, body)
+    }
+
+    /// A bucket in a mutex. `denied/` is the one key that answers with
+    /// something other than a missing object.
+    fn stub_s3(objects: Objects) -> TestServer {
+        TestServer::start(move |request| {
+            let mut objects = objects.lock().expect("stub bucket");
+            let key = key_of(request);
+            match request.method.as_str() {
+                _ if request.query("list-type").is_some() => list_response(&objects, request),
+                "PUT" => {
+                    objects.insert(key, request.body.clone());
+                    Response {
+                        status: 200,
+                        content_type: "application/xml".to_string(),
+                        body: Vec::new(),
+                    }
+                }
+                "GET" if key.contains("denied") => xml(
+                    403,
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>AccessDenied</Code>\
+                     <Message>Access Denied</Message><RequestId>stub</RequestId>\
+                     <HostId>stub</HostId></Error>"
+                        .to_string(),
+                ),
+                "GET" => match objects.get(&key) {
+                    Some(body) => Response {
+                        status: 200,
+                        content_type: "application/octet-stream".to_string(),
+                        body: body.clone().into_bytes(),
+                    },
+                    None => no_such_key(&key),
+                },
+                "DELETE" => {
+                    objects.shift_remove(&key);
+                    xml(204, String::new())
+                }
+                other => xml(400, format!("<Error><Code>{other}</Code></Error>")),
+            }
+        })
+    }
+
+    fn s3_store(base: &str, bucket_with_prefix: &str) -> Store {
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new("ap-southeast-2"))
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "test-key",
+                "test-secret",
+                None,
+                None,
+                "stub",
+            ))
+            .endpoint_url(base)
+            .force_path_style(true)
+            .build();
+        Store::S3(
+            S3Store::with_client(aws_sdk_s3::Client::from_conf(config), bucket_with_prefix)
+                .expect("stub store"),
+        )
+    }
+
+    #[test]
+    fn a_bucket_may_carry_a_prefix_and_must_not_be_empty() {
+        assert_eq!(
+            split_bucket("pollywiki.au/data").unwrap(),
+            ("pollywiki.au".to_string(), "data/".to_string())
+        );
+        // No prefix, and a trailing slash with nothing after it, are the same.
+        assert_eq!(
+            split_bucket("pollywiki.au").unwrap(),
+            ("pollywiki.au".to_string(), String::new())
+        );
+        assert_eq!(
+            split_bucket("pollywiki.au/").unwrap(),
+            ("pollywiki.au".to_string(), String::new())
+        );
+        assert_eq!(
+            split_bucket("/data").unwrap_err().to_string(),
+            "invalid bucket: /data"
+        );
+    }
+
+    #[tokio::test]
+    async fn objects_round_trip_under_the_configured_prefix() {
+        let objects: Objects = Arc::new(Mutex::new(IndexMap::new()));
+        let server = stub_s3(Arc::clone(&objects));
+        let store = s3_store(&server.base, "pollywiki.au/data");
+
+        store
+            .put_json("canonical/people/alex.json", &serde_json::json!({ "n": 1 }))
+            .await
+            .expect("put");
+
+        // The prefix is part of the key on the wire, and never part of the key
+        // the rest of the ingest deals in.
+        let stored: Vec<(String, String)> = {
+            let bucket = objects.lock().expect("stub bucket");
+            bucket.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        assert_eq!(
+            stored,
+            // S3 gets the compact form; only the local store pretty-prints.
+            vec![(
+                "data/canonical/people/alex.json".to_string(),
+                r#"{"n":1}"#.to_string()
+            )]
+        );
+
+        let value: serde_json::Value = store
+            .get_json("canonical/people/alex.json")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(value["n"], 1);
+
+        store
+            .delete("canonical/people/alex.json")
+            .await
+            .expect("delete");
+        assert!(objects.lock().expect("stub bucket").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_missing_key_reads_as_none_and_any_other_error_surfaces() {
+        let server = stub_s3(Arc::new(Mutex::new(IndexMap::new())));
+        let store = s3_store(&server.base, "pollywiki.au");
+
+        assert!(store
+            .get_raw("canonical/absent.json")
+            .await
+            .expect("a missing object is not an error")
+            .is_none());
+
+        let err = store
+            .get_raw("canonical/denied.json")
+            .await
+            .expect_err("anything else is");
+        assert!(
+            err.to_string().contains("AccessDenied") || err.to_string().contains("403"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_follows_the_continuation_token_to_the_end() {
+        let objects: Objects = Arc::new(Mutex::new(IndexMap::new()));
+        let server = stub_s3(Arc::clone(&objects));
+        let store = s3_store(&server.base, "pollywiki.au/data");
+
+        for slug in ["c", "a", "b"] {
+            store
+                .put_raw(&format!("canonical/people/{slug}.json"), b"{}")
+                .await
+                .expect("put");
+        }
+        store
+            .put_raw("canonical/bills/s1.json", b"{}")
+            .await
+            .expect("put");
+
+        // The stub pages one key at a time, so three pages are walked.
+        let keys = store.list("canonical/people/").await.expect("list");
+        assert_eq!(
+            keys,
+            vec![
+                "canonical/people/a.json",
+                "canonical/people/b.json",
+                "canonical/people/c.json",
+            ],
+            "the store prefix is stripped and the listing stays inside the key prefix"
+        );
     }
 }
