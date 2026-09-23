@@ -227,3 +227,24 @@ document.addEventListener('click', (event) => {
   if (list && !list.hidden && !event.target.closest('.quick-search')) close()
 })
 
+// Phones scroll the nav row sideways; keep the current section, and whichever
+// link has keyboard focus, clear of the fade on the row's trailing edge. This
+// moves the row itself rather than calling scrollIntoView, so a #hash load
+// never jumps back up to the header. On wider screens the row does not scroll
+// and this does nothing.
+function reveal(link) {
+  const nav = link.parentElement
+  // 48px clears the 40px fade.
+  const over = link.getBoundingClientRect().right - nav.getBoundingClientRect().right + 48
+  if (over > 0) nav.scrollLeft += over
+}
+const nav = document.querySelector('.site-nav')
+const here = nav?.querySelector('[aria-current]')
+if (here) {
+  reveal(here)
+  // The current link's heavier face can arrive after that first measure.
+  document.fonts?.ready.then(() => reveal(here))
+}
+// A link only partly under the fade still counts as visible to the browser,
+// so focus alone would leave its ring faded out.
+nav?.addEventListener('focusin', (event) => reveal(event.target))

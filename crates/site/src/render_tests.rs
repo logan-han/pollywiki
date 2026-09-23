@@ -263,6 +263,37 @@ fn the_quick_search_is_a_labelled_search_form_that_works_without_script() {
 }
 
 #[test]
+fn a_nav_link_is_the_current_page_only_on_its_own_index() {
+    let data = sample_data();
+    let nav = |html: &str| -> String {
+        let start = html.find("<nav class=\"site-nav\"").expect("primary nav");
+        html[start..start + html[start..].find("</nav>").unwrap()].to_string()
+    };
+
+    let index = nav(&render(&data, &pages::people_index(&data)));
+    assert!(index.contains("<a href=\"/people/\" aria-current=\"page\">People</a>"));
+    assert_eq!(index.matches("aria-current").count(), 1);
+
+    // On a profile the link marks the section, not the page itself.
+    let person = &data.people[0];
+    let profile = nav(&render(&data, &pages::person_page(&data, person)));
+    assert!(profile.contains("<a href=\"/people/\" aria-current=\"true\">People</a>"));
+    assert!(!profile.contains("aria-current=\"page\""));
+    assert_eq!(profile.matches("aria-current").count(), 1);
+
+    // Pages outside the six sections mark nothing.
+    let about = nav(&render(&data, &pages::about_index(&data)));
+    assert!(!about.contains("aria-current"));
+
+    assert_eq!(layout::nav_state("/bills/", "/bills/"), Some("page"));
+    assert_eq!(
+        layout::nav_state("/bills/sample-1/", "/bills/"),
+        Some("true")
+    );
+    assert_eq!(layout::nav_state("/", "/bills/"), None);
+}
+
+#[test]
 fn home_lists_bill_activity_newest_first() {
     let data = sample_data();
     let page = pages::home(&data);

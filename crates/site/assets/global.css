@@ -227,7 +227,9 @@ p {
   color: var(--ink);
 }
 
-.site-nav a[aria-current='page'] {
+/* The section marker: the index itself (aria-current=page) and every page
+   inside it (aria-current=true). */
+.site-nav a[aria-current] {
   color: var(--ink);
   font-weight: 500;
 }
@@ -237,9 +239,10 @@ p {
   min-width: 13rem;
 }
 
-/* Small screens: wordmark and search share the top row; the nav becomes a
-   single swipeable row underneath instead of wrapping mid-list. */
-@media (max-width: 40rem) {
+/* Tablets and phones: wordmark and search share the top row and the nav takes
+   the whole second row. Below 50rem the three no longer fit on one line, and
+   a plain wrap would drop the search box onto a row of its own. */
+@media (max-width: 50rem) {
   .site-header .wrap {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -258,16 +261,32 @@ p {
   .quick-search {
     grid-area: search;
     min-width: 0;
+    justify-self: end;
+    width: min(100%, 20rem);
   }
 
-  /* A scrolling row clips on both axes, so the padding leaves room for the
-     focus ring and the negative margin gives the space back. */
   .site-nav {
     grid-area: nav;
-    padding: 4px;
-    margin: -4px;
+    margin-left: 0;
+  }
+}
+
+/* Phones: the nav becomes a single swipeable row instead of wrapping
+   mid-list. It runs to both screen edges, so a link cut off at the edge reads
+   as more to swipe rather than as a rendering fault. */
+@media (max-width: 40rem) {
+  /* A scrolling row clips on both axes: the 4px above and below leaves room
+     for the focus ring and the negative margin gives the space back. The
+     inline padding lines the first link up with the page gutter. */
+  .site-nav {
+    padding: 4px 1.5rem;
+    margin: -4px -1.5rem;
+    /* Keyboard focus scrolls a link clear of the gutter and the fade. */
+    scroll-padding-inline: 1.5rem 2.5rem;
     flex-wrap: nowrap;
-    gap: 1.1rem;
+    /* All six links fit at 390px in every section; 0.7rem leaves some a
+       pixel over. */
+    gap: 0.65rem;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
@@ -279,6 +298,38 @@ p {
 
   .site-nav a {
     white-space: nowrap;
+    padding: 0.3rem 0;
+  }
+}
+
+/* While there is more of the nav row to swipe, its trailing edge fades out;
+   scrolled to the end, or on a row that fits, there is no scroll progress to
+   drive the fade and it stays at 0. Without scroll timelines the edge-to-edge
+   row alone says there is more. */
+@property --nav-fade {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes nav-fade {
+  from,
+  90% {
+    --nav-fade: 2.5rem;
+  }
+
+  to {
+    --nav-fade: 0px;
+  }
+}
+
+@supports (animation-timeline: scroll()) {
+  @media (max-width: 40rem) {
+    .site-nav {
+      mask-image: linear-gradient(to right, #000 calc(100% - var(--nav-fade)), transparent);
+      animation: nav-fade linear both;
+      animation-timeline: scroll(self inline);
+    }
   }
 }
 

@@ -13,7 +13,8 @@ pub const INDEXED_ROBOTS: &str = "index, follow, max-image-preview:large";
 
 const GTAG_SCRIPT: &str = "\n      window.dataLayer = window.dataLayer || []\n      function gtag() {\n        dataLayer.push(arguments)\n      }\n      gtag('js', new Date())\n      gtag('config', 'G-ZHJ3V1JWPX')\n    ";
 
-// Quick-search behaviour, inlined at the end of every page.
+// Header behaviour (the quick search and the phone nav row), inlined at the
+// end of every page.
 const QUICK_SEARCH_JS: &str = include_str!("../assets/js/quick-search.js");
 
 /// The two latin subsets every page renders text with; the rest load on demand.
@@ -30,6 +31,19 @@ const NAV: [(&str, &str); 6] = [
     ("Parties", "/parties/"),
     ("Search", "/search/"),
 ];
+
+/// How a nav link relates to the page it sits on: its own index is the page,
+/// and anything under it is inside the section, which is not the same thing
+/// to a screen reader ("People, current page" on a person's profile misleads).
+pub(crate) fn nav_state(current: &str, href: &str) -> Option<&'static str> {
+    if current == href {
+        Some("page")
+    } else if current.starts_with(href) {
+        Some("true")
+    } else {
+        None
+    }
+}
 
 fn source_label(name: &str) -> &str {
     match name {
@@ -163,13 +177,12 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     out.push_str("<header class=\"site-header\"><div class=\"wrap\"><a class=\"wordmark\" href=\"/\">pollywiki<span class=\"tld\">.au</span></a><nav class=\"site-nav\" aria-label=\"Primary\">");
     let current = page.path.as_str();
     for (label, href) in NAV {
-        if current.starts_with(href) {
-            out.push_str(&format!(
-                "<a href=\"{href}\" aria-current=\"page\">{label}</a>"
-            ));
-        } else {
-            out.push_str(&format!("<a href=\"{href}\">{label}</a>"));
-        }
+        out.push_str(&match nav_state(current, href) {
+            Some(state) => {
+                format!("<a href=\"{href}\" aria-current=\"{state}\">{label}</a>")
+            }
+            None => format!("<a href=\"{href}\">{label}</a>"),
+        });
     }
     // A real search form, so Enter reaches /search/?q= with no script, before
     // the index arrives, or when no suggestion list is showing. The label
