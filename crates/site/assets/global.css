@@ -137,6 +137,12 @@ h2 {
   margin-top: 2.5rem;
 }
 
+/* The sub-heading tier, for a table that belongs to a section. */
+h3 {
+  font-size: 0.95rem;
+  margin-top: 1.2rem;
+}
+
 p {
   margin: 0.4rem 0;
 }
@@ -374,6 +380,24 @@ p {
   margin-top: 1.1rem;
 }
 
+/* A record's own page starts a step higher than an index, level with the
+   profile head and meta row that open person, bill and division pages. */
+article > .masthead:first-child {
+  padding-top: 2.2rem;
+}
+
+/* A lede straight after a masthead (an electorate's name derivation) reads
+   as part of it rather than as the next block. */
+.masthead + .lede {
+  margin-top: -0.4rem;
+}
+
+/* Every page opens with a masthead. Should one ever not, its heading still
+   clears the header rule instead of touching it. */
+main.wrap > h1:first-child {
+  margin-top: 2.6rem;
+}
+
 .motto {
   font-family: var(--serif);
   font-style: italic;
@@ -484,6 +508,27 @@ p {
   height: 0.62rem;
   border-radius: 50%;
   flex: none;
+}
+
+/* A chip that is the heading, or sits in a table cell, wraps like the text
+   around it; nowrap is for chips inside meta lines. */
+h1 .group-chip,
+td .group-chip {
+  white-space: normal;
+}
+
+/* A party page's name is its h1: the chip takes the heading size, and when a
+   long name wraps the dot stays on the first line. */
+h1 .group-chip {
+  align-items: baseline;
+  gap: 0.7rem;
+  max-width: 100%;
+  font-size: inherit;
+}
+
+h1 .group-chip .dot {
+  width: 0.9rem;
+  height: 0.9rem;
 }
 
 /* Filled tags carry a record value (a member's vote, a division outcome) and
@@ -1017,6 +1062,27 @@ td.num.zero {
   vertical-align: -1px;
 }
 
+/* The official bill summary, in any of its three shapes: a lede kept to a
+   reading measure, with each amended Act as a small heading over its list. */
+.bill-summary {
+  max-width: 66ch;
+  margin-top: 1.1rem;
+}
+
+.bill-summary .act {
+  margin: 0.7rem 0;
+}
+
+.bill-summary .act > p {
+  font-weight: 500;
+  margin-bottom: 0.15rem;
+}
+
+.bill-summary ul {
+  margin: 0.2rem 0;
+  padding-left: 1.4rem;
+}
+
 /* Segmented control + filter pills. The end buttons are rounded to fit the
    border rather than clipped to it: clipping would also cut off the focus
    ring, which is drawn outside each button. */
@@ -1105,6 +1171,12 @@ td.num.zero {
 
 .filter-bar input {
   flex: 1 1 12rem;
+}
+
+/* Pagefind's field on /search/ sits where the filter bar sits on the other
+   indexes, the same step below the masthead. */
+#search {
+  margin-top: 1.2rem;
 }
 
 /* iOS Safari zooms any field under 16px on focus and leaves the page zoomed.
@@ -1295,6 +1367,12 @@ td.num.zero {
   margin-top: 0.1rem;
 }
 
+/* An electorate's member: one card, not a grid cell stretched to the
+   measure. */
+.current-member {
+  max-width: 24rem;
+}
+
 .avatar {
   width: 2.75rem;
   height: 2.75rem;
@@ -1326,6 +1404,12 @@ td.num.zero {
   align-items: center;
   padding: 2.2rem 0 1.6rem;
   flex-wrap: wrap;
+}
+
+/* The meta row opens bill and division pages with its own top margin; beside
+   a portrait the profile head's padding already provides it. */
+.profile-head .meta-row {
+  margin: 0 0 0.5rem;
 }
 
 .meta-line {
@@ -1368,6 +1452,11 @@ td.num.zero {
   font-size: 0.85rem;
 }
 
+/* An electorate's boundary description runs long; keep it to a measure. */
+.note.covers {
+  max-width: 62ch;
+}
+
 .attribution {
   color: var(--faint);
   font-size: 0.78125rem;
@@ -1402,6 +1491,11 @@ td.num.zero {
 .site-footer .wrap {
   padding-top: 1.4rem;
   padding-bottom: 2rem;
+}
+
+/* A page's own source note sits first in the footer, above the disclaimer. */
+.site-footer .attribution {
+  margin: 0 0 0.9rem;
 }
 
 .site-footer .disclaimer {

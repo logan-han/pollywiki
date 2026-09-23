@@ -1367,6 +1367,106 @@ fn the_dev_server_routes_directories_assets_and_misses() {
 }
 
 #[test]
+fn every_page_opens_with_a_masthead_or_a_record_head() {
+    let data = sample_data();
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        let (_, main) = html
+            .split_once("<main class=\"wrap\" id=\"main\">")
+            .expect("main");
+        let top = main
+            .strip_prefix("<article data-pagefind-body>")
+            .unwrap_or(main);
+        // The page-top space lives in these three openers; a bare h1 would
+        // sit against the header rule.
+        assert!(
+            [
+                "<div class=\"masthead\"><h1",
+                "<div class=\"profile-head\">",
+                "<div class=\"meta-row\">"
+            ]
+            .iter()
+            .any(|opener| top.starts_with(opener)),
+            "{} opens with {}",
+            page.path,
+            &top[..top.len().min(60)]
+        );
+    }
+}
+
+#[test]
+fn inline_styles_carry_only_values_from_the_data() {
+    let data = sample_data();
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        // Layout belongs in the stylesheet, where print, the dark scheme and
+        // forced colours can reach it. What stays inline is per-record: a
+        // party's colour, a segment's share, the majority tick's position.
+        for value in html.split(" style=\"").skip(1) {
+            let value = value.split('"').next().unwrap_or("");
+            for declaration in value.split(';').filter(|d| !d.is_empty()) {
+                let property = declaration.split(':').next().unwrap_or("").trim();
+                assert!(
+                    ["background", "width", "left"].contains(&property),
+                    "fixed inline style {value:?} on {}",
+                    page.path
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn party_chips_link_wherever_the_party_has_a_page() {
+    let data = sample_data();
+
+    // The party page names the party in its h1 chip, which is not a link to
+    // itself, and the seat line spaces its separator.
+    let party = data
+        .parties
+        .iter()
+        .find(|p| p.slug == "example-party")
+        .expect("sample party");
+    let html = render(&data, &pages::party_page(&data, party));
+    assert!(html.contains(
+        "<h1 data-pagefind-meta=\"title\"><span class=\"group-chip\"><span class=\"dot\""
+    ));
+    let motto = html
+        .split("<p class=\"motto\">")
+        .nth(1)
+        .and_then(|m| m.split("</p>").next())
+        .expect("motto");
+    assert!(
+        motto.contains(" House seat") && motto.contains(" \u{b7} "),
+        "{motto}"
+    );
+
+    // The parties index and every division's By party table link each group
+    // that has a page.
+    let index = render(&data, &pages::parties_index(&data));
+    for p in &data.parties {
+        assert!(
+            index.contains(&format!(
+                "<a class=\"group-chip\" href=\"/parties/{}/\">",
+                p.slug
+            )),
+            "{} unlinked on the index",
+            p.slug
+        );
+    }
+    let mut linked = 0;
+    for division in &data.divisions {
+        let html = render(&data, &pages::division_page(&data, division));
+        let (_, by_party) = html.split_once("<h2>By party</h2>").expect("By party");
+        let table = by_party.split("</table>").next().unwrap_or("");
+        linked += table
+            .matches("<a class=\"group-chip\" href=\"/parties/")
+            .count();
+    }
+    assert!(linked > 0, "By party rows should link to their party pages");
+}
+
+#[test]
 fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
     let data = sample_data();
     assert!(

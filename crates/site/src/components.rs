@@ -49,9 +49,15 @@ pub fn chamber_chip(house: House) -> String {
     }
 }
 
+/// The swatch for a group the reference data gives no colour: a neutral grey,
+/// so an unknown group never borrows another party's hue.
+pub const GROUP_FALLBACK_COLOUR: &str = "#6e7b74";
+
 pub fn group_chip(data: &SiteData, group_slug: &str, group: &str, link: bool) -> String {
     let party = data.party_by_slug(group_slug);
-    let colour = party.and_then(|p| p.colour.as_deref()).unwrap_or("#6e7b74");
+    let colour = party
+        .and_then(|p| p.colour.as_deref())
+        .unwrap_or(GROUP_FALLBACK_COLOUR);
     let label = party.map(|p| p.name.as_str()).unwrap_or(group);
     // A group with no sitting members has no page, so the chip stays plain.
     if link && party.is_some() {
@@ -481,7 +487,7 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
             "<a href=\"/parties/{slug}/\" style=\"width:{width}%;background:{colour}\" title=\"{title}\" aria-label=\"{label}\"></a>",
             slug = party.slug,
             width = js_float(*seats as f64 / total.max(1) as f64 * 100.0),
-            colour = party.colour.as_deref().unwrap_or("#6e7b74"),
+            colour = party.colour.as_deref().unwrap_or(GROUP_FALLBACK_COLOUR),
             title = esc_attr(&format!("{}: {seats}", party.name)),
             label = esc_attr(&format!(
                 "{}, {seats} seat{}",
