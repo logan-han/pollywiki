@@ -227,6 +227,42 @@ fn the_quick_search_placeholder_fits_a_phone_but_the_name_stays_whole() {
 }
 
 #[test]
+fn the_quick_search_is_a_labelled_search_form_that_works_without_script() {
+    let data = sample_data();
+    for page in [pages::home(&data), pages::search_page()] {
+        let html = render(&data, &page);
+        let where_ = &page.path;
+        // A search landmark with its own name, beside Pagefind's on /search/,
+        // and a real form: Enter goes to /search/?q= with no script at all.
+        assert!(
+            html.contains("<form class=\"quick-search\" role=\"search\" aria-label=\"Quick find\" action=\"/search/\">"),
+            "{where_}"
+        );
+        assert_eq!(html.matches("aria-label=\"Quick find\"").count(), 1);
+        let form = &html[html.find("<form class=\"quick-search\"").unwrap()..];
+        let form = &form[..form.find("</form>").expect("the form is closed")];
+        assert!(
+            form.contains("<input type=\"search\" id=\"quick-search-input\" name=\"q\""),
+            "{where_}"
+        );
+        // The list scrolls, so without tabindex=-1 Chrome makes it a tab stop
+        // of its own, where the arrow keys do nothing.
+        assert!(
+            form.contains("role=\"listbox\" aria-label=\"Suggestions\" tabindex=\"-1\" hidden>"),
+            "{where_}"
+        );
+        // The script says how many suggestions there are here.
+        assert!(
+            form.contains(
+                "<p id=\"quick-search-status\" class=\"visually-hidden\" role=\"status\"></p>"
+            ),
+            "{where_}"
+        );
+        assert!(!html.contains("<div class=\"quick-search\""), "{where_}");
+    }
+}
+
+#[test]
 fn home_lists_bill_activity_newest_first() {
     let data = sample_data();
     let page = pages::home(&data);

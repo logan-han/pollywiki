@@ -321,9 +321,13 @@ p {
   border-radius: 2px;
 }
 
+/* --hair differs from --field in both schemes (--panel sits one step off it
+   in the dark scheme and the highlight vanished there), and the bar is a
+   second cue that does not rest on the surface at all. */
 .quick-search li a:hover,
 .quick-search li a.active {
-  background: var(--panel);
+  background: var(--hair);
+  box-shadow: inset 2px 0 0 var(--focus);
   color: inherit;
 }
 
@@ -333,7 +337,15 @@ p {
   font-size: 0.78rem;
 }
 
+/* A query that matches nothing says so, above the way out to full search. */
+.quick-search .none {
+  padding: 0.35rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .quick-search .group {
+  display: block;
   font-family: var(--mono);
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
@@ -360,6 +372,12 @@ p {
   font-size: 0.625rem;
   color: var(--faint);
   white-space: nowrap;
+}
+
+/* The key hints sit on the highlight too, where --faint drops below 4.5:1. */
+.quick-search li a:hover .hint,
+.quick-search li a.active .hint {
+  color: var(--muted);
 }
 
 /* No keyboard, no key hints. */
@@ -1668,6 +1686,14 @@ img.avatar.large {
     background: Highlight;
     border-color: Highlight;
     color: HighlightText;
+  }
+
+  /* The suggestion highlight is a background and an inset shadow, and forced
+     colours drops both. */
+  .quick-search li a:hover,
+  .quick-search li a.active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 }
 
