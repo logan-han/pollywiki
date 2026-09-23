@@ -855,12 +855,6 @@ h1 .group-chip .dot {
 .seat-bar .bar > * {
   display: block;
   min-width: 1px;
-  text-decoration: none;
-}
-
-.seat-bar .bar a:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
 }
 
 .seat-bar .tick {
@@ -877,18 +871,31 @@ h1 .group-chip .dot {
   top: 0;
   transform: translateX(-50%);
   padding: 0 3px;
-  background: var(--card);
+  /* The bar only ever sits on the page ground, so the label's knockout is
+     paper; card shows as a lighter box in the dark scheme. */
+  background: var(--paper);
   font-family: var(--mono);
   font-size: 0.6875rem;
   line-height: 1;
   color: var(--muted);
 }
 
+/* The key is the bar's controls: one flex row of party links, each a
+   24px-tall target, spaced by a gap so no wrapped line starts with a
+   separator. The smaller top margin offsets the taller line. */
 .seat-bar .key {
-  margin-top: 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.9rem;
+  margin-top: 0.2rem;
   font-family: var(--mono);
   font-size: 0.75rem;
+  line-height: 2;
   color: var(--muted);
+}
+
+.seat-bar .key a {
+  white-space: nowrap;
 }
 
 /* Tables */
@@ -1398,6 +1405,29 @@ td.num.zero {
   font-size: 1.6rem;
 }
 
+/* A portrait that fails to load keeps its circle, and any alt text stays
+   small and inside it instead of spilling across the card. */
+img.avatar {
+  display: inline-block;
+  overflow: hidden;
+  font-size: 0.625rem;
+  line-height: 1.25;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* .avatar.large sets 1.6rem for initials; alt text needs the small size. */
+img.avatar.large {
+  font-size: 0.75rem;
+}
+
+/* Photo or initials, a card's name starts at the same height: aligned to the
+   top, the avatar's line is the circle alone, with no descender room under a
+   photo's baseline. */
+.person-card .avatar {
+  vertical-align: top;
+}
+
 .profile-head {
   display: flex;
   gap: 1.4rem;
@@ -1519,13 +1549,19 @@ td.num.zero {
   color: var(--faint);
 }
 
+/* Filled for a sync that ran, hollow for one that failed, the convention the
+   outcome strip uses for carried and negatived. The words carry the state as
+   well, so the marks take an empty alternative and stay out of what a screen
+   reader announces; the plain declaration first is for older engines. */
 .freshness .ok::before {
   content: '● ';
+  content: '● ' / '';
   color: var(--aye);
 }
 
 .freshness .stale::before {
-  content: '● ';
+  content: '○ ';
+  content: '○ ' / '';
   color: var(--no);
 }
 

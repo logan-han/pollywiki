@@ -750,11 +750,40 @@ fn seat_bars_mark_the_majority_and_link_each_party() {
         let bar = seat_bar(&data, house);
         assert!(bar.contains("class=\"majority\">majority "), "{house}");
         assert!(bar.contains("class=\"tick\""), "{house}");
-        assert!(bar.contains("class=\"tick-label\""), "{house}");
-        // Every segment is a party link with its own accessible name.
-        let segments = bar.matches("<a href=\"/parties/").count();
-        assert!(segments >= 2, "expected linked segments for {house}");
-        assert_eq!(bar.matches("aria-label=\"").count(), 1 + segments / 2);
+        // The majority is already in the label; the figure over the tick is
+        // drawn for the eye and kept out of the reading order.
+        assert!(
+            bar.contains("class=\"tick-label\"") && bar.contains("aria-hidden=\"true\">"),
+            "{house}"
+        );
+
+        // The bar is one picture with one text alternative and nothing inside
+        // it to tab to: a control inside role="img" has no name.
+        let (_, picture) = bar.split_once("<div class=\"bar\"").expect("bar");
+        let picture = picture.split("</div>").next().unwrap_or("");
+        assert!(picture.contains("role=\"img\""), "{house}");
+        assert!(
+            !picture.contains("<a "),
+            "segments must not be links on {house}"
+        );
+        assert_eq!(bar.matches("aria-label=\"").count(), 1, "{house}");
+
+        // The key links every party holding a seat in the chamber, once each,
+        // with no separator glyph to strand at the start of a wrapped line.
+        let seated = data
+            .parties
+            .iter()
+            .filter(|p| p.seats.as_ref().is_some_and(|s| s.get(house) > 0))
+            .count();
+        assert!(seated >= 2, "expected several parties in {house}");
+        let (_, key) = bar.split_once("<div class=\"key\">").expect("key");
+        assert_eq!(
+            key.matches("<a href=\"/parties/").count(),
+            seated,
+            "{house}"
+        );
+        assert_eq!(picture.matches("<span ").count(), seated, "{house}");
+        assert!(!key.contains('\u{b7}'), "{house}");
     }
 }
 
@@ -1526,6 +1555,33 @@ fn party_chips_link_wherever_the_party_has_a_page() {
 }
 
 #[test]
+fn card_portraits_are_decorative_and_the_profile_portrait_is_described() {
+    let data = sample_data();
+    let person = data
+        .people
+        .iter()
+        .find(|p| p.photo.is_some())
+        .expect("sample data has a portrait");
+    // On a card the name follows the portrait inside the same link, so a
+    // described image would read the name twice.
+    let index = render(&data, &pages::people_index(&data));
+    let card = index
+        .split(&format!(
+            "<a class=\"person-card\" href=\"/people/{}/\">",
+            person.slug
+        ))
+        .nth(1)
+        .and_then(|c| c.split("</a>").next())
+        .expect("card");
+    assert!(card.contains("<img class=\"avatar\""), "{card}");
+    assert!(card.contains("alt=\"\""), "{card}");
+    assert!(!index.contains("alt=\"Portrait of"));
+
+    let profile = render(&data, &pages::person_page(&data, person));
+    assert!(profile.contains(&format!("alt=\"Portrait of {}\"", person.name)));
+}
+
+#[test]
 fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
     let data = sample_data();
     assert!(
@@ -1548,9 +1604,11 @@ fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
             "{label} missing from the freshness line"
         );
     }
-    // A failed sync is marked stale rather than quietly shown as current.
-    assert!(html.contains("class=\"stale\""));
+    // A failed sync is marked stale rather than quietly shown as current, and
+    // says so in words, not by the colour of its mark alone.
+    assert!(html.contains("class=\"stale\">AEC profiles · 1 Aug 2026 · sync failed</span>"));
     assert!(html.contains("class=\"ok\""));
+    assert_eq!(html.matches("sync failed").count(), 1);
     assert!(html.contains("built "));
 
     // The data-sources page reports the same syncs.

@@ -183,14 +183,17 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
         out.push_str(note);
     }
     out.push_str("<p class=\"disclaimer\">This service does not evaluate politicians or laws. Every page reproduces official records, linked to their source; machine-written summaries are labelled \u{201C}AI-generated\u{201D} and are never part of the record.</p><div class=\"freshness\">");
+    // The date is when the sync last ran. A failed run says so in words as
+    // well as in its hollow mark, so the state never rests on colour alone.
     for (name, status) in &data.meta.sources {
         out.push_str(&format!(
-            "<span class=\"{}\">{} · {}</span>",
+            "<span class=\"{}\">{} · {}{}</span>",
             if status.ok { "ok" } else { "stale" },
             esc(source_label(name)),
             esc(&format_date(
                 &status.last_sync.chars().take(10).collect::<String>()
-            ))
+            )),
+            if status.ok { "" } else { " · sync failed" },
         ));
     }
     out.push_str(&format!(

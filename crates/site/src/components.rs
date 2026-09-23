@@ -13,11 +13,18 @@ pub fn avatar(person: &Person, large: bool) -> String {
             } else {
                 photo.thumb.as_deref().unwrap_or(&photo.url)
             };
+            // A card avatar sits beside the name in the same link, so it is
+            // decorative; the profile portrait stands alone and keeps its text
+            // alternative.
             format!(
-                "<img class=\"{class}\" src=\"{src}\" alt=\"Portrait of {name}\" loading=\"{loading}\" decoding=\"async\" width=\"{size}\" height=\"{size}\">",
+                "<img class=\"{class}\" src=\"{src}\" alt=\"{alt}\" loading=\"{loading}\" decoding=\"async\" width=\"{size}\" height=\"{size}\">",
                 class = if large { "avatar large" } else { "avatar" },
                 src = esc_attr(src),
-                name = esc_attr(&person.name),
+                alt = if large {
+                    format!("Portrait of {}", esc_attr(&person.name))
+                } else {
+                    String::new()
+                },
                 loading = if large { "eager" } else { "lazy" },
                 size = if large { 102 } else { 48 },
             )
@@ -473,27 +480,26 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
         ));
     }
     out.push_str("</div><div class=\"bar-wrap\">");
+    // The label above repeats the majority in words, so the figure over the
+    // tick is for the eye only.
     if total > 0 {
         out.push_str(&format!(
-            "<span class=\"tick-label\" style=\"left:{tick}%\">{majority}</span>"
+            "<span class=\"tick-label\" style=\"left:{tick}%\" aria-hidden=\"true\">{majority}</span>"
         ));
     }
+    // One picture with one text alternative. The segments are not links: a
+    // one-seat party is a few pixels wide, too narrow to tap or to show a
+    // focus ring, and the key underneath links every party anyway.
     out.push_str(&format!(
         "<div class=\"bar\" role=\"img\" aria-label=\"{}\">",
         esc_attr(&format!("{chamber} composition: {aria}")),
     ));
     for (party, seats) in &rows {
         out.push_str(&format!(
-            "<a href=\"/parties/{slug}/\" style=\"width:{width}%;background:{colour}\" title=\"{title}\" aria-label=\"{label}\"></a>",
-            slug = party.slug,
+            "<span style=\"width:{width}%;background:{colour}\" title=\"{title}\"></span>",
             width = js_float(*seats as f64 / total.max(1) as f64 * 100.0),
             colour = party.colour.as_deref().unwrap_or(GROUP_FALLBACK_COLOUR),
             title = esc_attr(&format!("{}: {seats}", party.name)),
-            label = esc_attr(&format!(
-                "{}, {seats} seat{}",
-                party.code.as_deref().unwrap_or(&party.name),
-                if *seats == 1 { "" } else { "s" }
-            )),
         ));
     }
     out.push_str("</div>");
@@ -502,6 +508,9 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
             "<span class=\"tick\" style=\"left:{tick}%\" aria-hidden=\"true\"></span>"
         ));
     }
+    // The key is a row of flex items spaced by a gap, so no separator can be
+    // left dangling at the start of a wrapped line. The plain space between
+    // links only keeps copied or extracted text apart; the layout drops it.
     out.push_str("</div><div class=\"key\">");
     out.push_str(
         &rows
@@ -514,7 +523,7 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
                 )
             })
             .collect::<Vec<_>>()
-            .join(" \u{b7} "),
+            .join(" "),
     );
     out.push_str("</div></div>");
     out
