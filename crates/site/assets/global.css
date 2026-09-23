@@ -254,9 +254,12 @@ p {
     min-width: 0;
   }
 
+  /* A scrolling row clips on both axes, so the padding leaves room for the
+     focus ring and the negative margin gives the space back. */
   .site-nav {
     grid-area: nav;
-    margin-left: 0;
+    padding: 4px;
+    margin: -4px;
     flex-wrap: nowrap;
     gap: 1.1rem;
     overflow-x: auto;
@@ -895,6 +898,10 @@ td.num.zero {
 
 .table-scroll {
   overflow-x: auto;
+  /* Room for a focus ring on the first and last columns, which the scroller
+     would otherwise clip; the negative margin keeps the table where it was. */
+  padding: 0 4px;
+  margin: 0 -4px;
 }
 
 /* Labelled fact rows: mono caps label column, plain values. Row headers keep
@@ -1010,12 +1017,13 @@ td.num.zero {
   vertical-align: -1px;
 }
 
-/* Segmented control + filter pills */
+/* Segmented control + filter pills. The end buttons are rounded to fit the
+   border rather than clipped to it: clipping would also cut off the focus
+   ring, which is drawn outside each button. */
 .segmented {
   display: inline-flex;
   border: 1px solid var(--hair-strong);
   border-radius: 6px;
-  overflow: hidden;
 }
 
 .segmented button {
@@ -1028,8 +1036,22 @@ td.num.zero {
   cursor: pointer;
 }
 
+.segmented button:first-child {
+  border-radius: 5px 0 0 5px;
+}
+
+.segmented button:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
 .segmented button + button {
   border-left: 1px solid var(--hair-strong);
+}
+
+/* The ring paints over the neighbouring segment rather than under it. */
+.segmented button:focus-visible {
+  position: relative;
+  z-index: 1;
 }
 
 .segmented button[aria-pressed='true'] {
@@ -1083,6 +1105,17 @@ td.num.zero {
 
 .filter-bar input {
   flex: 1 1 12rem;
+}
+
+/* iOS Safari zooms any field under 16px on focus and leaves the page zoomed.
+   Touch screens get the full body size, in either orientation. This follows
+   both base rules it overrides. */
+@media (max-width: 40rem), (pointer: coarse) {
+  .quick-search input,
+  .filter-bar input,
+  .filter-bar select {
+    font-size: 1rem;
+  }
 }
 
 /* Filter feedback: live count, and an explicit way out of a dead end. */
@@ -1469,6 +1502,42 @@ td.num.zero {
     --banner-hair: #4a4325;
     --banner-ink: #e3d7a6;
     --shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* Forced colours (Windows High Contrast) resets every background, and these
+   marks are drawn with background alone: without this block the seat bars,
+   the majority tick, vote bars, filled bill-progress dots and 'carried'
+   squares vanish, and a pressed filter button differs only by weight. */
+@media (forced-colors: active) {
+  .bill-dots i.on,
+  .outcome-strip i.carried,
+  .vote-bar .a,
+  .seat-bar .tick {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .bill-dots i.off {
+    border-color: CanvasText;
+  }
+
+  .vote-bar {
+    forced-color-adjust: none;
+    background: Canvas;
+    box-shadow: inset 0 0 0 1px CanvasText;
+  }
+
+  .seat-bar .bar {
+    forced-color-adjust: none;
+  }
+
+  .segmented button[aria-pressed='true'],
+  .pills button[aria-pressed='true'] {
+    forced-color-adjust: none;
+    background: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
   }
 }
 

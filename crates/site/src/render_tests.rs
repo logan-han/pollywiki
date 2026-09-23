@@ -217,6 +217,16 @@ fn the_sample_banner_follows_the_meta_flag() {
 }
 
 #[test]
+fn the_quick_search_placeholder_fits_a_phone_but_the_name_stays_whole() {
+    let data = sample_data();
+    let html = render(&data, &pages::about_index(&data));
+    // At the 16px phone size the header field holds about 26 characters; the
+    // placeholder is shortened to fit and the accessible name keeps the verb.
+    assert!(html.contains("placeholder=\"Bill, person or electorate\""));
+    assert!(html.contains("aria-label=\"Find a bill, person or electorate\""));
+}
+
+#[test]
 fn home_lists_bill_activity_newest_first() {
     let data = sample_data();
     let page = pages::home(&data);

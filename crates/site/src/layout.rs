@@ -171,7 +171,7 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
             out.push_str(&format!("<a href=\"{href}\">{label}</a>"));
         }
     }
-    out.push_str("</nav><div class=\"quick-search\"><input type=\"search\" id=\"quick-search-input\" placeholder=\"Find a bill, person or electorate\" autocomplete=\"off\" aria-label=\"Find a bill, person or electorate\" role=\"combobox\" aria-expanded=\"false\" aria-controls=\"quick-search-results\" aria-autocomplete=\"list\"><ul id=\"quick-search-results\" role=\"listbox\" aria-label=\"Suggestions\" hidden></ul></div></div></header><main class=\"wrap\" id=\"main\">");
+    out.push_str("</nav><div class=\"quick-search\"><input type=\"search\" id=\"quick-search-input\" placeholder=\"Bill, person or electorate\" autocomplete=\"off\" aria-label=\"Find a bill, person or electorate\" role=\"combobox\" aria-expanded=\"false\" aria-controls=\"quick-search-results\" aria-autocomplete=\"list\"><ul id=\"quick-search-results\" role=\"listbox\" aria-label=\"Suggestions\" hidden></ul></div></div></header><main class=\"wrap\" id=\"main\">");
     out.push_str(&page.body);
     if let Some(script) = page.page_script {
         out.push_str("<script type=\"module\">");
