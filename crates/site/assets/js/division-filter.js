@@ -18,6 +18,11 @@ for (const item of items) {
   }
 }
 const rows = items.filter((item) => item.dataset.house !== undefined)
+// Each row's title, lower-cased once. It is read from the row itself rather
+// than a copy in the markup, which would add a fifth to the page's weight.
+const titles = new Map(
+  rows.map((row) => [row, (row.querySelector('.what')?.textContent ?? '').toLowerCase()]),
+)
 
 let house = ''
 
@@ -26,7 +31,7 @@ function apply() {
   let shown = 0
   for (const row of rows) {
     const match =
-      (!needle || (row.dataset.text ?? '').includes(needle)) &&
+      (!needle || titles.get(row).includes(needle)) &&
       (!house || row.dataset.house === house)
     row.style.display = match ? '' : 'none'
     if (match) shown += 1

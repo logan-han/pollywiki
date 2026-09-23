@@ -603,6 +603,11 @@ fn ledger_rows_split_the_tally_and_drop_the_year_only_under_a_month() {
         "<span class=\"tally\"><span class=\"result-chip carried\">Carried</span> <span class=\"ch\">Senate</span> <span class=\"fig\">2\u{2013}0</span><span class=\"vote-bar\""
     ));
 
+    // The filter reads each title from the row itself, so the 990 rows carry
+    // no lower-cased copy of it.
+    assert!(!index.contains("data-text="));
+    assert!(index.contains("row.querySelector('.what')"));
+
     // Under a month divider every date drops its year; the <time> keeps it.
     let whens: Vec<&str> = index
         .split("<span class=\"when\">")

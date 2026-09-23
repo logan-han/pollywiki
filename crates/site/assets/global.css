@@ -747,6 +747,45 @@ td.date {
   white-space: nowrap;
 }
 
+/* Long ledgers: a row off screen skips layout and paint until it is
+   scrolled near, so a 990-row index loads, and refills as a filter widens,
+   without laying out every row. The size stands in until a row has been
+   rendered once (typical row heights, padding excluded). Paint containment
+   would cut off a focus ring drawn outside the row; the clip margin keeps
+   it. Find in page and assistive tech still see every row. */
+.ledger > li:not(.ledger-month),
+.bill-list > li:not(.ledger-month) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.9rem;
+  overflow-clip-margin: 0.375rem;
+}
+
+@media (max-width: 40rem) {
+  .ledger > li:not(.ledger-month) {
+    contain-intrinsic-size: auto 4.9rem;
+  }
+
+  .bill-list > li:not(.ledger-month) {
+    contain-intrinsic-size: auto 4.65rem;
+  }
+}
+
+/* An engine without the clip margin draws the ring inside instead, where a
+   control starts at the row's edge: a series summary, and on a phone every
+   title. */
+@supports not (overflow-clip-margin: 1px) {
+  .ledger-series summary:focus-visible {
+    outline-offset: -2px;
+  }
+
+  @media (max-width: 40rem) {
+    .ledger li a:focus-visible,
+    .bill-list li a:focus-visible {
+      outline-offset: -2px;
+    }
+  }
+}
+
 /* Series rows: one matter a chamber divided on several times in a day. The
    summary line is laid out as an ordinary ledger row; the steps under it sit
    in the title column, one per question put, in the order they were decided. */
@@ -1331,6 +1370,19 @@ td.date {
   border-color: var(--ink);
   color: var(--paper);
   font-weight: 500;
+}
+
+/* Hover answers the pointer on the choices not yet taken. Pointer devices
+   only, so a tap on a touch screen leaves no hover state stuck behind. */
+@media (hover: hover) {
+  .segmented button[aria-pressed='false']:hover,
+  .pills button[aria-pressed='false']:hover {
+    color: var(--ink);
+  }
+
+  .pills button[aria-pressed='false']:hover {
+    border-color: var(--ink);
+  }
 }
 
 .filter-bar {
@@ -1928,6 +1980,12 @@ img.avatar.large {
   .bill-list > li,
   .context-box {
     break-inside: avoid;
+  }
+
+  /* Paper gets every row, including the ones never scrolled to. */
+  .ledger > li:not(.ledger-month),
+  .bill-list > li:not(.ledger-month) {
+    content-visibility: visible;
   }
 
   .table-scroll {

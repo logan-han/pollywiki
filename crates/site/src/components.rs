@@ -129,7 +129,9 @@ pub fn ledger_row_in_month(division: &Division) -> String {
 
 /// The tally splits into outcome, chamber, figures and bar so each lines up
 /// down the ledger as a column. The spaces between the spans cost nothing in
-/// the grid; they keep the words apart when read aloud or copied.
+/// the grid; they keep the words apart when read aloud or copied. The row
+/// carries no lower-cased copy of its title for the filter: the script reads
+/// the title itself, which spares the index a fifth of its weight.
 fn ledger_li(division: &Division, when: &str) -> String {
     let href = format!("/divisions/{}/{}/", division.house, division_key(division));
     let chamber = match division.house {
@@ -137,9 +139,8 @@ fn ledger_li(division: &Division, when: &str) -> String {
         House::Representatives => "House",
     };
     format!(
-        "<li data-house=\"{house}\" data-text=\"{text}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
+        "<li data-house=\"{house}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
         house = division.house,
-        text = esc_attr(&division.name.to_lowercase()),
         name = esc(&division.name),
         chip = result_chip(division.result),
         ayes = division.ayes,
