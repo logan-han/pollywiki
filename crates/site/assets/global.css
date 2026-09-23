@@ -1441,8 +1441,10 @@ td.num.zero {
 
 /* Dark scheme: a token remap only, no rule duplication. Every value here is
    verified at 4.5:1 or better against --paper, --panel, --card and --field.
-   Party dot and segment colours come from the data and stay as they are. */
-@media (prefers-color-scheme: dark) {
+   Party dot and segment colours come from the data and stay as they are.
+   Screens only: a printout keeps the light tokens whatever the reader's
+   system scheme, since the print block below resets only the neutrals. */
+@media screen and (prefers-color-scheme: dark) {
   :root {
     --paper: #191d1b;
     --panel: #222723;
@@ -1473,6 +1475,7 @@ td.num.zero {
 /* Print: the record and its provenance, nothing that only works on screen. */
 @media print {
   :root {
+    color-scheme: light;
     --paper: #fff;
     --panel: #fff;
     --card: #fff;
@@ -1492,9 +1495,25 @@ td.num.zero {
   .site-footer nav,
   .segmented,
   .pills,
-  .skip,
-  .sample-banner {
+  .skip {
     display: none !important;
+  }
+
+  /* On a sample build the banner is exactly what a printout must say. */
+  .sample-banner {
+    background: none;
+    border: 1px solid var(--hair-strong);
+  }
+
+  /* Bars, dots, swatches and the majority tick are backgrounds, which a
+     default print drops. They carry the record, so they print as drawn. */
+  .vote-bar,
+  .seat-bar,
+  .group-chip .dot,
+  .bill-dots,
+  .outcome-strip {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
 
   .site-footer {
@@ -1504,6 +1523,15 @@ td.num.zero {
 
   a {
     text-decoration: none;
+  }
+
+  /* Provenance survives on paper: print where each source link points. */
+  .attribution a[href^='http']::after,
+  .context-credit a[href^='http']::after {
+    content: ' <' attr(href) '>';
+    font-family: var(--mono);
+    font-size: 0.85em;
+    overflow-wrap: anywhere;
   }
 
   tr,
