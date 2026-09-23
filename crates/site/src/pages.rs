@@ -1252,7 +1252,7 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
             );
             for group in groups {
                 body.push_str(&format!(
-                    "<div style=\"margin: .7rem 0;\"><p style=\"font-weight: 600; margin-bottom: .15rem;\">{}</p>",
+                    "<div style=\"margin: .7rem 0;\"><p style=\"font-weight: 500; margin-bottom: .15rem;\">{}</p>",
                     esc(&group.acts)
                 ));
                 if !group.items.is_empty() {
