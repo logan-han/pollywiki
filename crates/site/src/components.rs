@@ -1,5 +1,5 @@
 use crate::data::{
-    division_key, division_stage, first_sentence, format_date, js_float, plain_text,
+    division_key, division_stage, first_sentence, format_date, js_float, plain_text, short_date,
     DivisionSeries, SiteData,
 };
 use crate::html::{esc, esc_attr};
@@ -108,17 +108,38 @@ pub fn result_chip(result: DivisionResult) -> String {
     )
 }
 
+/// A ledger row where nothing above it gives the date: home, a bill page, a
+/// division's sitting day.
 pub fn ledger_row(division: &Division) -> String {
+    ledger_li(division, &esc(&format_date(&division.date)))
+}
+
+/// A ledger row under a month divider, which already carries the year: the
+/// date drops it, and the full date stays machine-readable in the <time>.
+pub fn ledger_row_in_month(division: &Division) -> String {
+    ledger_li(
+        division,
+        &format!(
+            "<time datetime=\"{}\">{}</time>",
+            esc_attr(&division.date),
+            esc(&short_date(&division.date))
+        ),
+    )
+}
+
+/// The tally splits into outcome, chamber, figures and bar so each lines up
+/// down the ledger as a column. The spaces between the spans cost nothing in
+/// the grid; they keep the words apart when read aloud or copied.
+fn ledger_li(division: &Division, when: &str) -> String {
     let href = format!("/divisions/{}/{}/", division.house, division_key(division));
     let chamber = match division.house {
         House::Senate => "Senate",
         House::Representatives => "House",
     };
     format!(
-        "<li data-house=\"{house}\" data-text=\"{text}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chip}{chamber} {ayes}\u{2013}{noes}{bar}</span></li>",
+        "<li data-house=\"{house}\" data-text=\"{text}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
         house = division.house,
         text = esc_attr(&division.name.to_lowercase()),
-        when = esc(&format_date(&division.date)),
         name = esc(&division.name),
         chip = result_chip(division.result),
         ayes = division.ayes,
@@ -232,7 +253,7 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
             ),
         };
         steps.push_str(&format!(
-            "<li><span class=\"n\">{number}</span><span class=\"what\">{what}</span><span class=\"tally\">{chip}{ayes}\u{2013}{noes}{bar}</span></li>",
+            "<li><span class=\"n\">{number}</span><span class=\"what\">{what}</span><span class=\"tally\">{chip} <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
             chip = result_chip(d.result),
             ayes = d.ayes,
             noes = d.noes,
@@ -256,7 +277,7 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
     };
 
     format!(
-        "<li class=\"ledger-series\" data-house=\"{house}\" data-text=\"{text}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title_html}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{chamber}{strip}</span></summary><ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
+        "<li class=\"ledger-series\" data-house=\"{house}\" data-text=\"{text}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title_html}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary><ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
         house = series.house,
         text = esc_attr(&text),
         when = esc(&format_date(series.date)),
@@ -395,7 +416,10 @@ pub fn bill_stage(bill: &Bill) -> u8 {
     from_timeline.max(from_status)
 }
 
-pub const BILL_DOTS_LEGEND: &str = "<p class=\"dots-legend\"><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"off\"></i><i class=\"off\"></i><i class=\"off\"></i><i class=\"off\"></i></span>Introduced \u{2192} Passed 1st house \u{2192} Passed 2nd house \u{2192} Assent</p>";
+/// The key to the progress dots: each stage beside the dots a bill at that
+/// stage shows, filled as far as it has got. The plain spaces between entries
+/// only keep copied text apart; the layout spaces them with a gap.
+pub const BILL_DOTS_LEGEND: &str = "<p class=\"dots-legend\"><span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"off\"></i><i class=\"off\"></i><i class=\"off\"></i></span>Introduced</span> <span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"on\"></i><i class=\"off\"></i><i class=\"off\"></i></span>Passed 1st house</span> <span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"on\"></i><i class=\"on\"></i><i class=\"off\"></i></span>Passed 2nd house</span> <span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"on\"></i><i class=\"on\"></i><i class=\"on\"></i></span>Assent</span></p>";
 
 pub fn bill_dots(bill: &Bill) -> String {
     let stage = bill_stage(bill);

@@ -627,6 +627,18 @@ pub fn format_date(iso: &str) -> String {
     }
 }
 
+/// "2025-08-01" -> "1 Aug", for a row under a month divider that already
+/// carries the year. Falls back to the full rendering if unparseable.
+pub fn short_date(iso: &str) -> String {
+    let full = format_date(iso);
+    match full.rsplit_once(' ') {
+        Some((head, year)) if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) => {
+            head.to_string()
+        }
+        _ => full,
+    }
+}
+
 pub fn state_name(code: &str) -> Option<&'static str> {
     match code {
         "NSW" => Some("New South Wales"),
@@ -942,6 +954,13 @@ mod tests {
         // A zero part and an impossible month are both left as they arrived.
         assert_eq!(format_date("2025-00-03"), "2025-00-03");
         assert_eq!(format_date("2025-13-03"), "2025-13-03");
+    }
+
+    #[test]
+    fn short_dates_drop_the_year() {
+        assert_eq!(short_date("2025-08-01"), "1 Aug");
+        assert_eq!(short_date("2026-12-31"), "31 Dec");
+        assert_eq!(short_date("not-a-date"), "not-a-date");
     }
 
     #[test]

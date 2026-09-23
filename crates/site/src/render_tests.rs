@@ -316,10 +316,12 @@ fn home_lists_bill_activity_newest_first() {
     sorted.sort_by(|a, b| b.cmp(a));
     assert_eq!(dates, sorted, "activity rows are not newest first");
 
-    // The chamber suffix is dropped from the visible text but kept in the title.
-    assert!(html.contains(
-        "Referred to Federation Chamber \u{b7} <time datetime=\"2025-08-04\">4 Aug</time>"
-    ));
+    // The date leads the row, as on the bills index; the event closes it. The
+    // chamber suffix is dropped from the visible text but kept in the title.
+    assert!(
+        html.contains("<li><span class=\"when\"><time datetime=\"2025-08-04\">4 Aug</time></span>")
+    );
+    assert!(html.contains(">Referred to Federation Chamber</span></li>"));
     assert!(html.contains("title=\"Referred to Federation Chamber (House of Representatives)"));
 
     // WebSite + SearchAction, per finding 11.
@@ -538,6 +540,130 @@ fn bills_index_pills_cover_every_row() {
         );
     }
     assert!(html.contains("class=\"dots-legend\""));
+}
+
+#[test]
+fn ledger_rows_split_the_tally_and_drop_the_year_only_under_a_month() {
+    let data = sample_data();
+    let index = render(&data, &pages::divisions_index(&data));
+
+    // The tally is four pieces the grid lines up as columns, with a space
+    // between the words for anyone who hears or copies the row as text.
+    assert!(index.contains(
+        "<span class=\"tally\"><span class=\"result-chip carried\">Carried</span> <span class=\"ch\">Senate</span> <span class=\"fig\">2\u{2013}0</span><span class=\"vote-bar\""
+    ));
+
+    // Under a month divider every date drops its year; the <time> keeps it.
+    let whens: Vec<&str> = index
+        .split("<span class=\"when\">")
+        .skip(1)
+        .map(|s| s.split("</span>").next().expect("when end"))
+        .collect();
+    assert_eq!(whens.len(), data.divisions.len());
+    assert!(whens.contains(&"<time datetime=\"2025-08-05\">5 Aug</time>"));
+    for when in &whens {
+        let shown = when
+            .split_once("\">")
+            .map(|(_, rest)| rest.trim_end_matches("</time>"))
+            .expect("a <time> element");
+        let last = shown.rsplit(' ').next().unwrap_or(shown);
+        assert!(
+            !(last.len() == 4 && last.bytes().all(|b| b.is_ascii_digit())),
+            "a year under a month divider: {when}"
+        );
+    }
+
+    // With no divider above, a row keeps its full date: the sitting day on a
+    // division page, and the latest divisions on home.
+    let division = data
+        .divisions
+        .iter()
+        .find(|d| d.house == House::Senate && division_key(d) == "2025-08-05-4")
+        .expect("senate division");
+    let page = render(&data, &pages::division_page(&data, division));
+    assert!(page.contains("<span class=\"when\">5 Aug 2025</span>"));
+    assert!(page.contains("<span class=\"fig\">2\u{2013}0</span>"));
+    let home = render(&data, &pages::home(&data));
+    assert!(home.contains("<span class=\"when\">5 Aug 2025</span>"));
+    // A series names its chamber after the strip that stands in for the
+    // outcome, so the two fall in the row tallies' columns.
+    assert!(home.contains("</span> <span class=\"ch\">Senate</span></span></summary>"));
+}
+
+#[test]
+fn a_first_column_date_takes_a_date_cell_not_a_figure_cell() {
+    let data = sample_data();
+    let bill = data
+        .bills
+        .iter()
+        .find(|b| b.id == "sample-1")
+        .expect("sample bill");
+    let progress = render(&data, &pages::bill_page(&data, bill));
+    assert!(progress.contains("<h2>Progress</h2>"));
+    assert!(progress.contains("<tr><td class=\"date\">28 Jul 2025</td>"));
+
+    let person = data
+        .people
+        .iter()
+        .find(|p| p.slug == "jordan-nguyen")
+        .expect("sample member");
+    let record = render(&data, &pages::person_page(&data, person));
+    let votes = record
+        .split("<h2>Voting record</h2>")
+        .nth(1)
+        .expect("voting record");
+    assert!(votes.contains("<th scope=\"col\">Date</th>"));
+    assert!(votes.contains("<tr><td class=\"date\">1 Aug 2025</td>"));
+    assert!(!votes.contains("<td class=\"num\">"));
+}
+
+#[test]
+fn bills_index_labels_its_columns_and_keys_the_dots_before_the_rows() {
+    let data = sample_data();
+    let html = render(&data, &pages::bills_index(&data));
+
+    // The key comes before the list, and shows each stage filled as far as a
+    // bill at that stage has got.
+    let legend = html.find("class=\"dots-legend\"").expect("legend");
+    let list = html.find("id=\"bill-rows\"").expect("list");
+    assert!(legend < list, "the key should precede the rows");
+    let key = html[legend..list].split("</p>").next().expect("legend end");
+    for (label, filled) in [
+        ("Introduced", 1),
+        ("Passed 1st house", 2),
+        ("Passed 2nd house", 3),
+        ("Assent", 4),
+    ] {
+        let entry = key
+            .split("<span><span class=\"bill-dots\"")
+            .find(|entry| entry.contains(&format!("</span>{label}</span>")))
+            .expect(label);
+        assert_eq!(entry.matches("class=\"on\"").count(), filled, "{label}");
+        assert_eq!(
+            entry.matches("class=\"off\"").count(),
+            4 - filled,
+            "{label}"
+        );
+    }
+
+    // The header row opens the list. It carries neither data-month nor
+    // data-status, so the filter script skips it, and it is hidden from
+    // assistive tech, which reads each row's own labels instead.
+    assert!(html.contains(
+        "<ul class=\"bill-list\" id=\"bill-rows\"><li class=\"bill-head\" aria-hidden=\"true\"><span>Moved</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li><li class=\"ledger-month\""
+    ));
+
+    // Every row names its title as the ledger does, so a phone can lift it
+    // above the meta line.
+    assert_eq!(
+        html.matches("<span class=\"what\"><a href=\"/bills/")
+            .count(),
+        data.bills.len()
+    );
+    // The home page keeps its key under the activity list.
+    let home = render(&data, &pages::home(&data));
+    let activity = home.find("class=\"bill-list activity\"").expect("activity");
+    assert!(activity < home.find("class=\"dots-legend\"").expect("home legend"));
 }
 
 #[test]

@@ -3,12 +3,13 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, person_card,
-    result_chip, result_word, seat_bar, series_row, vote_bar, BILL_DOTS_LEGEND,
+    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, ledger_row_in_month,
+    person_card, result_chip, result_word, seat_bar, series_row, vote_bar, BILL_DOTS_LEGEND,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
-    parse_qualification, state_name, title_from_slug, title_tier, to_fixed, Occupation, SiteData,
+    parse_qualification, short_date, state_name, title_from_slug, title_tier, to_fixed, Occupation,
+    SiteData,
 };
 use crate::html::{esc, esc_attr};
 use crate::layout::Page;
@@ -196,7 +197,7 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
         None => "<span class=\"when\"></span>".to_string(),
     };
     format!(
-        "{li}{when}<span><a href=\"/bills/{id}/\">{title}</a></span><span class=\"chamber\">{chamber}</span><span>{dots}</span><span class=\"{status_class}\">{status}</span></li>",
+        "{li}{when}<span class=\"what\"><a href=\"/bills/{id}/\">{title}</a></span><span class=\"chamber\">{chamber}</span><span>{dots}</span><span class=\"{status_class}\">{status}</span></li>",
         id = bill.id,
         title = esc(&bill.title),
         chamber = chamber_word(bill.chamber),
@@ -210,38 +211,39 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
     )
 }
 
-/// Homepage row: title, progress dots, and what last happened to the bill.
-/// The date drops its year to keep the mono line on one row; the full date
-/// stays machine-readable in the <time> element and on the bill page.
+/// Homepage row, in the bills index's column order: when the bill last moved,
+/// title, progress dots, and what that step was. The date drops its year, as
+/// it does on the index; the full date stays machine-readable in the <time>
+/// and in the event's title.
 fn bill_activity_row(bill: &Bill) -> String {
-    let event =
-        match latest_step(bill) {
-            Some(step) => format!(
-            "<span class=\"event\" title=\"{}\">{} \u{b7} <time datetime=\"{}\">{}</time></span>",
-            esc_attr(&format!("{} \u{b7} {}", step.event, format_date(&step.date))),
-            esc(event_description(&step.event)),
-            esc_attr(&step.date),
-            esc(&short_date(&step.date)),
+    let (when, event) = match latest_step(bill) {
+        Some(step) => (
+            format!(
+                "<span class=\"when\"><time datetime=\"{}\">{}</time></span>",
+                esc_attr(&step.date),
+                esc(&short_date(&step.date)),
+            ),
+            format!(
+                "<span class=\"event\" title=\"{}\">{}</span>",
+                esc_attr(&format!(
+                    "{} \u{b7} {}",
+                    step.event,
+                    format_date(&step.date)
+                )),
+                esc(event_description(&step.event)),
+            ),
         ),
-            None => format!("<span class=\"event\">{}</span>", esc(&bill.status)),
-        };
+        None => (
+            "<span class=\"when\"></span>".to_string(),
+            format!("<span class=\"event\">{}</span>", esc(&bill.status)),
+        ),
+    };
     format!(
-        "<li><span><a href=\"/bills/{id}/\">{title}</a></span><span>{dots}</span>{event}</li>",
+        "<li>{when}<span class=\"what\"><a href=\"/bills/{id}/\">{title}</a></span><span>{dots}</span>{event}</li>",
         id = bill.id,
         title = esc(&bill.title),
         dots = bill_dots(bill),
     )
-}
-
-/// "2025-08-01" -> "1 Aug". Falls back to the full rendering if unparseable.
-fn short_date(iso: &str) -> String {
-    let full = format_date(iso);
-    match full.rsplit_once(' ') {
-        Some((head, year)) if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) => {
-            head.to_string()
-        }
-        _ => full,
-    }
 }
 
 pub fn home(data: &SiteData) -> Page {
@@ -724,7 +726,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Division</th><th scope=\"col\">Vote</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for v in &votes {
             body.push_str(&format!(
-                "<tr><td class=\"num\">{}</td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
+                "<tr><td class=\"date\">{}</td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
                 esc(&format_date(&v.division.date)),
                 v.division.house,
                 division_key(v.division),
@@ -839,7 +841,7 @@ pub fn divisions_index(data: &SiteData) -> Page {
         for (month, rows) in &months {
             body.push_str(&ledger_month(month, rows.len(), "division"));
             for d in rows {
-                body.push_str(&ledger_row(d));
+                body.push_str(&ledger_row_in_month(d));
             }
         }
         body.push_str("</ul>");
@@ -1103,7 +1105,14 @@ pub fn bills_index(data: &SiteData) -> Page {
                 months.push((key, vec![b]));
             }
         }
+        // The key comes before the rows it explains, not after the last of them.
+        body.push_str(BILL_DOTS_LEGEND);
         body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
+        // Column labels for the eye. Each row already says what its cells are
+        // (the date's title, the dots' label), so the header stays out of the
+        // accessibility tree, and with neither data-month nor data-status the
+        // filter passes over it.
+        body.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Moved</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
         for (month, rows) in &months {
             body.push_str(&ledger_month(month, rows.len(), "bill"));
             for b in rows {
@@ -1111,7 +1120,6 @@ pub fn bills_index(data: &SiteData) -> Page {
             }
         }
         body.push_str("</ul>");
-        body.push_str(BILL_DOTS_LEGEND);
     } else {
         body.push_str("<p class=\"note\">No bill records loaded yet. They appear once the APH bills sync runs.</p>");
     }
@@ -1288,7 +1296,7 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         body.push_str("<h2>Progress</h2><div class=\"table-scroll\"><table><tbody>");
         for step in &bill.timeline {
             body.push_str(&format!(
-                "<tr><td class=\"num\">{}</td><td>{}</td></tr>",
+                "<tr><td class=\"date\">{}</td><td>{}</td></tr>",
                 esc(&format_date(&step.date)),
                 esc(&step.event)
             ));
@@ -2018,13 +2026,6 @@ mod tests {
 
     fn bill(json: &str) -> Bill {
         serde_json::from_str(json).expect("bill fixture")
-    }
-
-    #[test]
-    fn short_dates_drop_the_year() {
-        assert_eq!(short_date("2025-08-01"), "1 Aug");
-        assert_eq!(short_date("2026-12-31"), "31 Dec");
-        assert_eq!(short_date("not-a-date"), "not-a-date");
     }
 
     #[test]
