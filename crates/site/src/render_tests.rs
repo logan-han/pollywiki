@@ -822,6 +822,65 @@ fn division_cards_render_for_every_sample_division() {
 }
 
 #[test]
+fn leadership_roles_are_the_offices_themselves() {
+    for role in [
+        "Prime Minister",
+        "Deputy Prime Minister",
+        "Leader of the Opposition",
+        "Deputy Leader of the Opposition in the Senate",
+        "Leader of the House",
+        "Manager of Opposition Business in the Senate",
+        "President of the Senate",
+        "Deputy President and Chairman of Committees",
+        "Speaker of the House of Representatives",
+        "Deputy Speaker",
+        "Chief Government Whip",
+        "Opposition Whip in the Senate",
+    ] {
+        assert!(pages::is_leadership_role(role), "{role} should be listed");
+    }
+    // Junior posts named after an office are not the office.
+    for role in [
+        "Assistant Minister to the Prime Minister",
+        "Minister Assisting the Prime Minister for the Public Service",
+        "Parliamentary Secretary to the Prime Minister",
+        "Cabinet Minister",
+        "Shadow Minister for Examples",
+    ] {
+        assert!(
+            !pages::is_leadership_role(role),
+            "{role} should be left out"
+        );
+    }
+}
+
+#[test]
+fn a_leadership_row_with_no_recorded_start_says_so() {
+    let mut data = sample_data();
+    let speaker = data
+        .people
+        .iter_mut()
+        .find(|p| p.slug == "jordan-nguyen")
+        .expect("sample speaker");
+    for position in speaker.positions.iter_mut().flatten() {
+        position.from = None;
+    }
+    let party = data
+        .parties
+        .iter()
+        .find(|p| p.slug == "placeholder-alliance")
+        .expect("sample party");
+    let html = render(&data, &pages::party_page(&data, party));
+    let (_, section) = html
+        .split_once("Parliamentary leadership")
+        .expect("leadership table");
+    let table = section.split("</table>").next().unwrap_or("");
+    assert!(table.contains(
+        "<td class=\"num zero\"><span aria-hidden=\"true\">\u{2014}</span><span class=\"visually-hidden\">Not recorded</span></td>"
+    ));
+}
+
+#[test]
 fn leadership_lists_one_row_per_person_and_role() {
     let data = sample_data();
     for party in &data.parties {

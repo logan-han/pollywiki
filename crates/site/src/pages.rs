@@ -1596,9 +1596,19 @@ pub fn parties_index(data: &SiteData) -> Page {
     page
 }
 
+// Every office is anchored to the start of the role, so a junior post named
+// after one ("Assistant Minister to the Prime Minister") is not taken for the
+// office itself. Whips alone match anywhere: the Handbook writes "Chief
+// Government Whip", "Opposition Whip in the Senate" and so on.
 static LEADERSHIP: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(prime minister|^leader|^deputy leader|^manager of (government|opposition) business|whip|president of the senate|^speaker|^deputy speaker)").unwrap()
+    Regex::new(r"(?i)^(prime minister|deputy prime minister|leader|deputy leader|manager of (government|opposition) business|president of the senate|deputy president|speaker|deputy speaker)|whip").unwrap()
 });
+
+/// Whether a Handbook role belongs in a party's parliamentary leadership table.
+pub(crate) fn is_leadership_role(role: &str) -> bool {
+    LEADERSHIP.is_match(role)
+}
+
 static WEBSITE_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://(www\.)?").unwrap());
 
@@ -1625,7 +1635,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     let mut leadership: Vec<Leader> = Vec::new();
     for m in &members {
         for p in m.positions.as_deref().unwrap_or_default() {
-            if p.to.is_none() && LEADERSHIP.is_match(&p.role) {
+            if p.to.is_none() && is_leadership_role(&p.role) {
                 // The Handbook records one entry per ministry, so a continuing
                 // role spans several. This table names the role, not the
                 // ministry, so keep one row per person and role, dated from the
@@ -1704,11 +1714,17 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
         body.push_str("<h2>Parliamentary leadership</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Member</th><th class=\"num\" scope=\"col\">Since</th></tr></thead><tbody>");
         for l in &leadership {
             body.push_str(&format!(
-                "<tr><td>{}</td><td><a href=\"/people/{}/\">{}</a></td><td class=\"num\">{}</td></tr>",
+                "<tr><td>{}</td><td><a href=\"/people/{}/\">{}</a></td>{}</tr>",
                 esc(l.role),
                 l.person.slug,
                 esc(&l.person.name),
-                l.from.map(format_date).map(|d| esc(&d)).unwrap_or_default(),
+                // The Handbook leaves some start dates out. The cell says so,
+                // with a dash to the eye and in words to a screen reader,
+                // rather than sitting empty like a rendering fault.
+                match l.from {
+                    Some(from) => format!("<td class=\"num\">{}</td>", esc(&format_date(from))),
+                    None => "<td class=\"num zero\"><span aria-hidden=\"true\">\u{2014}</span><span class=\"visually-hidden\">Not recorded</span></td>".to_string(),
+                },
             ));
         }
         body.push_str("</tbody></table></div>");
