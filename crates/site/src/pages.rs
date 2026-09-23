@@ -1001,9 +1001,11 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
     body.push_str("</tbody></table></div>");
 
     body.push_str("<h2>Every vote</h2><div class=\"vote-columns\">");
+    // Each column heads its own list, so a screen reader can jump past up to
+    // 150 aye votes straight to the noes.
     for (label, list) in [("AYE", &ayes), ("NO", &noes)] {
         body.push_str(&format!(
-            "<div><div class=\"col-head\">{label} ({})</div><ul>",
+            "<div><h3 class=\"col-head\">{label} ({})</h3><ul>",
             list.len()
         ));
         for v in list.iter() {

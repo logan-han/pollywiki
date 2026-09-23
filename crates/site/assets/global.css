@@ -720,9 +720,14 @@ td.date {
   border-bottom: 0;
 }
 
+/* The month is an h2, so a long index can be walked by heading; it keeps
+   the divider's look, with the heading's serif, weight and margins undone. */
 .ledger-month .m {
+  margin: 0;
   font-family: var(--mono);
   font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: inherit;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
@@ -773,8 +778,12 @@ td.date {
   white-space: nowrap;
 }
 
+/* The triangle is for the eye; the summary's own expanded state says the
+   rest. The empty alternative text keeps it from being read out, and an
+   engine without that syntax keeps the plain declaration before it. */
 .ledger-series .series-note::before {
   content: '\25B8';
+  content: '\25B8' / '';
   display: inline-block;
   width: 1em;
   color: var(--faint);
@@ -782,6 +791,7 @@ td.date {
 
 .ledger-series details[open] .series-note::before {
   content: '\25BE';
+  content: '\25BE' / '';
 }
 
 .ledger-series summary:hover .series-note {
@@ -810,6 +820,14 @@ td.date {
 
 .outcome-strip i.negatived {
   border: 1.5px solid var(--no);
+}
+
+/* An opened series about one bill leads with the link to it, in the title
+   column, since the summary above it is a toggle and links nowhere. */
+.series-bill {
+  margin: 0.1rem 0 0.4rem;
+  padding-left: 6.625rem;
+  font-size: 0.875rem;
 }
 
 .series-steps {
@@ -904,6 +922,7 @@ td.date {
     order: -1;
   }
 
+  .series-bill,
   .series-steps,
   .series-credit {
     padding-left: 0;
@@ -1466,10 +1485,16 @@ td.date {
   margin-top: 0.6rem;
 }
 
+/* Each column label is an h3, so the noes can be reached by heading; the
+   heading's serif, weight and margins are undone to keep the label look. */
 .vote-columns .col-head {
+  margin: 0;
   font-family: var(--mono);
   font-size: 0.6875rem;
+  font-weight: 400;
+  line-height: 1.55;
   letter-spacing: 0.08em;
+  text-wrap: wrap;
   color: var(--faint);
   border-bottom: 1px solid var(--hair-strong);
   padding-bottom: 0.4rem;

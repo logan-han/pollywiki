@@ -183,22 +183,26 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
         Some(stage) => format!("{}; {}", series.matter, stage),
         None => series.matter.to_string(),
     };
-    // The title links to the bill when the whole series is about one bill the
-    // register has a page for.
-    let bill_href = series
+    // The summary is a pure toggle: a link inside it would be a second control
+    // in one, and a click on the title would leave the page instead of opening
+    // the row. When the whole series is about one bill the register has a page
+    // for, the link opens with the steps, under the bill's own title.
+    let bill = series
         .divisions
         .iter()
         .map(|d| d.bill_ids.as_slice())
         .reduce(|a, b| if a == b { a } else { &[] })
         .and_then(|ids| match ids {
-            [id] => data
-                .bill_by_id(id)
-                .map(|bill| format!("/bills/{}/", bill.id)),
+            [id] => data.bill_by_id(id),
             _ => None,
         });
-    let title_html = match &bill_href {
-        Some(href) => format!("<a href=\"{}\">{}</a>", esc_attr(href), esc(&title)),
-        None => esc(&title),
+    let bill_line = match bill {
+        Some(bill) => format!(
+            "<p class=\"series-bill\">Bill: <a href=\"/bills/{}/\">{}</a></p>",
+            esc_attr(&bill.id),
+            esc(&bill.title)
+        ),
+        None => String::new(),
     };
 
     let mut text = title.to_lowercase();
@@ -277,9 +281,10 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
     };
 
     format!(
-        "<li class=\"ledger-series\" data-house=\"{house}\" data-text=\"{text}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title_html}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary><ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
+        "<li class=\"ledger-series\" data-house=\"{house}\" data-text=\"{text}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary>{bill_line}<ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
         house = series.house,
         text = esc_attr(&text),
+        title = esc(&title),
         when = esc(&format_date(series.date)),
         n = series.divisions.len(),
         strip = outcome_strip(&series.divisions),
@@ -322,11 +327,12 @@ fn outcome_strip(divisions: &[&Division]) -> String {
 }
 
 /// Month divider for a dated index: mono-caps month, hairline, count. The
+/// month is a heading, so a long index can be walked a month at a time. The
 /// noun names what is being counted ("division", "bill"); it is pluralised by
 /// appending an s.
 pub fn ledger_month(month: &str, count: usize, noun: &str) -> String {
     format!(
-        "<li class=\"ledger-month\" data-month=\"{key}\"><span class=\"m\">{label}</span><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} {noun}{plural}</span></li>",
+        "<li class=\"ledger-month\" data-month=\"{key}\"><h2 class=\"m\">{label}</h2><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} {noun}{plural}</span></li>",
         key = esc_attr(month),
         label = esc(&month_label(month)),
         noun = esc(noun),

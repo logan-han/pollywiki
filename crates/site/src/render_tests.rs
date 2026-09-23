@@ -375,17 +375,25 @@ fn home_folds_a_days_divisions_on_one_matter_into_a_series() {
     assert!(senate.contains("ai-tag"));
     assert!(senate.contains("How this works."));
 
-    // Two House divisions with identical names: the title links to the bill,
-    // They Vote For You's written context labels the step that has it, and the
-    // machine-written note labels the other, marked.
+    // Two House divisions with identical names: the opened row links to the
+    // bill under the bill's own title, They Vote For You's written context
+    // labels the step that has it, and the machine-written note labels the
+    // other, marked.
     let house = section
         .split("<li class=\"ledger-series\" data-house=\"representatives\"")
         .nth(1)
         .and_then(|s| s.split("</details></li>").next())
         .expect("house series");
     assert!(house.contains(
-        "<a href=\"/bills/sample-1/\">Demonstration Data Bill 2025 - Second Reading</a>"
+        "</summary><p class=\"series-bill\">Bill: <a href=\"/bills/sample-1/\">Demonstration Data Bill 2025</a></p><ol class=\"series-steps\">"
     ));
+    // The summary is a pure toggle: no control nested inside it.
+    for summary in [&house, &senate] {
+        let summary = summary.split("</summary>").next().expect("summary");
+        assert!(!summary.contains("<a "), "a link inside a summary");
+    }
+    assert!(house
+        .contains("<span class=\"matter\">Demonstration Data Bill 2025 - Second Reading</span>"));
     assert!(house.contains(
         "/divisions/representatives/2025-08-01-2/\">The majority voted in favour of a sample motion to demonstrate how context summaries render, which means it passed.</a>"
     ));
@@ -467,6 +475,48 @@ fn divisions_index_groups_into_months_that_match_their_runs() {
         months.iter().map(|(_, n)| n).sum::<usize>(),
         data.divisions.len()
     );
+}
+
+#[test]
+fn long_lists_can_be_walked_by_heading() {
+    let data = sample_data();
+
+    // Each month divider on both dated indexes is a heading under the h1.
+    for (html, months) in [
+        (
+            render(&data, &pages::divisions_index(&data)),
+            ["August 2025", "July 2025"].as_slice(),
+        ),
+        (
+            render(&data, &pages::bills_index(&data)),
+            ["July 2026", "August 2025"].as_slice(),
+        ),
+    ] {
+        let dividers = html.matches("<li class=\"ledger-month\"").count();
+        assert_eq!(html.matches("<h2 class=\"m\">").count(), dividers);
+        for month in months {
+            assert!(
+                html.contains(&format!("<h2 class=\"m\">{month}</h2>")),
+                "{month}"
+            );
+        }
+    }
+
+    // On a division page the aye and no columns each head their list, under
+    // the section's h2.
+    let division = data.divisions.first().expect("a division");
+    let html = render(&data, &pages::division_page(&data, division));
+    let votes = html
+        .split("<h2>Every vote</h2>")
+        .nth(1)
+        .expect("every vote");
+    for column in ["AYE", "NO"] {
+        assert!(
+            votes.contains(&format!("<div><h3 class=\"col-head\">{column} (")),
+            "{column}"
+        );
+    }
+    assert!(!votes.contains("<div class=\"col-head\">"));
 }
 
 #[test]
