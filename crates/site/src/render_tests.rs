@@ -114,6 +114,11 @@ fn sample_bundles_carry_worst_case_shapes() {
             .any(|s| s.event.chars().count() > 50),
         "sample bills need a long step description with a chamber suffix"
     );
+    // A first-preference table closes on the AEC's informal ballots.
+    assert!(
+        data.elections.iter().any(|r| r.informal().is_some()),
+        "sample results need an informal row to exercise the table foot"
+    );
     // Every pill bucket has at least one bill behind it.
     let statuses: Vec<&str> = data.bills.iter().map(|b| b.status.as_str()).collect();
     assert!(statuses.iter().any(|s| s.starts_with("Before")));
@@ -1169,7 +1174,11 @@ fn profiles_render_background_photos_and_election_history() {
     assert!(html.contains("Bills raised"));
     assert!(html.contains("Election history"));
     assert!(html.contains("Sample election"));
-    assert!(html.contains("+1.2"), "a positive swing is signed");
+    // Shares and swings to the AEC's two places, as on the electorate page.
+    assert!(
+        html.contains("<td class=\"num\">52.00</td><td class=\"num\">+1.20</td>"),
+        "a positive swing is signed"
+    );
 
     // The Person node picks up the image and the Wikipedia sameAs.
     let value = jsonld(&html).expect("person json-ld");
@@ -1199,6 +1208,89 @@ fn electorate_pages_show_both_result_tables() {
     assert!(html.contains("52,000"), "vote counts are grouped");
     assert!(html.contains("\u{2713}"), "the elected candidate is marked");
     assert!(html.contains("CC BY 4.0"), "AEC attribution missing");
+
+    // Both tables share one labelled grid: the deciding count has its
+    // column headers too, and a share reads as a bare figure under "%".
+    let (_, tcp) = html
+        .split_once("two-candidate preferred</h2>")
+        .expect("tcp table");
+    let (tcp, first) = tcp.split_once("first preferences</h2>").expect("both");
+    let head = "<colgroup><col class=\"cand\"><col class=\"party\"><col class=\"votes\"><col class=\"pct\"><col class=\"swing\"></colgroup><thead";
+    for table in [tcp, first] {
+        assert!(table.contains(&format!("<table class=\"results\">{head}")));
+        assert!(table.contains("<th class=\"num\" scope=\"col\">%</th>"));
+        assert!(table.contains("<th class=\"num\" scope=\"col\">Swing</th>"));
+    }
+    assert!(tcp.contains("<td class=\"num\">53.00</td>"), "TCP share");
+    assert!(!tcp.contains("%</td>"), "the header carries the unit");
+}
+
+#[test]
+fn first_preferences_are_shares_of_formal_votes_and_informal_ballots_close_the_table() {
+    let mut data = sample_data();
+    let slug = data
+        .elections
+        .iter()
+        .find(|r| r.informal().is_some())
+        .expect("sample data has informal ballots")
+        .electorate_slug
+        .clone();
+    let electorate = data.electorate_by_slug(&slug).expect("seat").clone();
+    let first_prefs = |html: &str| -> String {
+        let (_, first) = html
+            .split_once("first preferences</h2>")
+            .expect("first preferences table");
+        first[..first.find("</table>").expect("table ends")].to_string()
+    };
+
+    let html = render(&data, &pages::electorate_page(&data, &electorate));
+    let table = first_prefs(&html);
+    let (rows, foot) = table.split_once("</tbody>").expect("body then foot");
+    // Candidates only in the body, each share of the 100,000 formal votes.
+    assert!(
+        !rows.contains("Informal"),
+        "informal is not a candidate row"
+    );
+    assert!(rows.contains(
+        "<td class=\"num\">52,000</td><td class=\"num\">52.00</td><td class=\"num\">+1.20</td>"
+    ));
+    assert!(rows.contains("<td class=\"num\">48.00</td><td class=\"num\">-1.20</td>"));
+    // The informal ballots close it: their count, their share of all
+    // 105,000 ballots cast, and the AEC's swing in informality.
+    assert_eq!(
+        foot,
+        "<tfoot><tr><td colspan=\"2\">Informal ballots</td><td class=\"num\">5,000</td><td class=\"num\">4.76</td><td class=\"num\">+0.40</td></tr></tfoot>"
+    );
+    assert!(html.contains("<p class=\"note\">Candidate percentages are of formal votes; the informal share is of all ballots cast.</p>"));
+
+    // A result stored before the ingest set the informal ballots apart took
+    // each share over every ballot. The page works the share out from the
+    // votes, so it reads the same either way.
+    for c in &mut data
+        .elections
+        .iter_mut()
+        .find(|r| r.electorate_slug == slug)
+        .expect("result")
+        .first_prefs
+    {
+        c.pct = pollywiki_schema::JsNum(c.votes as f64 / 105_000.0 * 100.0);
+        if c.is_informal() {
+            c.name = "Informal Informal".to_string();
+        }
+    }
+    let stale = render(&data, &pages::electorate_page(&data, &electorate));
+    assert_eq!(first_prefs(&stale), table);
+
+    // With no informal row there is no foot and no note on the bases.
+    data.elections
+        .iter_mut()
+        .find(|r| r.electorate_slug == slug)
+        .expect("result")
+        .first_prefs
+        .retain(|c| !c.is_informal());
+    let formal_only = render(&data, &pages::electorate_page(&data, &electorate));
+    assert!(!first_prefs(&formal_only).contains("<tfoot>"));
+    assert!(!formal_only.contains("informal share"));
 }
 
 #[test]

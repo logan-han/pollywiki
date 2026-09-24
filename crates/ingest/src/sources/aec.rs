@@ -241,26 +241,51 @@ fn js_number_to_string(value: f64) -> String {
     }
 }
 
+/// The AEC's first-preference files list informal ballots as one more
+/// candidate row (PartyNm and Surname both "Informal"). It is not a
+/// candidate, and its votes are not formal votes.
+fn is_informal_row(row: &AecRow) -> bool {
+    row.get("PartyNm").map(String::as_str) == Some(CandidateResult::INFORMAL)
+        || row.get("Surname").map(String::as_str) == Some(CandidateResult::INFORMAL)
+}
+
+fn row_votes(row: &AecRow) -> f64 {
+    js_number(row.get("TotalVotes").map(String::as_str).unwrap_or("0"))
+}
+
+fn row_swing(row: &AecRow) -> Option<JsNum> {
+    match row.get("Swing").map(String::as_str) {
+        None | Some("") => None,
+        Some(s) => Some(JsNum(js_number(s))),
+    }
+}
+
+/// A share in percent to the AEC's two places, or 0 with nothing to share.
+pub(crate) fn pct_of(votes: f64, total: f64) -> JsNum {
+    JsNum(if total > 0.0 {
+        round2(votes / total * 100.0)
+    } else {
+        0.0
+    })
+}
+
+/// One electorate's rows as results, ranked by votes. Candidate shares are
+/// of formal votes, the base the AEC's own percentages and swings use. The
+/// informal ballots, where the file has them, follow the candidates as one
+/// row named "Informal", its share taken of every ballot cast: the AEC's
+/// informality rate, beside the AEC's swing in it.
 pub fn to_candidates(rows: &[AecRow], electorate_name: &str) -> Vec<CandidateResult> {
-    let mine: Vec<&AecRow> = rows
+    let (informal, formal): (Vec<&AecRow>, Vec<&AecRow>) = rows
         .iter()
         .filter(|r| r.get("DivisionNm").map(String::as_str) == Some(electorate_name))
-        .collect();
-    let total: f64 = mine
-        .iter()
-        .map(|r| js_number(r.get("TotalVotes").map(String::as_str).unwrap_or("0")))
-        .sum();
-    let mut candidates: Vec<CandidateResult> = mine
+        .partition(|r| is_informal_row(r));
+    let total: f64 = formal.iter().map(|r| row_votes(r)).sum();
+    let mut candidates: Vec<CandidateResult> = formal
         .iter()
         .map(|r| {
             let get = |key: &str| r.get(key).map(String::as_str).unwrap_or("");
-            let votes = js_number(if r.contains_key("TotalVotes") {
-                get("TotalVotes")
-            } else {
-                "0"
-            });
+            let votes = row_votes(r);
             let party = get("PartyNm");
-            let swing = r.get("Swing").map(String::as_str);
             CandidateResult {
                 name: title_case(format!("{} {}", get("GivenNm"), get("Surname")).trim()),
                 party: if party.is_empty() {
@@ -273,20 +298,30 @@ pub fn to_candidates(rows: &[AecRow], electorate_name: &str) -> Vec<CandidateRes
                     code => Some(code.to_string()),
                 },
                 votes: votes as i64,
-                pct: JsNum(if total > 0.0 {
-                    round2(votes / total * 100.0)
-                } else {
-                    0.0
-                }),
-                swing: match swing {
-                    None | Some("") => None,
-                    Some(s) => Some(JsNum(js_number(s))),
-                },
+                pct: pct_of(votes, total),
+                swing: row_swing(r),
                 elected: get("Elected") == "Y",
             }
         })
         .collect();
     candidates.sort_by_key(|c| std::cmp::Reverse(c.votes));
+    if !informal.is_empty() {
+        let votes: f64 = informal.iter().map(|r| row_votes(r)).sum();
+        candidates.push(CandidateResult {
+            name: CandidateResult::INFORMAL.to_string(),
+            party: CandidateResult::INFORMAL.to_string(),
+            party_code: None,
+            votes: votes as i64,
+            pct: pct_of(votes, total + votes),
+            // One row per electorate is what the AEC publishes; a swing is
+            // only taken as given, never combined.
+            swing: match informal.as_slice() {
+                [row] => row_swing(row),
+                _ => None,
+            },
+            elected: false,
+        });
+    }
     candidates
 }
 
@@ -410,6 +445,96 @@ mod tests {
         assert!(js_number("not a number").is_nan());
         assert_eq!(js_number_to_string(155.0), "155");
         assert_eq!(js_number_to_string(12.5), "12.5");
+    }
+
+    /// Bradfield's 2025 figures: 112,202 formal votes and 6,656 informal
+    /// ballots, 118,858 cast. The AEC gives the leading candidate 38.03%
+    /// and the informality rate as 5.60%.
+    fn bradfield_rows() -> Vec<AecRow> {
+        let candidate = |id: &str, surname: &str, given: &str, party: &str, votes: &str, swing| {
+            row(&[
+                ("DivisionNm", "Bradfield"),
+                ("CandidateID", id),
+                ("Surname", surname),
+                ("GivenNm", given),
+                ("PartyNm", party),
+                ("TotalVotes", votes),
+                ("Swing", swing),
+            ])
+        };
+        vec![
+            candidate("1", "KAPTERIAN", "GISELE", "Liberal", "42676", "-5.63"),
+            candidate("2", "BOELE", "NICOLETTE", "", "30000", "3.40"),
+            // The AEC's informal row sits among the candidates in file order.
+            candidate("999", "Informal", "Informal", "Informal", "6656", "1.69"),
+            candidate("3", "YIN", "ANDY", "Independent", "4635", "4.13"),
+            candidate("4", "OTHER", "SAM", "Example Party", "34891", "-1.00"),
+            // Another seat's rows never reach this one's totals.
+            candidate("5", "ELSEWHERE", "PAT", "Example Party", "9999", "0"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut r)| {
+            if i == 5 {
+                r.insert("DivisionNm".to_string(), "Mackellar".to_string());
+            }
+            r
+        })
+        .collect()
+    }
+
+    #[test]
+    fn candidate_shares_are_of_formal_votes_and_informal_ballots_follow_them() {
+        let results = to_candidates(&bradfield_rows(), "Bradfield");
+        let (candidates, informal): (Vec<_>, Vec<_>) =
+            results.iter().partition(|c| !c.is_informal());
+
+        assert_eq!(candidates.len(), 4, "the informal row is not a candidate");
+        let formal: i64 = candidates.iter().map(|c| c.votes).sum();
+        assert_eq!(formal, 112_202);
+        assert!(
+            candidates.iter().all(|c| !c.name.contains("Informal")),
+            "no candidate is named for the informal row"
+        );
+        let shares: f64 = candidates.iter().map(|c| c.pct.0).sum();
+        assert!(
+            (shares - 100.0).abs() <= 0.05,
+            "candidate shares sum to {shares}"
+        );
+        assert_eq!(candidates[0].name, "Gisele Kapterian");
+        assert_eq!(candidates[0].pct, JsNum(38.03), "the AEC's figure");
+        // A first-time candidate's swing is their share: the same base.
+        let yin = candidates.iter().find(|c| c.name == "Andy Yin").unwrap();
+        assert_eq!(yin.pct, JsNum(4.13));
+        assert_eq!(yin.swing, Some(JsNum(4.13)));
+        // Ranked by votes, whatever order the file had them in.
+        assert!(candidates.windows(2).all(|w| w[0].votes >= w[1].votes));
+
+        // The informal ballots come last, named once, as a share of every
+        // ballot cast, with the AEC's swing in informality.
+        assert_eq!(informal.len(), 1);
+        assert!(std::ptr::eq(informal[0], results.last().unwrap()));
+        assert_eq!(informal[0].name, "Informal");
+        assert_eq!(informal[0].party, "Informal");
+        assert_eq!(informal[0].votes, 6656);
+        assert_eq!(informal[0].pct, JsNum(5.60));
+        assert_eq!(informal[0].swing, Some(JsNum(1.69)));
+        assert!(!informal[0].elected);
+    }
+
+    #[test]
+    fn a_file_with_no_informal_row_shares_out_every_vote_listed() {
+        // Two-candidate-preferred files carry no informal row.
+        let rows: Vec<AecRow> = bradfield_rows()
+            .into_iter()
+            .filter(|r| !is_informal_row(r))
+            .collect();
+        let results = to_candidates(&rows, "Bradfield");
+        assert!(results.iter().all(|c| !c.is_informal()));
+        let shares: f64 = results.iter().map(|c| c.pct.0).sum();
+        assert!((shares - 100.0).abs() <= 0.05, "shares sum to {shares}");
+        // An empty seat divides nothing rather than dividing by zero.
+        assert!(to_candidates(&rows, "Nowhere").is_empty());
     }
 
     #[test]

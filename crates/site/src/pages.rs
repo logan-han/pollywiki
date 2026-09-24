@@ -16,7 +16,9 @@ use crate::html::{esc, esc_attr};
 use crate::layout::Page;
 use crate::markdown;
 use crate::procedures::procedure_for;
-use pollywiki_schema::{Bill, Division, Electorate, House, Party, Person, SummaryKind, Vote};
+use pollywiki_schema::{
+    Bill, CandidateResult, Division, Electorate, House, JsNum, Party, Person, SummaryKind, Vote,
+};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -793,19 +795,12 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
                 esc(&e.event_name),
                 seat,
                 esc(&e.party),
-                to_fixed(e.pct.0, 1),
-                match e.swing {
-                    Some(swing) => format!(
-                        "{}{}",
-                        if swing.0 > 0.0 { "+" } else { "" },
-                        to_fixed(swing.0, 1)
-                    ),
-                    None => String::new(),
-                },
+                to_fixed(e.pct.0, 2),
+                signed(e.swing),
                 if e.elected { "Elected" } else { "Not elected" },
             ));
         }
-        body.push_str("</tbody></table></div><p class=\"note\">House contests only; first preference share at each event.</p>");
+        body.push_str("</tbody></table></div><p class=\"note\">House contests only; first-preference share of the formal vote at each event.</p>");
     }
 
     if !raised.is_empty() {
@@ -1603,6 +1598,46 @@ pub fn electorates_index(data: &SiteData) -> Page {
     page
 }
 
+/// Both result tables on an electorate page open with one head and one set
+/// of columns, so the deciding count and the first preferences under it
+/// read down the same grid.
+const RESULT_HEAD: &str = "<colgroup><col class=\"cand\"><col class=\"party\"><col class=\"votes\"><col class=\"pct\"><col class=\"swing\"></colgroup><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead>";
+
+/// Votes as a percentage of a total, or nothing of nothing.
+fn share(votes: i64, total: i64) -> f64 {
+    if total > 0 {
+        votes as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// A swing to the AEC's two places, signed when it is a gain; blank where
+/// the AEC published none.
+fn signed(swing: Option<JsNum>) -> String {
+    match swing {
+        Some(swing) => format!(
+            "{}{}",
+            if swing.0 > 0.0 { "+" } else { "" },
+            to_fixed(swing.0, 2)
+        ),
+        None => String::new(),
+    }
+}
+
+/// One candidate in a result table, at the share the caller worked out.
+fn result_row(c: &CandidateResult, share: f64) -> String {
+    format!(
+        "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+        esc(&c.name),
+        if c.elected { " ✓" } else { "" },
+        esc(&c.party),
+        locale_int(c.votes),
+        to_fixed(share, 2),
+        signed(c.swing),
+    )
+}
+
 pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
     let member = electorate
         .member_slug
@@ -1677,47 +1712,40 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
             let heading = format!("{}: two-candidate preferred", result.event_name);
             body.push_str(&format!("<h2>{}</h2>", esc(&heading)));
             body.push_str(&table_scroll(&heading));
-            body.push_str("<table><tbody>");
+            body.push_str(&format!("<table class=\"results\">{RESULT_HEAD}<tbody>"));
             for c in tcp {
-                body.push_str(&format!(
-                    "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}%</td></tr>",
-                    esc(&c.name),
-                    if c.elected { " ✓" } else { "" },
-                    esc(&c.party),
-                    locale_int(c.votes),
-                    if tcp_total > 0 {
-                        to_fixed(c.votes as f64 / tcp_total as f64 * 100.0, 2)
-                    } else {
-                        "0".to_string()
-                    },
-                ));
+                body.push_str(&result_row(c, share(c.votes, tcp_total)));
             }
             body.push_str("</tbody></table></div>");
         }
-        if !result.first_prefs.is_empty() {
+        if result.first_prefs.iter().any(|c| !c.is_informal()) {
+            // Each share is worked out from the votes over the formal total,
+            // as the AEC does, so a result stored with the informal ballots
+            // counted in still reads right. The informal ballots are no
+            // candidate's: they close the table, as a share of every ballot
+            // cast, beside the AEC's swing in informality.
+            let formal = result.formal_votes();
             let heading = format!("{}: first preferences", result.event_name);
             body.push_str(&format!("<h2>{}</h2>", esc(&heading)));
             body.push_str(&table_scroll(&heading));
-            body.push_str("<table><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead><tbody>");
-            for c in &result.first_prefs {
+            body.push_str(&format!("<table class=\"results\">{RESULT_HEAD}<tbody>"));
+            for c in result.first_prefs.iter().filter(|c| !c.is_informal()) {
+                body.push_str(&result_row(c, share(c.votes, formal)));
+            }
+            body.push_str("</tbody>");
+            let informal = result.informal();
+            if let Some(informal) = informal {
                 body.push_str(&format!(
-                    "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-                    esc(&c.name),
-                    if c.elected { " ✓" } else { "" },
-                    esc(&c.party),
-                    locale_int(c.votes),
-                    to_fixed(c.pct.0, 2),
-                    match c.swing {
-                        Some(swing) => format!(
-                            "{}{}",
-                            if swing.0 > 0.0 { "+" } else { "" },
-                            to_fixed(swing.0, 2)
-                        ),
-                        None => String::new(),
-                    },
+                    "<tfoot><tr><td colspan=\"2\">Informal ballots</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr></tfoot>",
+                    locale_int(informal.votes),
+                    to_fixed(share(informal.votes, formal + informal.votes), 2),
+                    signed(informal.swing),
                 ));
             }
-            body.push_str("</tbody></table></div>");
+            body.push_str("</table></div>");
+            if informal.is_some() {
+                body.push_str("<p class=\"note\">Candidate percentages are of formal votes; the informal share is of all ballots cast.</p>");
+            }
         }
     }
 

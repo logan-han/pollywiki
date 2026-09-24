@@ -497,6 +497,20 @@ pub struct CandidateResult {
     pub elected: bool,
 }
 
+impl CandidateResult {
+    /// The party the AEC files give their informal pseudo-candidate, and the
+    /// one the ingest writes on that row whatever the file called it.
+    pub const INFORMAL: &'static str = "Informal";
+
+    /// Whether this row is the informal ballots rather than a candidate. The
+    /// AEC lists them among the candidates in its first-preference files;
+    /// every consumer asks here, so none of them ranks the row, counts it as
+    /// a formal vote or matches it to a person.
+    pub fn is_informal(&self) -> bool {
+        self.party == Self::INFORMAL
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElectorateResult {
@@ -505,9 +519,29 @@ pub struct ElectorateResult {
     pub electorate_slug: String,
     pub electorate_name: String,
     pub state: StateCode,
+    /// Every candidate's first preferences, then the informal row when the
+    /// AEC file carries one. A candidate's pct is of formal votes; the
+    /// informal row's is of all ballots cast, the AEC's informality rate.
     pub first_prefs: Vec<CandidateResult>,
     #[serde(default)]
     pub tcp: Vec<CandidateResult>,
+}
+
+impl ElectorateResult {
+    /// Formal first-preference votes: the base every candidate's share is
+    /// taken over, and the base of the swings the AEC publishes beside them.
+    pub fn formal_votes(&self) -> i64 {
+        self.first_prefs
+            .iter()
+            .filter(|c| !c.is_informal())
+            .map(|c| c.votes)
+            .sum()
+    }
+
+    /// The informal ballots, when the AEC file reported them.
+    pub fn informal(&self) -> Option<&CandidateResult> {
+        self.first_prefs.iter().find(|c| c.is_informal())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -702,6 +736,42 @@ mod tests {
             ..sitting
         };
         assert!(undated.served_on("1901-01-01"));
+    }
+
+    #[test]
+    fn informal_ballots_are_told_apart_from_candidates_and_formal_votes() {
+        let result: ElectorateResult = serde_json::from_str(
+            r#"{"eventId":"31496","eventName":"2025 federal election",
+                "electorateSlug":"sampleford","electorateName":"Sampleford","state":"VIC",
+                "firstPrefs":[
+                  {"name":"Alex Paterson","party":"Example Party","votes":60000,"pct":60,"elected":true},
+                  {"name":"Casey Doe","party":"Independent","votes":40000,"pct":40,"elected":false},
+                  {"name":"Informal","party":"Informal","votes":5000,"pct":4.76,"swing":0.4,"elected":false}
+                ]}"#,
+        )
+        .expect("fixture");
+        assert!(!result.first_prefs[0].is_informal());
+        assert!(!result.first_prefs[1].is_informal());
+        assert!(result.first_prefs[2].is_informal());
+        assert_eq!(result.formal_votes(), 100_000, "informal is not formal");
+        assert_eq!(result.informal().map(|c| c.votes), Some(5000));
+        assert!(result.tcp.is_empty(), "the TCP table is optional");
+
+        // Bundles written before the ingest named the row say "Informal
+        // Informal"; it is the party that marks it, so they still agree.
+        let older = CandidateResult {
+            name: "Informal Informal".to_string(),
+            ..result.first_prefs[2].clone()
+        };
+        assert!(older.is_informal());
+
+        // With no informal row, every vote listed is formal.
+        let formal_only = ElectorateResult {
+            first_prefs: result.first_prefs[..2].to_vec(),
+            ..result.clone()
+        };
+        assert_eq!(formal_only.formal_votes(), 100_000);
+        assert!(formal_only.informal().is_none());
     }
 
     #[test]

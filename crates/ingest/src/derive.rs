@@ -1,4 +1,5 @@
 use crate::manifest::read_manifest;
+use crate::sources::aec::pct_of;
 use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::HandbookProfile;
 use crate::store::Store;
@@ -135,8 +136,13 @@ pub async fn derive(store: &Store) -> Result<()> {
         .enumerate()
         .map(|(i, p)| (p.slug.clone(), i))
         .collect();
+    // The share is worked out again here from the votes, over the formal
+    // total, rather than copied: results stored before the ingest set the
+    // informal ballots apart took every share over all ballots cast, and
+    // this corrects them on the next derive without refetching the AEC.
     for result in &elections {
-        for candidate in &result.first_prefs {
+        let formal = result.formal_votes() as f64;
+        for candidate in result.first_prefs.iter().filter(|c| !c.is_informal()) {
             let Some(&i) = slug_to_index.get(&slugify(&candidate.name)) else {
                 continue;
             };
@@ -151,7 +157,7 @@ pub async fn derive(store: &Store) -> Result<()> {
                     electorate_name: result.electorate_name.clone(),
                     party: candidate.party.clone(),
                     votes: candidate.votes,
-                    pct: candidate.pct,
+                    pct: pct_of(candidate.votes as f64, formal),
                     swing: candidate.swing,
                     elected: candidate.elected,
                 });
@@ -545,18 +551,27 @@ mod tests {
             r#"{
             "eventId":"27966","eventName":"2022 federal election","electorateSlug":"sampleford",
             "electorateName":"Sampleford","state":"VIC",
-            "firstPrefs":[{"name":"Alex Paterson","party":"Example Party","votes":100,"pct":40.0,
+            "firstPrefs":[{"name":"Casey Doe","party":"Independent","votes":150,"pct":60.0,
+                           "elected":true},
+                          {"name":"Alex Paterson","party":"Example Party","votes":100,"pct":40.0,
                            "elected":false}],"tcp":[]}"#,
         )
         .await;
+        // Stored as the ingest once wrote it: the informal ballots named
+        // twice over and counted into every share, so 222 of 500 ballots
+        // reads 44.4 where the formal share is 222 of 400.
         put(
             &store,
             "canonical/elections/new.json",
             r#"{
             "eventId":"31496","eventName":"2025 federal election","electorateSlug":"sampleford",
             "electorateName":"Sampleford","state":"VIC",
-            "firstPrefs":[{"name":"Alex Paterson","party":"Example Party","votes":200,"pct":55.5,
-                           "swing":15.5,"elected":true}],"tcp":[]}"#,
+            "firstPrefs":[{"name":"Alex Paterson","party":"Example Party","votes":222,"pct":44.4,
+                           "swing":15.5,"elected":true},
+                          {"name":"Casey Doe","party":"Independent","votes":178,"pct":35.6,
+                           "elected":false},
+                          {"name":"Informal Informal","party":"Informal","votes":100,"pct":20.0,
+                           "swing":1.2,"elected":false}],"tcp":[]}"#,
         )
         .await;
         // A contest for a seat that no longer exists must not reach the bundle.
@@ -638,6 +653,15 @@ mod tests {
             vec!["31496", "27966"]
         );
         assert!(elections[0].elected);
+        // Each share is of the formal votes, whatever the stored figure was,
+        // and the informal ballots are nobody's contest.
+        assert_eq!(elections[0].pct.0, 55.5);
+        assert_eq!(elections[0].votes, 222);
+        assert_eq!(elections[1].pct.0, 40.0);
+        assert!(people
+            .iter()
+            .flat_map(|p| p.elections.iter().flatten())
+            .all(|e| e.party != "Informal"));
 
         // Vote stats count per chamber: one division each, both voted in.
         let stats = alex.stats.as_ref().expect("stats");

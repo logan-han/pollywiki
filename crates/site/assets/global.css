@@ -1269,6 +1269,41 @@ th[scope='rowgroup'] {
   }
 }
 
+/* An electorate's two result tables share one grid on a wide screen, so a
+   party, a count and a share stand in the same column in both. Phones keep
+   the automatic layout: these widths would squeeze the party column there
+   to nothing. */
+@media (min-width: 40.01rem) {
+  table.results {
+    table-layout: fixed;
+  }
+
+  .results col.cand {
+    width: 34%;
+  }
+
+  .results col.votes {
+    width: 6.5rem;
+  }
+
+  .results col.pct,
+  .results col.swing {
+    width: 4.5rem;
+  }
+}
+
+/* Informal ballots close the first-preference table as no candidate's row:
+   ruled off like a total and set in the muted voice. The rule sits on the
+   last candidate's cells, whose border wins the collapsed edge. */
+.results tbody:has(+ tfoot) > tr:last-child > td {
+  border-bottom-color: var(--hair-strong);
+}
+
+.results tfoot td {
+  border-bottom: 0;
+  color: var(--muted);
+}
+
 /* Bill list rows: date · title · chamber · stage · status */
 .bill-list {
   list-style: none;
@@ -2278,5 +2313,11 @@ img.avatar.large {
   .table-scroll {
     overflow-x: visible;
     background: none;
+  }
+
+  /* A table foot repeats at every page break on paper; the informal
+     ballots are said once, after the last candidate. */
+  .results tfoot {
+    display: table-row-group;
   }
 }
