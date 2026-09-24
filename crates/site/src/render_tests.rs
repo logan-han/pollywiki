@@ -1432,6 +1432,8 @@ fn the_search_page_names_its_field_announces_counts_and_keeps_the_query() {
         "processTerm:",
         "history.replaceState",
         "ui.triggerSearch(q)",
+        // Pagefind's Clear button empties the box without an input event.
+        "closest('.pagefind-ui__search-clear')) keep('')",
     ] {
         assert!(script.contains(part), "search script lacks {part}");
     }

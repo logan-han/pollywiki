@@ -40,11 +40,16 @@ function words(value) {
     .filter(Boolean)
 }
 
-// One request however fast the reader types; a failed fetch can be retried.
+// One request however fast the reader types. A fetch that fails on the
+// network or with a server error can be retried; any other answer, such as
+// the 404 of a build that shipped without the index, stands as an empty one.
 // Each name is folded once here rather than on every keystroke.
 function load() {
   pending ??= fetch('/quick-search.json')
-    .then((res) => (res.ok ? res.json() : []))
+    .then((res) => {
+      if (res.status >= 500) throw new Error(String(res.status))
+      return res.ok ? res.json() : []
+    })
     .then((entries) => entries.map((e) => ({ e, flat: words(e.name).join(' ') })))
     .catch(() => {
       pending = null
@@ -201,7 +206,8 @@ input?.addEventListener('keydown', (event) => {
     highlight(activeIndex + 1)
   } else if (event.key === 'ArrowUp') {
     event.preventDefault()
-    highlight(activeIndex - 1)
+    // Up from nothing chosen wraps round to the last option.
+    highlight(activeIndex < 0 ? options.length - 1 : activeIndex - 1)
   } else if (event.key === 'Enter') {
     // No selection yet means the first suggestion, matching what readers expect.
     event.preventDefault()
@@ -223,8 +229,19 @@ form?.addEventListener('focusout', (event) => {
   if (to && !form.contains(to)) close()
 })
 
+// A click outside closes the list. It also cancels a list still waiting on a
+// slow index, which would otherwise open after the reader had moved on.
 document.addEventListener('click', (event) => {
-  if (list && !list.hidden && !event.target.closest('.quick-search')) close()
+  if (!list || event.target.closest('.quick-search')) return
+  if (list.hidden) generation += 1
+  else close()
+})
+
+// A page kept for Back comes back as it was left. Closing on the way out
+// means a choice made from the list does not return with the list still open,
+// or with a render still waiting to open it.
+addEventListener('pagehide', () => {
+  if (list) close()
 })
 
 // Phones scroll the nav row sideways; keep the current section, and whichever

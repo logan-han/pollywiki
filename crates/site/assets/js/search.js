@@ -35,6 +35,11 @@ if (typeof PagefindUI === 'undefined') {
       if (!input.value.trim()) keep('')
     })
   }
+  // Nor does Pagefind's Clear button, which empties the box without an input
+  // event; without this, a reload would bring the cleared query back.
+  mount.addEventListener('click', (event) => {
+    if (event.target.closest('.pagefind-ui__search-clear')) keep('')
+  })
 
   // Pagefind's count is a plain paragraph. Relayed into a status region, a
   // screen reader hears each settled count; the interim "Searching for"
