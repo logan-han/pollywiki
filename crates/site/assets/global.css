@@ -1376,13 +1376,20 @@ td.date {
    only, so a tap on a touch screen leaves no hover state stuck behind. */
 @media (hover: hover) {
   .segmented button[aria-pressed='false']:hover,
-  .pills button[aria-pressed='false']:hover {
+  .pills button[aria-pressed='false']:not(:disabled):hover {
     color: var(--ink);
   }
 
-  .pills button[aria-pressed='false']:hover {
+  .pills button[aria-pressed='false']:not(:disabled):hover {
     border-color: var(--ink);
   }
+}
+
+/* A choice that could only empty the list is greyed out until the other
+   filters make room for it again. */
+.pills button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .filter-bar {
@@ -1902,6 +1909,11 @@ img.avatar.large {
     background: Highlight;
     border-color: Highlight;
     color: HighlightText;
+  }
+
+  .pills button:disabled {
+    color: GrayText;
+    border-color: GrayText;
   }
 
   /* The suggestion highlight is a background and an inset shadow, and forced

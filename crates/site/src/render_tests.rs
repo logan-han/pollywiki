@@ -478,6 +478,91 @@ fn divisions_index_groups_into_months_that_match_their_runs() {
 }
 
 #[test]
+fn the_people_filter_reaches_former_members_and_whole_state_names() {
+    let data = sample_data();
+    let html = render(&data, &pages::people_index(&data));
+
+    // A sitting card answers to its state spelt out as well as its code.
+    assert!(html.contains(
+        "<div class=\"person-cell\" data-name=\"morgan rossi  tas tasmania\" data-house=\"senate\" data-group=\"independent\">"
+    ));
+
+    // Former members sit in their own section, each card wrapped for the
+    // text filter but with no chamber or party to match.
+    let former = html
+        .split("<section id=\"former-members\">")
+        .nth(1)
+        .and_then(|s| s.split("</section>").next())
+        .expect("former members section");
+    assert!(former.starts_with("<h2>Former members</h2>"));
+    assert!(former.contains(
+        "<div class=\"person-cell\" data-name=\"casey o'brien oldbridge vic victoria\"><a class=\"person-card\""
+    ));
+    assert_eq!(
+        former.matches("<div class=\"person-cell\"").count(),
+        data.former().count()
+    );
+    assert!(!former.contains("data-house="));
+    assert!(!former.contains("data-group="));
+
+    // The script scopes the sitting grid and the former section apart, and
+    // greys out a party pill that could only empty the grid.
+    assert!(html.contains("#person-grid .person-cell"));
+    assert!(html.contains("#former-members .person-cell"));
+    assert!(html.contains("button.disabled = !possible"));
+}
+
+#[test]
+fn index_filters_keep_their_state_in_the_url_and_match_words_in_any_order() {
+    let data = sample_data();
+    for (page, params) in [
+        (
+            pages::people_index(&data),
+            ["q", "house", "party"].as_slice(),
+        ),
+        (pages::divisions_index(&data), ["q", "house"].as_slice()),
+        (pages::bills_index(&data), ["q", "status"].as_slice()),
+        (pages::electorates_index(&data), ["q"].as_slice()),
+    ] {
+        let html = render(&data, &page);
+        let path = &page.path;
+        // The phone keyboard offers Done, which puts it away.
+        assert_eq!(html.matches("enterkeyhint=\"done\"").count(), 1, "{path}");
+        assert!(html.contains("matchMedia('(pointer: coarse)')"), "{path}");
+
+        // Every filter reads its state from the URL on load and writes it
+        // back, leaving any hash where it is.
+        assert!(
+            html.contains("new URLSearchParams(location.search)"),
+            "{path}"
+        );
+        assert!(html.contains("history.replaceState("), "{path}");
+        assert!(html.contains("${location.hash}"), "{path}");
+        for param in params {
+            assert!(
+                html.contains(&format!("params.get('{param}')")),
+                "{path} ?{param}="
+            );
+        }
+
+        // Folded terms in any order, split where the quick search splits a
+        // name, and a count that settles before it is announced.
+        assert!(html.contains(".normalize('NFD')"), "{path}");
+        assert!(html.contains(r".split(/[^\p{L}\p{N}]+/u)"), "{path}");
+        assert!(
+            html.contains("terms.every((term) => hay.includes(term))"),
+            "{path}"
+        );
+        assert!(html.contains("settleCount(count,"), "{path}");
+        assert!(!html.contains("count.textContent = filtered"), "{path}");
+    }
+
+    // The electorate box names everything it matches.
+    let electorates = render(&data, &pages::electorates_index(&data));
+    assert!(electorates.contains("placeholder=\"Filter by name, state or member\""));
+}
+
+#[test]
 fn long_lists_can_be_walked_by_heading() {
     let data = sample_data();
 

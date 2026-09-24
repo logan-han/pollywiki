@@ -1,61 +1,94 @@
-// People index: chamber segment, party pills and a text box, all combinable.
-// Without JS every card stays visible.
+// People index: chamber segment, party pills and a text box, all combinable
+// and kept in the URL as ?q=, ?house= and ?party=. Without JS every card
+// stays visible. Former members answer to the text alone: the chamber and
+// party controls describe the parliament as it stands.
 const text = document.getElementById('people-filter')
 const houseGroup = document.getElementById('house-filter')
 const partyGroup = document.getElementById('group-filter')
-const cells = [...document.querySelectorAll('.person-cell')]
+const cells = [...document.querySelectorAll('#person-grid .person-cell')]
+const former = [...document.querySelectorAll('#former-members .person-cell')]
+const formerSection = document.getElementById('former-members')
 const grid = document.getElementById('person-grid')
 const count = document.getElementById('filter-count')
 const empty = document.getElementById('filter-empty')
 const clear = document.getElementById('filter-clear')
+const partyButtons = [...(partyGroup?.querySelectorAll('button[data-group]:not([data-group=""])') ?? [])]
+
+// Each card's name, seat and state, folded once rather than on every keystroke.
+const hay = new Map([...cells, ...former].map((cell) => [cell, fold(cell.dataset.name)]))
 
 let house = ''
 let party = ''
 
 function apply() {
-  const needle = text ? text.value.trim().toLowerCase() : ''
+  const terms = termsOf(text)
+  const named = (cell) => holdsAll(hay.get(cell), terms)
+  const inHouse = (cell) => !house || cell.dataset.house === house
   let shown = 0
   for (const cell of cells) {
-    const match =
-      (!needle || (cell.dataset.name ?? '').includes(needle)) &&
-      (!house || cell.dataset.house === house) &&
-      (!party || cell.dataset.group === party)
+    const match = named(cell) && inHouse(cell) && (!party || cell.dataset.group === party)
     cell.style.display = match ? '' : 'none'
     if (match) shown += 1
   }
-  const filtered = Boolean(needle || house || party)
-  if (count) count.textContent = filtered ? `Showing ${shown} of ${cells.length} people` : ''
-  // An all-hidden grid would leave its frame behind under the empty state.
-  const nothing = filtered && shown === 0
+  let formerShown = 0
+  for (const cell of former) {
+    const match = !house && !party && named(cell)
+    cell.style.display = match ? '' : 'none'
+    if (match) formerShown += 1
+  }
+  // A party no card could match under the chosen chamber and text is greyed
+  // out rather than left to lead to an empty grid. The pressed pill stays
+  // live, so it can always be let go.
+  for (const button of partyButtons) {
+    const possible = cells.some(
+      (cell) => cell.dataset.group === button.dataset.group && inHouse(cell) && named(cell),
+    )
+    button.disabled = !possible && button.getAttribute('aria-pressed') !== 'true'
+  }
+  const filtered = Boolean(terms.length || house || party)
+  const alsoFormer = formerShown
+    ? ` and ${formerShown} former member${formerShown === 1 ? '' : 's'}`
+    : ''
+  settleCount(count, filtered ? `Showing ${shown} of ${cells.length} people${alsoFormer}` : '')
+  // An all-hidden grid would leave its frame behind, so each grid goes with
+  // its last card, and the empty state shows only when both have gone.
+  if (grid) grid.hidden = filtered && shown === 0
+  if (formerSection) formerSection.hidden = filtered && formerShown === 0
+  const nothing = filtered && shown === 0 && formerShown === 0
   if (empty) empty.hidden = !nothing
-  if (grid) grid.hidden = nothing
+  writeUrl({ q: text?.value.trim(), house, party })
 }
 
-// Each segmented/pill group tracks one value; the first button is the "all" reset.
-function wire(group, set) {
-  group?.addEventListener('click', (event) => {
-    const button = event.target.closest('button')
-    if (!button) return
-    for (const other of group.querySelectorAll('button')) {
-      other.setAttribute('aria-pressed', String(other === button))
-    }
-    set(button.dataset.house ?? button.dataset.group ?? '')
-    apply()
-  })
-}
+houseGroup?.addEventListener('click', (event) => {
+  const button = event.target.closest('button')
+  if (!button) return
+  house = press(houseGroup, 'house', button.dataset.house ?? '')
+  apply()
+})
 
-wire(houseGroup, (value) => (house = value))
-wire(partyGroup, (value) => (party = value))
+partyGroup?.addEventListener('click', (event) => {
+  const button = event.target.closest('button')
+  if (!button) return
+  party = press(partyGroup, 'group', button.dataset.group ?? '')
+  apply()
+})
+
 text?.addEventListener('input', apply)
+doneOnEnter(text)
 
 clear?.addEventListener('click', () => {
   if (text) text.value = ''
-  house = ''
-  party = ''
-  for (const group of [houseGroup, partyGroup]) {
-    const buttons = [...(group?.querySelectorAll('button') ?? [])]
-    buttons.forEach((button, i) => button.setAttribute('aria-pressed', String(i === 0)))
-  }
+  house = press(houseGroup, 'house', '')
+  party = press(partyGroup, 'group', '')
   apply()
   text?.focus()
 })
+
+// A shared or reloaded link brings its filter with it. The cards are filtered
+// on load even without one, so a query the browser restored into the box
+// after Back is applied rather than left showing over every card.
+const params = new URLSearchParams(location.search)
+if (text && params.has('q')) text.value = params.get('q')
+house = press(houseGroup, 'house', params.get('house') ?? '')
+party = press(partyGroup, 'group', params.get('party') ?? '')
+apply()

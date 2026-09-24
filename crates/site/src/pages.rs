@@ -19,11 +19,25 @@ use pollywiki_schema::{Bill, Division, Electorate, House, Party, Person, Summary
 use regex::Regex;
 use std::sync::LazyLock;
 
-// One filter script per index page, inlined where the page needs it.
-const PEOPLE_FILTER_JS: &str = include_str!("../assets/js/people-filter.js");
-const DIVISION_FILTER_JS: &str = include_str!("../assets/js/division-filter.js");
-const BILL_FILTER_JS: &str = include_str!("../assets/js/bill-filter.js");
-const ELECTORATE_FILTER_JS: &str = include_str!("../assets/js/electorate-filter.js");
+// One filter script per index page, inlined where the page needs it, each
+// behind the helpers all four share: folded any-order matching, state in the
+// URL, a settled live count.
+const PEOPLE_FILTER_JS: &str = concat!(
+    include_str!("../assets/js/filter-kit.js"),
+    include_str!("../assets/js/people-filter.js")
+);
+const DIVISION_FILTER_JS: &str = concat!(
+    include_str!("../assets/js/filter-kit.js"),
+    include_str!("../assets/js/division-filter.js")
+);
+const BILL_FILTER_JS: &str = concat!(
+    include_str!("../assets/js/filter-kit.js"),
+    include_str!("../assets/js/bill-filter.js")
+);
+const ELECTORATE_FILTER_JS: &str = concat!(
+    include_str!("../assets/js/filter-kit.js"),
+    include_str!("../assets/js/electorate-filter.js")
+);
 
 /// Live count plus an explicit empty state, shared by the four index pages.
 /// The count element stays in the DOM so its aria-live region is stable; it
@@ -341,23 +355,32 @@ pub fn people_index(data: &SiteData) -> Page {
             esc(p.code.as_deref().unwrap_or(&p.name)),
         ));
     }
-    body.push_str("</span><input type=\"search\" id=\"people-filter\" placeholder=\"Filter by name, electorate or state\" aria-label=\"Filter people\"></div>");
+    body.push_str("</span><input type=\"search\" id=\"people-filter\" placeholder=\"Filter by name, electorate or state\" enterkeyhint=\"done\" aria-label=\"Filter people\"></div>");
     body.push_str(&filter_feedback("No one matches these filters."));
+
+    // What the text filter matches a card against: the name, the seat, and
+    // the state both as its code and in full, so 'tas' and 'tasmania' both
+    // answer.
+    let haystack = |person: &Person| {
+        let state = person.state.map(|s| s.as_str()).unwrap_or("");
+        esc_attr(
+            &format!(
+                "{} {} {} {}",
+                person.name,
+                person.electorate.as_deref().unwrap_or(""),
+                state,
+                state_name(state).unwrap_or("")
+            )
+            .to_lowercase(),
+        )
+    };
 
     let sitting_count = sorted.len();
     body.push_str("<div class=\"person-grid\" id=\"person-grid\">");
     for person in sorted {
         body.push_str(&format!(
             "<div class=\"person-cell\" data-name=\"{}\" data-house=\"{}\" data-group=\"{}\">{}</div>",
-            esc_attr(
-                &format!(
-                    "{} {} {}",
-                    person.name,
-                    person.electorate.as_deref().unwrap_or(""),
-                    person.state.map(|s| s.as_str()).unwrap_or("")
-                )
-                .to_lowercase()
-            ),
+            haystack(person),
             person.house,
             person.group_slug,
             person_card(data, person),
@@ -368,7 +391,7 @@ pub fn people_index(data: &SiteData) -> Page {
     if !former.is_empty() {
         let one = former.len() == 1;
         body.push_str(&format!(
-            "<h2>Former members</h2><p class=\"note\">{} sat in this parliament and {} since left. Their {} because the divisions they voted in are permanent.</p><div class=\"person-grid\">",
+            "<section id=\"former-members\"><h2>Former members</h2><p class=\"note\">{} sat in this parliament and {} since left. Their {} because the divisions they voted in are permanent.</p><div class=\"person-grid\">",
             if one {
                 "One member".to_string()
             } else {
@@ -377,10 +400,18 @@ pub fn people_index(data: &SiteData) -> Page {
             if one { "has" } else { "have" },
             if one { "page stays" } else { "pages stay" },
         ));
+        // The text filter covers these cards too, so a name that matches is
+        // never reported missing while it sits on the page. They carry no
+        // chamber or party to match: those controls describe the parliament
+        // as it stands.
         for person in former {
-            body.push_str(&person_card(data, person));
+            body.push_str(&format!(
+                "<div class=\"person-cell\" data-name=\"{}\">{}</div>",
+                haystack(person),
+                person_card(data, person),
+            ));
         }
-        body.push_str("</div>");
+        body.push_str("</div></section>");
     }
 
     const DESCRIPTION: &str =
@@ -824,7 +855,7 @@ pub fn divisions_index(data: &SiteData) -> Page {
         data.divisions.len()
     ));
     body.push_str("</p></div>");
-    body.push_str("<div class=\"filter-bar\"><span class=\"segmented\" id=\"division-house\" role=\"group\" aria-label=\"Filter by chamber\"><button aria-pressed=\"true\" data-house=\"\">Both chambers</button><button aria-pressed=\"false\" data-house=\"representatives\">House</button><button aria-pressed=\"false\" data-house=\"senate\">Senate</button></span><input type=\"search\" id=\"division-filter-text\" placeholder=\"Filter by division name\" aria-label=\"Filter divisions\"></div>");
+    body.push_str("<div class=\"filter-bar\"><span class=\"segmented\" id=\"division-house\" role=\"group\" aria-label=\"Filter by chamber\"><button aria-pressed=\"true\" data-house=\"\">Both chambers</button><button aria-pressed=\"false\" data-house=\"representatives\">House</button><button aria-pressed=\"false\" data-house=\"senate\">Senate</button></span><input type=\"search\" id=\"division-filter-text\" placeholder=\"Filter by division name\" enterkeyhint=\"done\" aria-label=\"Filter divisions\"></div>");
     body.push_str(&filter_feedback("No divisions match these filters."));
     if !data.divisions.is_empty() {
         // Divisions arrive newest first, so each month is already one run.
@@ -1081,7 +1112,7 @@ pub fn bills_index(data: &SiteData) -> Page {
         data.bills.len()
     ));
     body.push_str("</p></div>");
-    body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" aria-label=\"Filter bills\"></div>");
+    body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" enterkeyhint=\"done\" aria-label=\"Filter bills\"></div>");
     body.push_str(&filter_feedback("No bills match these filters."));
     if !data.bills.is_empty() {
         // The bundle arrives alphabetically, so the ledger order is built here.
@@ -1380,7 +1411,7 @@ pub fn electorates_index(data: &SiteData) -> Page {
         data.electorates.len()
     ));
     body.push_str("</p></div>");
-    body.push_str("<div class=\"filter-bar\"><input type=\"search\" id=\"electorate-filter\" placeholder=\"Filter by name or state\" aria-label=\"Filter electorates\"></div>");
+    body.push_str("<div class=\"filter-bar\"><input type=\"search\" id=\"electorate-filter\" placeholder=\"Filter by name, state or member\" enterkeyhint=\"done\" aria-label=\"Filter electorates\"></div>");
     body.push_str(&filter_feedback("No electorates match these filters."));
     body.push_str("<div class=\"table-scroll\"><table id=\"electorate-table\"><thead><tr><th scope=\"col\">Electorate</th><th scope=\"col\">State</th><th scope=\"col\">Member</th></tr></thead><tbody>");
     for e in sorted {

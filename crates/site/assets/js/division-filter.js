@@ -1,5 +1,6 @@
-// Divisions index: chamber segment plus a text box. Month divider rows recount
-// as rows hide, and drop out entirely once their month is empty.
+// Divisions index: chamber segment plus a text box, kept in the URL as ?q=
+// and ?house=. Month dividers recount as rows hide, and drop out once their
+// month is empty.
 const text = document.getElementById('division-filter-text')
 const houseGroup = document.getElementById('division-house')
 const items = [...document.querySelectorAll('#division-list > li')]
@@ -8,64 +9,56 @@ const count = document.getElementById('filter-count')
 const empty = document.getElementById('filter-empty')
 const clear = document.getElementById('filter-clear')
 
-// A month row owns every division row that follows it up to the next one.
-const months = []
-for (const item of items) {
-  if (item.dataset.month !== undefined) {
-    months.push({ row: item, rows: [], label: item.querySelector('.n') })
-  } else if (months.length) {
-    months[months.length - 1].rows.push(item)
-  }
-}
+const months = monthsOf(items)
 const rows = items.filter((item) => item.dataset.house !== undefined)
-// Each row's title, lower-cased once. It is read from the row itself rather
-// than a copy in the markup, which would add a fifth to the page's weight.
-const titles = new Map(
-  rows.map((row) => [row, (row.querySelector('.what')?.textContent ?? '').toLowerCase()]),
-)
+// Each row's title, folded once. It is read from the row itself rather than
+// a copy in the markup, which would add a fifth to the page's weight.
+const hay = new Map(rows.map((row) => [row, fold(row.querySelector('.what')?.textContent)]))
 
 let house = ''
 
 function apply() {
-  const needle = text ? text.value.trim().toLowerCase() : ''
+  const terms = termsOf(text)
   let shown = 0
   for (const row of rows) {
-    const match =
-      (!needle || titles.get(row).includes(needle)) &&
-      (!house || row.dataset.house === house)
+    const match = holdsAll(hay.get(row), terms) && (!house || row.dataset.house === house)
     row.style.display = match ? '' : 'none'
     if (match) shown += 1
   }
   for (const month of months) {
     const visible = month.rows.filter((row) => row.style.display !== 'none').length
-    month.row.style.display = visible ? '' : 'none'
-    if (month.label) month.label.textContent = `${visible} division${visible === 1 ? '' : 's'}`
+    recountMonth(month, visible, 'division')
   }
-  const filtered = Boolean(needle || house)
-  if (count) count.textContent = filtered ? `Showing ${shown} of ${rows.length} divisions` : ''
+  const filtered = Boolean(terms.length || house)
+  settleCount(count, filtered ? `Showing ${shown} of ${rows.length} divisions` : '')
   // An all-hidden ledger would leave its rules behind under the empty state.
   const nothing = filtered && shown === 0
   if (empty) empty.hidden = !nothing
   if (list) list.hidden = nothing
+  writeUrl({ q: text?.value.trim(), house })
 }
 
 houseGroup?.addEventListener('click', (event) => {
   const button = event.target.closest('button')
   if (!button) return
-  for (const other of houseGroup.querySelectorAll('button')) {
-    other.setAttribute('aria-pressed', String(other === button))
-  }
-  house = button.dataset.house ?? ''
+  house = press(houseGroup, 'house', button.dataset.house ?? '')
   apply()
 })
 
 text?.addEventListener('input', apply)
+doneOnEnter(text)
 
 clear?.addEventListener('click', () => {
   if (text) text.value = ''
-  house = ''
-  const buttons = [...(houseGroup?.querySelectorAll('button') ?? [])]
-  buttons.forEach((button, i) => button.setAttribute('aria-pressed', String(i === 0)))
+  house = press(houseGroup, 'house', '')
   apply()
   text?.focus()
 })
+
+// A shared or reloaded link brings its filter with it. The rows are filtered
+// on load even without one, so a query the browser restored into the box
+// after Back is applied rather than left showing over every row.
+const params = new URLSearchParams(location.search)
+if (text && params.has('q')) text.value = params.get('q')
+house = press(houseGroup, 'house', params.get('house') ?? '')
+apply()
