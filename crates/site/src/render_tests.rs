@@ -1320,6 +1320,8 @@ fn profiles_render_background_photos_and_election_history() {
         );
     }
     assert!(html.contains("BA (Hons)"), "qualifications missing");
+    // Parliament numbers read as ordinals (data::ordinal), not "43th".
+    assert!(html.contains("<td>47th, 48th</td>"), "parliaments row");
 
     // Positions, bills raised and election history tables.
     assert!(html.contains("Positions held"));

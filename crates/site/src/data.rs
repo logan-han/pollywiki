@@ -781,6 +781,18 @@ pub fn to_fixed(value: f64, digits: usize) -> String {
     }
 }
 
+/// An English ordinal: 1st, 2nd, 3rd, 4th, and 11th to 13th, never "42th".
+pub fn ordinal(value: i64) -> String {
+    let suffix = match (value.abs() % 10, value.abs() % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{value}{suffix}")
+}
+
 /// Number.prototype.toLocaleString('en-AU') for integers.
 pub fn locale_int(value: i64) -> String {
     let digits = value.abs().to_string();
@@ -909,6 +921,28 @@ mod tests {
         assert_eq!(to_fixed(34.5, 2), "34.50");
         assert_eq!(to_fixed(-0.04, 1), "-0.0");
         assert_eq!(to_fixed(0.999, 2), "1.00");
+    }
+
+    #[test]
+    fn ordinals_take_the_suffix_english_gives_them() {
+        for (n, want) in [
+            (1, "1st"),
+            (2, "2nd"),
+            (3, "3rd"),
+            (4, "4th"),
+            (11, "11th"),
+            (12, "12th"),
+            (13, "13th"),
+            (21, "21st"),
+            (42, "42nd"),
+            (43, "43rd"),
+            (48, "48th"),
+            (111, "111th"),
+            (112, "112th"),
+            (121, "121st"),
+        ] {
+            assert_eq!(ordinal(n), want);
+        }
     }
 
     #[test]

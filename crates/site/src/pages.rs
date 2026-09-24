@@ -692,7 +692,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
                 esc(&background
                     .parliaments
                     .iter()
-                    .map(|n| format!("{n}th"))
+                    .map(|&n| data::ordinal(n))
                     .collect::<Vec<_>>()
                     .join(", "))
             ));
