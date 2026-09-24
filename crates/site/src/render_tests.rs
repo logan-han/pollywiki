@@ -550,6 +550,43 @@ fn divisions_index_folds_a_days_divisions_on_one_matter_into_a_series() {
         !house.contains("class=\"stage\""),
         "a description marked as a name"
     );
+
+    // The index names each step and describes none: the written context,
+    // its AI mark and the credit for it stay on home and the division pages,
+    // so the whole parliament's series do not carry a sentence per step. A
+    // step whose stage the title already gives is linked by its number.
+    for part in [
+        "class=\"q\"",
+        "class=\"ai-mark\"",
+        "series-credit",
+        "They Vote For You",
+    ] {
+        assert!(!list.contains(part), "the index carries {part}");
+    }
+    assert!(house.contains(
+        "<span class=\"n\"><a href=\"/divisions/representatives/2025-08-01-3/\">Division 3</a></span><span class=\"what\"></span>"
+    ));
+}
+
+#[test]
+fn methodology_defines_the_series_and_the_bases_of_election_shares() {
+    let data = sample_data();
+    let html = render(&data, &pages::methodology(&data));
+
+    // Both lists that fold a day's divisions on one matter say so, and say
+    // which of them describes each vote.
+    assert!(html.contains("<strong>Series of divisions.</strong>"));
+    assert!(!html.contains("Series on the home page"));
+    assert!(html.contains("the home page and the divisions index fold those divisions"));
+    assert!(html.contains("counts are still of divisions, not entries"));
+    assert!(html.contains("The divisions index names each vote by its official stage"));
+
+    // Candidate shares and the informal share sit on different bases, as the
+    // electorate pages print them.
+    assert!(html.contains("Candidate shares are of formal votes"));
+    assert!(html.contains(
+        "Informal ballots are shown after the candidates as a share of all ballots cast"
+    ));
 }
 
 #[test]

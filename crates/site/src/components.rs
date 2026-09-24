@@ -186,16 +186,22 @@ fn ledger_li(division: &Division, when: &str, label: &str, current: bool) -> Str
 /// One ledger entry per series. A lone division renders as the plain row. A
 /// run of them folds into the matter, its outcomes in the order they were
 /// decided, and one step per question, so a bill amended and put again reads
-/// as one story instead of ten identical lines.
+/// as one story instead of ten identical lines. On home each step is
+/// described in a sentence.
 pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
     match series.divisions.as_slice() {
         [single] => ledger_row(single),
-        _ => series_li(data, series, &esc(&format_date(series.date))),
+        _ => series_li(data, series, &esc(&format_date(series.date)), true),
     }
 }
 
 /// A series under a month divider: the date drops its year, as a plain row
-/// does there, and the full date stays machine-readable in the <time>.
+/// does there, and the full date stays machine-readable in the <time>. The
+/// divisions index holds every series of the parliament, so its steps go by
+/// their official names alone, as its plain rows do: a written description
+/// for each step would add a third to the page for text that sits folded
+/// away, and that the filter does not read. Home and each division's page
+/// still carry the descriptions.
 pub fn series_row_in_month(data: &SiteData, series: &DivisionSeries) -> String {
     match series.divisions.as_slice() {
         [single] => ledger_row_in_month(single),
@@ -207,6 +213,7 @@ pub fn series_row_in_month(data: &SiteData, series: &DivisionSeries) -> String {
                 esc_attr(series.date),
                 esc(&short_date(series.date))
             ),
+            false,
         ),
     }
 }
@@ -214,8 +221,11 @@ pub fn series_row_in_month(data: &SiteData, series: &DivisionSeries) -> String {
 /// The folded row. It says how many divisions it stands for in data-count,
 /// so an index filter can count divisions rather than rows. Like a plain
 /// row it carries no lower-cased copy of its text: a filter reads the title
-/// and the step labels from the row itself.
-fn series_li(data: &SiteData, series: &DivisionSeries, when: &str) -> String {
+/// and the step labels from the row itself. With `describe`, each step
+/// carries the first sentence of its written context, with its AI mark and
+/// a credit under the steps; without, a step reads as its stage, or as its
+/// division number when every step shares one.
+fn series_li(data: &SiteData, series: &DivisionSeries, when: &str, describe: bool) -> String {
     let chamber = match series.house {
         House::Senate => "Senate",
         House::Representatives => "House",
@@ -274,7 +284,7 @@ fn series_li(data: &SiteData, series: &DivisionSeries, when: &str) -> String {
         } else {
             division_stage(&d.name)
         };
-        let question = step_question(d);
+        let question = if describe { step_question(d) } else { None };
         let ai_mark = match question {
             Some((_, true)) => {
                 machine_written = true;
