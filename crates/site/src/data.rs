@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 pub use pollywiki_schema::title_from_slug;
 use pollywiki_schema::{
     js_compare, Bill, Division, Electorate, ElectorateResult, House, Meta, Party, Person, Vote,
+    VoteCast,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -164,12 +165,14 @@ impl SiteData {
         self.sitting().filter(|p| p.group_slug == slug).collect()
     }
 
-    /// Other divisions in the same chamber on the same sitting day, in order.
-    pub fn same_sitting_day(&self, division: &Division) -> Vec<&Division> {
+    /// Every division in the same chamber on the same sitting day, this one
+    /// included, in the order they were taken: a division's place in its day
+    /// is part of what it means.
+    pub fn sitting_day(&self, division: &Division) -> Vec<&Division> {
         let mut out: Vec<&Division> = self
             .divisions
             .iter()
-            .filter(|d| d.house == division.house && d.date == division.date && d.id != division.id)
+            .filter(|d| d.house == division.house && d.date == division.date)
             .collect();
         out.sort_by_key(|d| d.number);
         out
@@ -189,21 +192,67 @@ impl SiteData {
         out
     }
 
-    /// Per-party aye/no counts for one division.
+    /// The group a vote counts towards in a division's party breakdown. Every
+    /// view of a division that sorts votes by party goes through here, so the
+    /// table and the list under it can never disagree about who sits where.
+    pub fn vote_group<'s>(&'s self, vote: &'s VoteCast) -> &'s str {
+        self.person_by_slug(&vote.person_slug)
+            .map_or("unknown", |p| p.group_slug.as_str())
+    }
+
+    /// The name a vote is shown under: the member's page name, else the name
+    /// the division record gave, else the slug spelt out. A vote can name
+    /// someone the register has no page for, such as a member who arrived too
+    /// recently for Wikidata to have recorded the seat.
+    pub fn voter_name(&self, vote: &VoteCast) -> String {
+        match self.person_by_slug(&vote.person_slug) {
+            Some(person) => person.name.clone(),
+            None if !vote.name.is_empty() => vote.name.clone(),
+            None => vote.person_slug.replace('-', " "),
+        }
+    }
+
+    /// One side of a division's votes, grouped as the party breakdown counts
+    /// them: the groups in the breakdown's order, and the names in each in the
+    /// order /people/ lists them. Each group comes with its breakdown row.
+    /// This reorders and labels the record; it ranks nothing.
+    pub fn votes_by_group<'s>(
+        &self,
+        breakdown: &'s [GroupBreakdownRow<'s>],
+        votes: &[&'s VoteCast],
+    ) -> Vec<(&'s GroupBreakdownRow<'s>, Vec<&'s VoteCast>)> {
+        let mut groups: Vec<(&GroupBreakdownRow, Vec<(String, &VoteCast)>)> =
+            breakdown.iter().map(|row| (row, Vec::new())).collect();
+        for &vote in votes {
+            let group = self.vote_group(vote);
+            if let Some((_, names)) = groups.iter_mut().find(|(row, _)| row.slug == group) {
+                names.push((self.voter_name(vote), vote));
+            }
+        }
+        groups
+            .into_iter()
+            .filter(|(_, names)| !names.is_empty())
+            .map(|(row, mut names)| {
+                names.sort_by(|a, b| js_compare(&a.0, &b.0));
+                (row, names.into_iter().map(|(_, vote)| vote).collect())
+            })
+            .collect()
+    }
+
+    /// Per-party aye/no counts for one division, the largest group first.
     pub fn group_breakdown(&self, division: &Division) -> Vec<GroupBreakdownRow<'_>> {
         let mut rows: IndexMap<String, GroupBreakdownRow> = IndexMap::new();
         for vote in &division.votes {
-            let person = self.person_by_slug(&vote.person_slug);
-            let group = person
+            let group = self
+                .person_by_slug(&vote.person_slug)
                 .map(|p| p.group.clone())
                 .unwrap_or_else(|| "Unknown".to_string());
-            let group_slug = person
-                .map(|p| p.group_slug.clone())
-                .unwrap_or_else(|| "unknown".to_string());
+            let group_slug = self.vote_group(vote);
             let row = rows
-                .entry(group_slug.clone())
+                .entry(group_slug.to_string())
                 .or_insert_with(|| GroupBreakdownRow {
-                    party: self.party_by_slug(&group_slug),
+                    slug: group_slug.to_string(),
+                    party: self.party_by_slug(group_slug),
                     group,
                     aye: 0,
                     no: 0,
@@ -321,6 +370,8 @@ pub struct PersonVote<'a> {
 }
 
 pub struct GroupBreakdownRow<'a> {
+    /// The group's key, as vote_group gives it: a party slug, or "unknown".
+    pub slug: String,
     pub party: Option<&'a Party>,
     pub group: String,
     pub aye: i64,

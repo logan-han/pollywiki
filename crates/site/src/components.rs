@@ -108,10 +108,14 @@ pub fn result_chip(result: DivisionResult) -> String {
     )
 }
 
-/// A ledger row where nothing above it gives the date: home, a bill page, a
-/// division's sitting day.
+/// A ledger row where nothing above it gives the date: home, a bill page.
 pub fn ledger_row(division: &Division) -> String {
-    ledger_li(division, &esc(&format_date(&division.date)))
+    ledger_li(
+        division,
+        &esc(&format_date(&division.date)),
+        &division.name,
+        false,
+    )
 }
 
 /// A ledger row under a month divider, which already carries the year: the
@@ -124,6 +128,21 @@ pub fn ledger_row_in_month(division: &Division) -> String {
             esc_attr(&division.date),
             esc(&short_date(&division.date))
         ),
+        &division.name,
+        false,
+    )
+}
+
+/// A row in a division's sitting day, where every row shares the date: the
+/// division number takes the date column instead, so the day reads in the
+/// order it was voted. The division being read is in the list, marked
+/// current and not linked to itself.
+pub fn sitting_day_row(division: &Division, current: bool) -> String {
+    ledger_li(
+        division,
+        &format!("Division {}", division.number),
+        &division.name,
+        current,
     )
 }
 
@@ -131,17 +150,29 @@ pub fn ledger_row_in_month(division: &Division) -> String {
 /// down the ledger as a column. The spaces between the spans cost nothing in
 /// the grid; they keep the words apart when read aloud or copied. The row
 /// carries no lower-cased copy of its title for the filter: the script reads
-/// the title itself, which spares the index a fifth of its weight.
-fn ledger_li(division: &Division, when: &str) -> String {
-    let href = format!("/divisions/{}/{}/", division.house, division_key(division));
+/// the title itself, which spares the index a fifth of its weight. The label
+/// is what the title column shows; a current row shows it unlinked.
+fn ledger_li(division: &Division, when: &str, label: &str, current: bool) -> String {
     let chamber = match division.house {
         House::Senate => "Senate",
         House::Representatives => "House",
     };
+    let (attrs, what) = if current {
+        (" aria-current=\"true\"", esc(label))
+    } else {
+        (
+            "",
+            format!(
+                "<a href=\"/divisions/{}/{}/\">{}</a>",
+                division.house,
+                division_key(division),
+                esc(label)
+            ),
+        )
+    };
     format!(
-        "<li data-house=\"{house}\"><span class=\"when\">{when}</span><span class=\"what\"><a href=\"{href}\">{name}</a></span><span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
+        "<li data-house=\"{house}\"{attrs}><span class=\"when\">{when}</span><span class=\"what\">{what}</span><span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
         house = division.house,
-        name = esc(&division.name),
         chip = result_chip(division.result),
         ayes = division.ayes,
         noes = division.noes,

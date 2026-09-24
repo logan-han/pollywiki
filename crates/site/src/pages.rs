@@ -3,9 +3,9 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, month_jump, person_card,
-    result_chip, result_word, seat_bar, series_row, series_row_in_month, vote_bar,
-    BILL_DOTS_LEGEND,
+    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, month_jump, month_label,
+    person_card, result_chip, result_word, seat_bar, series_row, series_row_in_month,
+    sitting_day_row, vote_bar, BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
@@ -47,6 +47,19 @@ fn filter_feedback(empty_message: &str) -> String {
     format!(
         "<p class=\"note filter-count\" id=\"filter-count\" aria-live=\"polite\"></p><div class=\"filter-empty\" id=\"filter-empty\" hidden><p>{}</p><button type=\"button\" id=\"filter-clear\">Clear filters</button></div>",
         esc(empty_message)
+    )
+}
+
+/// Sideways-scrolling wrapper for a table that can outgrow a phone screen.
+/// It is a named region, so a keyboard user who tabs to it hears which table
+/// the arrow keys will scroll; the layout's table-scroll script gives it that
+/// tab stop only while the table overflows. A region is a landmark, so every
+/// label must be unique on its page: use the section heading, or a short noun
+/// where the table has none.
+fn table_scroll(label: &str) -> String {
+    format!(
+        "<div class=\"table-scroll\" role=\"region\" aria-label=\"{}\">",
+        esc_attr(label)
     )
 }
 
@@ -579,7 +592,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if let Some(stats) = stats.filter(|s| s.divisions_eligible > 0) {
         body.push_str("<div class=\"stat-strip\">");
         body.push_str(&format!(
-            "<div class=\"stat\"><span class=\"n\">{} / {}</span><span class=\"l\">divisions voted in this parliament</span></div>",
+            "<div class=\"stat\"><span class=\"n\"><a href=\"#voting-record\">{} / {}</a></span><span class=\"l\">divisions voted in this parliament</span></div>",
             stats.divisions_voted, stats.divisions_eligible
         ));
         body.push_str(&format!(
@@ -595,6 +608,30 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("<p class=\"note\">Counted against the divisions held while they sat, not the whole parliament. Absence from a division is not abstention: pairing arrangements, leave and parliamentary duties are not distinguished in the official record. <a href=\"/about/methodology/\">How these figures are computed.</a></p>");
     }
 
+    // A long profile opens on a line of links to its sections, in page order,
+    // so the voting record is one step away however much biography sits above
+    // it. It follows the figures' caveat rather than splitting the two.
+    let positions = person.positions.as_deref().filter(|p| !p.is_empty());
+    let elections = person.elections.as_deref().filter(|e| !e.is_empty());
+    let sections: Vec<(&str, &str)> = [
+        ("background", "Background", person.background.is_some()),
+        ("positions", "Positions held", positions.is_some()),
+        ("elections", "Election history", elections.is_some()),
+        ("bills-raised", "Bills raised", !raised.is_empty()),
+        ("voting-record", "Voting record", true),
+    ]
+    .into_iter()
+    .filter(|(_, _, present)| *present)
+    .map(|(id, label, _)| (id, label))
+    .collect();
+    if sections.len() > 1 {
+        body.push_str("<nav class=\"on-page\" aria-labelledby=\"on-page-label\"><span class=\"label\" id=\"on-page-label\">On this page</span>");
+        for (id, label) in &sections {
+            body.push_str(&format!("<a href=\"#{id}\">{label}</a>"));
+        }
+        body.push_str("</nav>");
+    }
+
     if let Some(note) = &person.ai_note {
         body.push_str("<aside class=\"context-box\"><div class=\"context-top\"><span class=\"context-head\">Voting record in brief</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
         body.push_str(&data.link_bill_titles(&note.text));
@@ -602,9 +639,9 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
 
     if let Some(background) = &person.background {
-        body.push_str(
-            "<h2>Background</h2><div class=\"table-scroll\"><table class=\"facts\"><tbody>",
-        );
+        body.push_str("<h2 id=\"background\">Background</h2>");
+        body.push_str(&table_scroll("Background"));
+        body.push_str("<table class=\"facts\"><tbody>");
         if let Some(born) = &background.born {
             body.push_str(&format!(
                 "<tr><th class=\"label\" scope=\"row\">Born</th><td>{}{}</td></tr>",
@@ -641,7 +678,8 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("</tbody></table></div>");
 
         if !background.qualifications.is_empty() {
-            body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
+            body.push_str(&table_scroll("Qualifications"));
+            body.push_str("<table><thead><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
             for q in &background.qualifications {
                 let parsed = parse_qualification(q);
                 body.push_str(&format!(
@@ -661,7 +699,9 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             // A career of bare titles gets a one-column table, not two empty ones.
             let has_org = rows.iter().any(|o| !o.org.is_empty());
             let has_period = rows.iter().any(|o| !o.period.is_empty());
-            body.push_str("<h3>Occupations before parliament</h3><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th>");
+            body.push_str("<h3>Occupations before parliament</h3>");
+            body.push_str(&table_scroll("Occupations before parliament"));
+            body.push_str("<table><thead><tr><th scope=\"col\">Role</th>");
             if has_org {
                 body.push_str("<th scope=\"col\">Organisation</th>");
             }
@@ -683,18 +723,45 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         }
     }
 
-    if let Some(positions) = person.positions.as_deref().filter(|p| !p.is_empty()) {
-        body.push_str("<h2>Positions held</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
+    if let Some(positions) = positions {
+        // The Handbook records an office once per ministry, so a minister who
+        // served under Rudd, Gillard and Rudd again holds one office over one
+        // term three times. The table keeps one row per office and term and
+        // names every ministry it spanned; offices still held come first.
+        let mut rows: Vec<(&pollywiki_schema::PositionRecord, Vec<&str>)> = Vec::new();
         for pos in positions {
+            let existing = rows.iter_mut().find(|(p, _)| {
+                p.role == pos.role && p.kind == pos.kind && p.from == pos.from && p.to == pos.to
+            });
+            match existing {
+                Some((_, ministries)) => {
+                    if let Some(ministry) = pos.ministry.as_deref() {
+                        if !ministries.contains(&ministry) {
+                            ministries.push(ministry);
+                        }
+                    }
+                }
+                None => rows.push((pos, pos.ministry.as_deref().into_iter().collect())),
+            }
+        }
+        rows.sort_by_key(|(p, _)| p.to.is_some());
+        body.push_str("<h2 id=\"positions\">Positions held</h2>");
+        body.push_str(&table_scroll("Positions held"));
+        body.push_str("<table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
+        for (pos, ministries) in &rows {
             body.push_str(&format!(
                 "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
                 esc(&pos.role),
-                if pos.kind == pollywiki_schema::PositionKind::Shadow {
+                // A shadow office that says so in its title needs no second
+                // label.
+                if pos.kind == pollywiki_schema::PositionKind::Shadow
+                    && !pos.role.starts_with("Shadow")
+                {
                     " (shadow)"
                 } else {
                     ""
                 },
-                esc(pos.ministry.as_deref().unwrap_or("")),
+                esc(&ministries.join("; ")),
                 pos.from.as_deref().map(format_date).map(|d| esc(&d)).unwrap_or_default(),
                 pos.to
                     .as_deref()
@@ -706,8 +773,10 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("</tbody></table></div>");
     }
 
-    if let Some(elections) = person.elections.as_deref().filter(|e| !e.is_empty()) {
-        body.push_str("<h2>Election history</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
+    if let Some(elections) = elections {
+        body.push_str("<h2 id=\"elections\">Election history</h2>");
+        body.push_str(&table_scroll("Election history"));
+        body.push_str("<table><thead><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for e in elections {
             // A seat abolished at a redistribution has no page of its own; the
             // contest stays on the record as plain text.
@@ -740,7 +809,9 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
 
     if !raised.is_empty() {
-        body.push_str("<h2>Bills raised</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Bill</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
+        body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
+        body.push_str(&table_scroll("Bills raised"));
+        body.push_str("<table><thead><tr><th scope=\"col\">Bill</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
         for r in &raised {
             body.push_str(&format!(
                 "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td></tr>",
@@ -753,33 +824,53 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("</tbody></table></div><p class=\"note\">Sponsor marks the member's own bill; Introduced marks bills they moved, typically as the responsible minister.</p>");
     }
 
-    body.push_str("<h2>Voting record</h2>");
-    if !votes.is_empty() {
-        body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Division</th><th scope=\"col\">Vote</th><th scope=\"col\">Result</th></tr></thead><tbody>");
-        for v in &votes {
-            body.push_str(&format!(
-                "<tr><td class=\"date\">{}</td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
-                esc(&format_date(&v.division.date)),
-                v.division.house,
-                division_key(v.division),
-                esc(&v.division.name),
-                match (v.vote, v.against_group_majority) {
-                    (Vote::Aye, true) => "vote-chip aye rebel",
-                    (Vote::Aye, false) => "vote-chip aye",
-                    (Vote::No, true) => "vote-chip no rebel",
-                    (Vote::No, false) => "vote-chip no",
-                },
-                match v.vote {
-                    Vote::Aye => "Aye",
-                    Vote::No => "No",
-                },
-                if v.against_group_majority { " · crossed" } else { "" },
-                result_chip(v.division.result),
-            ));
-        }
-        body.push_str("</tbody></table></div>");
-    } else {
+    // The record runs newest first under month dividers, as the divisions
+    // index does: each month is its own row group, headed by its name, and a
+    // date drops the year its divider already gives.
+    if votes.is_empty() {
+        body.push_str("<h2 id=\"voting-record\">Voting record</h2>");
         body.push_str("<p class=\"note\">No division votes recorded yet for this parliament. Voting records appear once the They Vote For You sync runs.</p>");
+    } else {
+        body.push_str(&format!(
+            "<h2 id=\"voting-record\">Voting record <span class=\"count\">{} division{}</span></h2>",
+            votes.len(),
+            if votes.len() == 1 { "" } else { "s" }
+        ));
+        body.push_str(&table_scroll("Voting record"));
+        body.push_str("<table class=\"vote-record\"><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Division</th><th scope=\"col\">Vote</th><th scope=\"col\">Result</th></tr></thead>");
+        fn month_of<'v>(vote: &data::PersonVote<'v>) -> &'v str {
+            vote.division.date.get(..7).unwrap_or("")
+        }
+        for month in votes.chunk_by(|a, b| month_of(a) == month_of(b)) {
+            body.push_str(&format!(
+                "<tbody><tr class=\"month\"><th colspan=\"4\" scope=\"rowgroup\">{}</th></tr>",
+                esc(&month_label(month_of(&month[0])))
+            ));
+            for v in month {
+                body.push_str(&format!(
+                    "<tr><td class=\"date\"><time datetime=\"{}\">{}</time></td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
+                    esc_attr(&v.division.date),
+                    esc(&short_date(&v.division.date)),
+                    v.division.house,
+                    division_key(v.division),
+                    esc(&v.division.name),
+                    match (v.vote, v.against_group_majority) {
+                        (Vote::Aye, true) => "vote-chip aye rebel",
+                        (Vote::Aye, false) => "vote-chip aye",
+                        (Vote::No, true) => "vote-chip no rebel",
+                        (Vote::No, false) => "vote-chip no",
+                    },
+                    match v.vote {
+                        Vote::Aye => "Aye",
+                        Vote::No => "No",
+                    },
+                    if v.against_group_majority { " · crossed" } else { "" },
+                    result_chip(v.division.result),
+                ));
+            }
+            body.push_str("</tbody>");
+        }
+        body.push_str("</table></div>");
     }
 
     if let Some(photo) = &person.photo {
@@ -932,7 +1023,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         .filter_map(|id| data.bill_by_id(id))
         .collect();
     let procedure = procedure_for(&division.name);
-    let same_day = data.same_sitting_day(division);
+    let sitting_day = data.sitting_day(division);
     // The markdown renderer escapes raw HTML, so the output is safe to inline.
     let summary_html = match (&division.summary, division.summary_kind) {
         (Some(summary), kind) if kind != Some(SummaryKind::Transcript) => {
@@ -951,8 +1042,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
                 person.slug,
                 esc(&person.name)
             ),
-            None if !v.name.is_empty() => esc(&v.name),
-            None => esc(&v.person_slug.replace('-', " ")),
+            None => esc(&data.voter_name(v)),
         }
     };
 
@@ -1022,7 +1112,9 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         body.push_str("</ul>");
     }
 
-    body.push_str("<h2>By party</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Aye</th><th class=\"num\" scope=\"col\">No</th></tr></thead><tbody>");
+    body.push_str("<h2>By party</h2>");
+    body.push_str(&table_scroll("By party"));
+    body.push_str("<table><thead><tr><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Aye</th><th class=\"num\" scope=\"col\">No</th></tr></thead><tbody>");
     for row in &breakdown {
         body.push_str(&format!(
             "<tr><td>{}</td><td class=\"{}\">{}</td><td class=\"{}\">{}</td></tr>",
@@ -1040,7 +1132,18 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
     }
     body.push_str("</tbody></table></div>");
 
-    body.push_str("<h2>Every vote</h2><div class=\"vote-columns\">");
+    // Every name, grouped as the By party table counts them and in its order,
+    // so a party's split reads straight off the list. The groups nest: a
+    // group's label heads its own list and is never counted as a voter.
+    body.push_str("<h2>Every vote</h2>");
+    if division
+        .votes
+        .iter()
+        .any(|v| v.against_group_majority == Some(true))
+    {
+        body.push_str("<p class=\"note\">\u{201c}Crossed\u{201d} marks a vote against the majority of the member's own party in this division.</p>");
+    }
+    body.push_str("<div class=\"vote-columns\">");
     // Each column heads its own list, so a screen reader can jump past up to
     // 150 aye votes straight to the noes.
     for (label, list) in [("AYE", &ayes), ("NO", &noes)] {
@@ -1048,47 +1151,64 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
             "<div><h3 class=\"col-head\">{label} ({})</h3><ul>",
             list.len()
         ));
-        for v in list.iter() {
+        for (row, votes) in data.votes_by_group(&breakdown, list) {
             body.push_str(&format!(
-                "<li>{}{}</li>",
-                voter(v),
-                if v.against_group_majority == Some(true) {
-                    "<span class=\"note\"> · crossed</span>"
-                } else {
-                    ""
-                },
+                "<li class=\"vote-group\"><span class=\"group-chip\"><span class=\"dot\" style=\"background:{}\" aria-hidden=\"true\"></span>{} <span class=\"n\">{}</span></span><ul>",
+                row.party
+                    .and_then(|p| p.colour.as_deref())
+                    .unwrap_or(GROUP_FALLBACK_COLOUR),
+                esc(row
+                    .party
+                    .map(|p| p.code.as_deref().unwrap_or(&p.name))
+                    .unwrap_or(&row.group)),
+                votes.len(),
             ));
+            for v in votes {
+                body.push_str(&format!(
+                    "<li>{}{}</li>",
+                    voter(v),
+                    if v.against_group_majority == Some(true) {
+                        "<span class=\"note\"> · crossed</span>"
+                    } else {
+                        ""
+                    },
+                ));
+            }
+            body.push_str("</ul></li>");
         }
         body.push_str("</ul></div>");
     }
     body.push_str("</div>");
 
-    if !same_day.is_empty() {
+    if sitting_day.len() > 1 {
         body.push_str(&format!(
-            "<h2>Other divisions this sitting day</h2><p class=\"note\">What the {} divided on around this vote, in order.</p><ul class=\"ledger\">",
+            "<h2>Divisions this sitting day</h2><p class=\"note\">Every division the {} held that day, in order; the one on this page is marked.</p><ul class=\"ledger\">",
             chamber_word(division.house)
         ));
-        for d in &same_day {
-            body.push_str(&ledger_row(d));
+        for d in &sitting_day {
+            body.push_str(&sitting_day_row(d, d.id == division.id));
         }
         body.push_str("</ul>");
     }
     body.push_str("</article>");
 
-    let mut footer_note = String::from("<p class=\"attribution\">");
+    // The page's sources. What "crossed" means is said beside the list that
+    // uses the word, not down here.
+    let mut sources = Vec::new();
     if let Some(tvfy) = &division.links.tvfy {
-        footer_note.push_str(&format!(
-            "Record via <a href=\"{}\">They Vote For You</a> (ODbL). ",
+        sources.push(format!(
+            "Record via <a href=\"{}\">They Vote For You</a> (ODbL).",
             esc_attr(tvfy)
         ));
     }
     if let Some(hansard) = &division.links.hansard {
-        footer_note.push_str(&format!(
-            "Official transcript: <a href=\"{}\">Hansard</a>. ",
+        sources.push(format!(
+            "Official transcript: <a href=\"{}\">Hansard</a>.",
             esc_attr(hansard)
         ));
     }
-    footer_note.push_str("\"Crossed\" marks a vote against the majority of the member's own party in this division.</p>");
+    let footer_note = (!sources.is_empty())
+        .then(|| format!("<p class=\"attribution\">{}</p>", sources.join(" ")));
 
     let description = format!(
         "Division in the {}, {}: {} ayes, {} noes.",
@@ -1099,7 +1219,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
     );
     let path = format!("/divisions/{}/{}/", division.house, division_key(division));
     let mut page = Page::new(division.name.clone(), Some(description), path.clone(), body);
-    page.footer_note = Some(footer_note);
+    page.footer_note = footer_note;
     page.og_type = "article";
     page.lastmod = Some(division.date.clone());
     page.jsonld = Some(jsonld_script(vec![breadcrumb(
@@ -1340,7 +1460,9 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     }
 
     if !bill.timeline.is_empty() {
-        body.push_str("<h2>Progress</h2><div class=\"table-scroll\"><table><tbody>");
+        body.push_str("<h2>Progress</h2>");
+        body.push_str(&table_scroll("Progress"));
+        body.push_str("<table><tbody>");
         for step in &bill.timeline {
             body.push_str(&format!(
                 "<tr><td class=\"date\">{}</td><td>{}</td></tr>",
@@ -1427,7 +1549,8 @@ pub fn electorates_index(data: &SiteData) -> Page {
     body.push_str("</p></div>");
     body.push_str("<div class=\"filter-bar\"><input type=\"search\" id=\"electorate-filter\" placeholder=\"Filter by name, state or member\" enterkeyhint=\"done\" aria-label=\"Filter electorates\"></div>");
     body.push_str(&filter_feedback("No electorates match these filters."));
-    body.push_str("<div class=\"table-scroll\"><table id=\"electorate-table\"><thead><tr><th scope=\"col\">Electorate</th><th scope=\"col\">State</th><th scope=\"col\">Member</th></tr></thead><tbody>");
+    body.push_str(&table_scroll("Electorates"));
+    body.push_str("<table id=\"electorate-table\"><thead><tr><th scope=\"col\">Electorate</th><th scope=\"col\">State</th><th scope=\"col\">Member</th></tr></thead><tbody>");
     for e in sorted {
         let member = e
             .member_slug
@@ -1508,7 +1631,8 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
         ));
     }
     if profile.is_some() || electorate.enrolment.is_some() {
-        body.push_str("<div class=\"table-scroll\"><table class=\"facts\"><tbody>");
+        body.push_str(&table_scroll("Electorate profile"));
+        body.push_str("<table class=\"facts\"><tbody>");
         if let Some(enrolment) = electorate.enrolment {
             body.push_str(&format!(
                 "<tr><th class=\"label\" scope=\"row\">Enrolled voters</th><td>{}</td></tr>",
@@ -1550,10 +1674,10 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
 
     if let Some(result) = result {
         if tcp.len() == 2 {
-            body.push_str(&format!(
-                "<h2>{}: two-candidate preferred</h2><div class=\"table-scroll\"><table><tbody>",
-                esc(&result.event_name)
-            ));
+            let heading = format!("{}: two-candidate preferred", result.event_name);
+            body.push_str(&format!("<h2>{}</h2>", esc(&heading)));
+            body.push_str(&table_scroll(&heading));
+            body.push_str("<table><tbody>");
             for c in tcp {
                 body.push_str(&format!(
                     "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}%</td></tr>",
@@ -1571,10 +1695,10 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
             body.push_str("</tbody></table></div>");
         }
         if !result.first_prefs.is_empty() {
-            body.push_str(&format!(
-                "<h2>{}: first preferences</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead><tbody>",
-                esc(&result.event_name)
-            ));
+            let heading = format!("{}: first preferences", result.event_name);
+            body.push_str(&format!("<h2>{}</h2>", esc(&heading)));
+            body.push_str(&table_scroll(&heading));
+            body.push_str("<table><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead><tbody>");
             for c in &result.first_prefs {
                 body.push_str(&format!(
                     "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
@@ -1622,7 +1746,8 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
 pub fn parties_index(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>Parties</h1><p class=\"lede\">Parliamentary groups of the 48th Parliament. Grouping follows the official record; Coalition members sit as one parliamentary group.</p></div>");
-    body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Group</th><th class=\"num\" scope=\"col\">House</th><th class=\"num\" scope=\"col\">Senate</th><th class=\"num\" scope=\"col\">Total</th></tr></thead><tbody>");
+    body.push_str(&table_scroll("Parties"));
+    body.push_str("<table><thead><tr><th scope=\"col\">Group</th><th class=\"num\" scope=\"col\">House</th><th class=\"num\" scope=\"col\">Senate</th><th class=\"num\" scope=\"col\">Total</th></tr></thead><tbody>");
     for p in &data.parties {
         body.push_str(&format!(
             "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
@@ -1739,7 +1864,8 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
         .as_ref()
         .filter(|f| f.website.is_some() || f.wikipedia.is_some())
     {
-        body.push_str("<div class=\"table-scroll\"><table class=\"facts\"><tbody>");
+        body.push_str(&table_scroll("Party links"));
+        body.push_str("<table class=\"facts\"><tbody>");
         if let Some(website) = &facts.website {
             let label = WEBSITE_PREFIX.replace(website, "");
             let label = label.strip_suffix('/').unwrap_or(&label);
@@ -1766,7 +1892,9 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     }
 
     if !leadership.is_empty() {
-        body.push_str("<h2>Parliamentary leadership</h2><div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Member</th><th class=\"num\" scope=\"col\">Since</th></tr></thead><tbody>");
+        body.push_str("<h2>Parliamentary leadership</h2>");
+        body.push_str(&table_scroll("Parliamentary leadership"));
+        body.push_str("<table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Member</th><th class=\"num\" scope=\"col\">Since</th></tr></thead><tbody>");
         for l in &leadership {
             body.push_str(&format!(
                 "<tr><td>{}</td><td><a href=\"/people/{}/\">{}</a></td>{}</tr>",
@@ -1915,7 +2043,8 @@ pub fn data_sources(data: &SiteData) -> Page {
 
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>Data sources</h1><p class=\"lede\">Everything on this site is generated from the sources below. Nothing is written by hand and nothing is edited after ingestion.</p></div>");
-    body.push_str("<div class=\"table-scroll\"><table><thead><tr><th scope=\"col\">Source</th><th scope=\"col\">Used for</th><th scope=\"col\">Licence</th><th scope=\"col\">Last synced</th></tr></thead><tbody>");
+    body.push_str(&table_scroll("Data sources"));
+    body.push_str("<table><thead><tr><th scope=\"col\">Source</th><th scope=\"col\">Used for</th><th scope=\"col\">Licence</th><th scope=\"col\">Last synced</th></tr></thead><tbody>");
     for s in &SOURCES {
         let status = data.meta.sources.get(s.key);
         body.push_str(&format!(

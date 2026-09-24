@@ -853,16 +853,19 @@ fn ledger_rows_split_the_tally_and_drop_the_year_only_under_a_month() {
         );
     }
 
-    // With no divider above, a row keeps its full date: the sitting day on a
-    // division page, and the latest divisions on home.
+    // A division's sitting day shares one date, so its rows are labelled by
+    // number instead; the tally keeps its columns.
     let division = data
         .divisions
         .iter()
         .find(|d| d.house == House::Senate && division_key(d) == "2025-08-05-4")
         .expect("senate division");
     let page = render(&data, &pages::division_page(&data, division));
-    assert!(page.contains("<span class=\"when\">5 Aug 2025</span>"));
+    assert!(page.contains("<span class=\"when\">Division 5</span>"));
+    assert!(!page.contains("<span class=\"when\">5 Aug 2025</span>"));
     assert!(page.contains("<span class=\"fig\">2\u{2013}0</span>"));
+    // With no divider above, a row keeps its full date: the latest divisions
+    // on home.
     let home = render(&data, &pages::home(&data));
     assert!(home.contains("<span class=\"when\">5 Aug 2025</span>"));
     // A series names its chamber after the strip that stands in for the
@@ -889,11 +892,14 @@ fn a_first_column_date_takes_a_date_cell_not_a_figure_cell() {
         .expect("sample member");
     let record = render(&data, &pages::person_page(&data, person));
     let votes = record
-        .split("<h2>Voting record</h2>")
+        .split("<h2 id=\"voting-record\">")
         .nth(1)
         .expect("voting record");
     assert!(votes.contains("<th scope=\"col\">Date</th>"));
-    assert!(votes.contains("<tr><td class=\"date\">1 Aug 2025</td>"));
+    // Under its month's header the date drops the year; the <time> keeps it.
+    assert!(
+        votes.contains("<tr><td class=\"date\"><time datetime=\"2025-08-01\">1 Aug</time></td>")
+    );
     assert!(!votes.contains("<td class=\"num\">"));
 }
 
@@ -1437,7 +1443,7 @@ fn occupation_tables_show_only_the_columns_their_rows_fill() {
         .expect("sample data has occupations");
     let table = |person: &pollywiki_schema::Person| -> String {
         let html = render(&data, &pages::person_page(&data, person));
-        html.split("Occupations before parliament")
+        html.split("<h3>Occupations before parliament</h3>")
             .nth(1)
             .and_then(|s| s.split("</table>").next())
             .expect("occupations table")
@@ -1878,7 +1884,9 @@ fn the_dev_server_routes_directories_assets_and_misses() {
                     stream = Some(s);
                     break;
                 }
-                Err(_) => std::thread::yield_now(),
+                // A bare yield can spin through every attempt before the
+                // server thread has bound its port.
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
             }
         }
         let mut stream = stream.expect("server accepted a connection");
@@ -2216,6 +2224,395 @@ fn a_vote_names_its_member_even_with_no_page_to_link_to() {
         !html.contains(&stray.person_slug.replace('-', " ")),
         "the slug fallback used to leak lowercase names into the vote list"
     );
+}
+
+/// The Every vote section of a rendered division page, up to the list's end.
+fn every_vote(html: &str) -> &str {
+    let from = html.find("<h2>Every vote</h2>").expect("every vote");
+    let rest = &html[from..];
+    let to = rest.find("</div></div>").expect("vote columns end");
+    &rest[..to]
+}
+
+/// Each column's groups as (label, names), in page order.
+fn vote_groups(column: &str) -> Vec<(String, Vec<String>)> {
+    column
+        .split("<li class=\"vote-group\">")
+        .skip(1)
+        .map(|group| {
+            let label = group
+                .split("aria-hidden=\"true\"></span>")
+                .nth(1)
+                .and_then(|s| s.split("</span></span>").next())
+                .expect("group label")
+                .replace("<span class=\"n\">", "");
+            let names = group
+                .split("<ul>")
+                .nth(1)
+                .expect("a group's own list")
+                .split("<li>")
+                .skip(1)
+                .map(|li| {
+                    let li = li.split("</li>").next().unwrap_or(li);
+                    let li = li.split("<span class=\"note\">").next().unwrap_or(li);
+                    match li.split_once("\">") {
+                        Some((_, linked)) => linked.trim_end_matches("</a>").to_string(),
+                        None => li.to_string(),
+                    }
+                })
+                .collect();
+            (label, names)
+        })
+        .collect()
+}
+
+#[test]
+fn every_vote_groups_names_as_the_by_party_table_counts_them() {
+    let data = sample_data();
+    for division in &data.divisions {
+        let html = render(&data, &pages::division_page(&data, division));
+        let section = every_vote(&html);
+        let breakdown = data.group_breakdown(division);
+        let columns: Vec<&str> = section.split("<h3 class=\"col-head\">").skip(1).collect();
+        assert_eq!(columns.len(), 2, "{}", division.id);
+        for (column, aye) in columns.iter().zip([true, false]) {
+            // The groups follow the table's order and carry its counts.
+            let expected: Vec<String> = breakdown
+                .iter()
+                .map(|row| {
+                    let label = row
+                        .party
+                        .map(|p| p.code.as_deref().unwrap_or(&p.name))
+                        .unwrap_or(&row.group);
+                    (label, if aye { row.aye } else { row.no })
+                })
+                .filter(|(_, n)| *n > 0)
+                .map(|(label, n)| format!("{label} {n}"))
+                .collect();
+            let groups = vote_groups(column);
+            let labels: Vec<String> = groups.iter().map(|(label, _)| label.clone()).collect();
+            assert_eq!(labels, expected, "{}", division.id);
+            for (label, names) in &groups {
+                assert_eq!(
+                    label.rsplit(' ').next(),
+                    Some(names.len().to_string().as_str()),
+                    "{label} on {}",
+                    division.id
+                );
+            }
+        }
+    }
+
+    // The sample's widest division: a crossed vote, a group with no party
+    // page and a voter with no page at all, each under its own label.
+    let division = data
+        .divisions
+        .iter()
+        .find(|d| d.id == "representatives/2025-07-30/1")
+        .expect("sample division");
+    let html = render(&data, &pages::division_page(&data, division));
+    let section = every_vote(&html);
+    let (ayes, noes) = section
+        .split_once("<h3 class=\"col-head\">NO")
+        .expect("two columns");
+    assert_eq!(
+        vote_groups(ayes),
+        vec![
+            ("PLA 1".to_string(), vec!["Jordan Nguyen".to_string()]),
+            (
+                "Retired Party 1".to_string(),
+                vec!["Casey O&#39;Brien".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        vote_groups(noes),
+        vec![
+            ("EXP 1".to_string(), vec!["Alex Paterson".to_string()]),
+            ("Unknown 1".to_string(), vec!["Chris Newcomer".to_string()]),
+        ]
+    );
+    // A label heads its group's own list; it is never an item among the names.
+    assert!(!section.contains("</li><li class=\"vote-group\"><a"));
+    assert!(section.contains("<li><a href=\"/people/alex-paterson/\">Alex Paterson</a><span class=\"note\"> · crossed</span></li>"));
+}
+
+#[test]
+fn every_vote_orders_groups_by_size_and_names_as_the_people_index_does() {
+    let data = sample_data();
+    let mut division = data
+        .divisions
+        .iter()
+        .find(|d| d.id == "representatives/2025-07-30/1")
+        .expect("sample division")
+        .clone();
+    let vote = |slug: &str, name: &str| -> pollywiki_schema::VoteCast {
+        serde_json::from_value(serde_json::json!({
+            "personSlug": slug, "name": name, "vote": "aye"
+        }))
+        .expect("vote fixture")
+    };
+    // In source order the smaller group comes first and every group's names
+    // run backwards.
+    division.votes = vec![
+        vote("jordan-nguyen", "Jordan Nguyen"),
+        vote("zed-arrival", "Zed Arrival"),
+        vote("sam-kelly", "Sam Kelly"),
+        vote("abe-arrival", "Abe Arrival"),
+        vote("alex-paterson", "Alex Paterson"),
+        vote("mia-arrival", "Mia Arrival"),
+    ];
+    division.ayes = 6;
+    division.noes = 0;
+    let html = render(&data, &pages::division_page(&data, &division));
+    let section = every_vote(&html);
+    let ayes = section
+        .split("<h3 class=\"col-head\">NO")
+        .next()
+        .expect("aye column");
+    assert_eq!(
+        vote_groups(ayes),
+        vec![
+            (
+                "Unknown 3".to_string(),
+                vec![
+                    "Abe Arrival".to_string(),
+                    "Mia Arrival".to_string(),
+                    "Zed Arrival".to_string()
+                ]
+            ),
+            (
+                "EXP 2".to_string(),
+                vec!["Alex Paterson".to_string(), "Sam Kelly".to_string()]
+            ),
+            ("PLA 1".to_string(), vec!["Jordan Nguyen".to_string()]),
+        ]
+    );
+    // The By party table above lists the groups in the same order.
+    let table = html.split("<h2>By party</h2>").nth(1).expect("by party");
+    let unknown = table.find(">Unknown</span>").expect("unknown row");
+    let exp = table.find(">Example Party</a>").expect("party row");
+    let pla = table.find(">Placeholder Alliance</a>").expect("party row");
+    assert!(unknown < exp && exp < pla);
+}
+
+#[test]
+fn the_crossed_note_sits_beside_the_list_that_uses_it() {
+    let data = sample_data();
+    for division in &data.divisions {
+        let page = pages::division_page(&data, division);
+        let html = render(&data, &page);
+        let crossed = division
+            .votes
+            .iter()
+            .any(|v| v.against_group_majority == Some(true));
+        assert_eq!(
+            html.contains("<h2>Every vote</h2><p class=\"note\">\u{201c}Crossed\u{201d} marks a vote against the majority of the member's own party in this division.</p><div class=\"vote-columns\">"),
+            crossed,
+            "{}",
+            page.path
+        );
+        assert_eq!(
+            html.matches("Crossed\u{201d} marks").count(),
+            usize::from(crossed)
+        );
+        if let Some(note) = &page.footer_note {
+            assert!(!note.contains("rossed"), "{}", page.path);
+            assert!(!note.ends_with(" </p>"), "{}", page.path);
+        }
+    }
+}
+
+#[test]
+fn a_sitting_day_lists_every_division_with_this_one_marked() {
+    let data = sample_data();
+    let division = data
+        .divisions
+        .iter()
+        .find(|d| d.id == "senate/2025-08-05/4")
+        .expect("sample division");
+    let html = render(&data, &pages::division_page(&data, division));
+    let day = html
+        .split("<h2>Divisions this sitting day</h2>")
+        .nth(1)
+        .and_then(|s| s.split("</ul>").next())
+        .expect("sitting day");
+    let whens: Vec<&str> = day
+        .split("<span class=\"when\">")
+        .skip(1)
+        .map(|s| s.split("</span>").next().expect("when end"))
+        .collect();
+    assert_eq!(whens, ["Division 3", "Division 4", "Division 5"]);
+    // This division is in its place, marked current and not linked to itself;
+    // the others link to their pages.
+    assert_eq!(day.matches("aria-current=\"true\"").count(), 1);
+    assert!(day.contains(&format!(
+        "<li data-house=\"senate\" aria-current=\"true\"><span class=\"when\">Division 4</span><span class=\"what\">{}</span>",
+        division.name
+    )));
+    assert!(!day.contains("/divisions/senate/2025-08-05-4/"));
+    assert!(day.contains("/divisions/senate/2025-08-05-3/"));
+    assert!(day.contains("/divisions/senate/2025-08-05-5/"));
+
+    // A division alone on its day has no list to place it in.
+    let alone = data
+        .divisions
+        .iter()
+        .find(|d| d.id == "representatives/2025-07-30/1")
+        .expect("sample division");
+    assert_eq!(data.sitting_day(alone).len(), 1);
+    let html = render(&data, &pages::division_page(&data, alone));
+    assert!(!html.contains("this sitting day"));
+}
+
+#[test]
+fn table_wrappers_are_named_regions_unique_on_their_page() {
+    let data = sample_data();
+    let mut wrapped = 0;
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        let mut labels: Vec<&str> = Vec::new();
+        for rest in html.split("class=\"table-scroll\"").skip(1) {
+            let label = rest
+                .strip_prefix(" role=\"region\" aria-label=\"")
+                .and_then(|s| s.split('"').next())
+                .unwrap_or_else(|| panic!("an unnamed table wrapper on {}", page.path));
+            assert!(!label.is_empty(), "{}", page.path);
+            assert!(
+                !labels.contains(&label),
+                "two regions named {label} on {}",
+                page.path
+            );
+            labels.push(label);
+        }
+        wrapped += labels.len();
+        // The script that gives an overflowing wrapper its tab stop ships
+        // only where there is a wrapper to give one to.
+        assert_eq!(
+            html.contains("new ResizeObserver"),
+            !labels.is_empty(),
+            "{}",
+            page.path
+        );
+    }
+    assert!(wrapped > 20, "the sample pages hold tables");
+}
+
+#[test]
+fn a_profile_links_its_record_and_its_sections() {
+    let data = sample_data();
+    let person = data
+        .people
+        .iter()
+        .find(|p| p.slug == "alex-paterson")
+        .expect("sample member");
+    let html = render(&data, &pages::person_page(&data, person));
+
+    // The divisions figure opens the record it counts.
+    assert!(html.contains("<span class=\"n\"><a href=\"#voting-record\">2 / 2</a></span>"));
+    assert!(html.contains(
+        "<h2 id=\"voting-record\">Voting record <span class=\"count\">3 divisions</span></h2>"
+    ));
+
+    // The contents line follows the figures' caveat and lists every section
+    // in page order, each pointing at a heading below it.
+    let nav = html.find("<nav class=\"on-page\"").expect("on-page nav");
+    assert!(
+        html.find("How these figures are computed.")
+            .expect("caveat")
+            < nav
+    );
+    let links = html[nav..].split("</nav>").next().expect("nav end");
+    let targets: Vec<&str> = links
+        .split("<a href=\"#")
+        .skip(1)
+        .map(|s| s.split('"').next().expect("target"))
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            "background",
+            "positions",
+            "elections",
+            "bills-raised",
+            "voting-record"
+        ]
+    );
+    let mut last = nav;
+    for id in &targets {
+        let at = html
+            .find(&format!("<h2 id=\"{id}\">"))
+            .unwrap_or_else(|| panic!("no heading for #{id}"));
+        assert!(at > last, "#{id} is out of page order");
+        last = at;
+    }
+
+    // The record runs under month headers, one row group per month.
+    let record = &html[html
+        .find("<table class=\"vote-record\">")
+        .expect("vote record")..];
+    let record = record.split("</table>").next().expect("record end");
+    assert_eq!(record.matches("<tbody>").count(), 2);
+    assert!(record.contains(
+        "<tbody><tr class=\"month\"><th colspan=\"4\" scope=\"rowgroup\">August 2025</th></tr>"
+    ));
+    assert!(record.contains(
+        "<tbody><tr class=\"month\"><th colspan=\"4\" scope=\"rowgroup\">July 2025</th></tr>"
+    ));
+
+    // A profile that is only its record needs no contents line.
+    let record_only = data
+        .people
+        .iter()
+        .find(|p| p.slug == "sam-kelly")
+        .expect("sample senator");
+    let html = render(&data, &pages::person_page(&data, record_only));
+    assert!(html.contains("<h2 id=\"voting-record\">"));
+    assert!(!html.contains("class=\"on-page\""));
+}
+
+#[test]
+fn positions_list_each_office_and_term_once() {
+    let data = sample_data();
+    let mut person = data
+        .people
+        .iter()
+        .find(|p| p.slug == "alex-paterson")
+        .expect("sample member")
+        .clone();
+    person.positions = Some(
+        serde_json::from_value(serde_json::json!([
+            {"role": "Shadow Minister for Examples", "ministry": "Old Shadow Ministry", "kind": "shadow", "from": "2019-06-01", "to": "2022-05-23"},
+            {"role": "Manager of Opposition Business", "ministry": "Old Shadow Ministry", "kind": "shadow", "from": "2019-06-01", "to": "2022-05-23"},
+            {"role": "Cabinet Minister", "ministry": "First Ministry", "kind": "ministry", "from": "2013-09-18", "to": "2019-05-29"},
+            {"role": "Cabinet Minister", "ministry": "Second Ministry", "kind": "ministry", "from": "2013-09-18", "to": "2019-05-29"},
+            {"role": "Cabinet Minister", "ministry": "Second Ministry", "kind": "ministry", "from": "2013-09-18", "to": "2019-05-29"},
+            {"role": "Cabinet Minister", "ministry": "Third Ministry", "kind": "ministry", "from": "2019-05-29", "to": "2022-05-23"},
+            {"role": "Member of the Speaker's Panel", "kind": "position", "from": "2022-07-26"}
+        ]))
+        .expect("positions fixture"),
+    );
+    let html = render(&data, &pages::person_page(&data, &person));
+    let table = html
+        .split("<h2 id=\"positions\">Positions held</h2>")
+        .nth(1)
+        .and_then(|s| s.split("</table>").next())
+        .expect("positions table");
+    let rows: Vec<&str> = table.split("<tr>").skip(2).collect();
+    assert_eq!(rows.len(), 5, "one row per office and term");
+    // The office still held leads; the rest keep the Handbook's order.
+    assert!(rows[0].starts_with("<td>Member of the Speaker&#39;s Panel</td><td></td>"));
+    assert!(rows[0].contains("<td class=\"num\">current</td>"));
+    // One term under two ministries is one row naming both, each once; a new
+    // term under a third ministry is a row of its own.
+    assert!(table.contains(
+        "<td>Cabinet Minister</td><td>First Ministry; Second Ministry</td><td class=\"num\">18 Sep 2013</td>"
+    ));
+    assert!(table.contains("<td>Cabinet Minister</td><td>Third Ministry</td>"));
+    // A shadow office says so once, in its title or in the label.
+    assert!(table.contains("<td>Shadow Minister for Examples</td>"));
+    assert!(!table.contains("(shadow) (shadow)") && !table.contains("Examples (shadow)"));
+    assert!(table.contains("<td>Manager of Opposition Business (shadow)</td>"));
 }
 
 /// A unique scratch directory under the target dir, so tests never collide.
