@@ -1304,6 +1304,14 @@ th[scope='rowgroup'] {
   color: var(--muted);
 }
 
+/* A bill's progress runs in chamber phases, each headed by its chamber. A
+   run of steps the record places in no chamber, such as assent, has no
+   header to set it apart, so the step before it takes the header's rule:
+   the run reads as after the phase, not in it. */
+.progress tbody:has(+ tbody > tr:first-child > td) > tr:last-child > td {
+  border-bottom-color: var(--hair-strong);
+}
+
 /* Bill list rows: date · title · chamber · stage · status */
 .bill-list {
   list-style: none;

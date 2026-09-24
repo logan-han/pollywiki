@@ -110,12 +110,14 @@ pub fn result_chip(result: DivisionResult) -> String {
 
 /// A ledger row where nothing above it gives the date: home, a bill page.
 pub fn ledger_row(division: &Division) -> String {
-    ledger_li(
-        division,
-        &esc(&format_date(&division.date)),
-        &division.name,
-        false,
-    )
+    ledger_row_labelled(division, &division.name)
+}
+
+/// A dated ledger row whose title column says only what the page around it
+/// leaves unsaid, such as the stage alone under the bill's own heading. The
+/// link still leads to the division and its full official name.
+pub fn ledger_row_labelled(division: &Division, label: &str) -> String {
+    ledger_li(division, &esc(&format_date(&division.date)), label, false)
 }
 
 /// A ledger row under a month divider, which already carries the year: the

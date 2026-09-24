@@ -3,8 +3,8 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, month_jump, month_label,
-    person_card, result_chip, result_word, seat_bar, series_row, series_row_in_month,
+    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row_labelled, month_jump,
+    month_label, person_card, result_chip, result_word, seat_bar, series_row, series_row_in_month,
     sitting_day_row, vote_bar, BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
 };
 use crate::data::{
@@ -1305,6 +1305,63 @@ pub fn bills_index(data: &SiteData) -> Page {
 static LEADING_AND_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^and ").unwrap());
 static SUMMARY_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r";\s+").unwrap());
 
+/// The chamber a timeline step names, from the "(Chamber)" the ingest
+/// writes after it. Steps outside either chamber, such as assent, name none.
+fn step_chamber(event: &str) -> Option<House> {
+    if event.ends_with(" (Senate)") {
+        Some(House::Senate)
+    } else if event.ends_with(" (House of Representatives)") {
+        Some(House::Representatives)
+    } else {
+        None
+    }
+}
+
+/// A bill's progress as the chamber phases it passed through: each run of
+/// steps in one chamber is its own row group, headed by the chamber, and
+/// its steps drop the chamber they would otherwise repeat. A run of steps
+/// that names no chamber gets a group with no header, so a heading never
+/// claims assent, or a step off the Notice Paper, for a chamber the record
+/// does not name.
+fn progress_phases(bill: &Bill) -> String {
+    let mut out = String::new();
+    for run in bill
+        .timeline
+        .chunk_by(|a, b| step_chamber(&a.event) == step_chamber(&b.event))
+    {
+        out.push_str("<tbody>");
+        if let Some(house) = step_chamber(&run[0].event) {
+            out.push_str(&format!(
+                "<tr class=\"phase\"><th colspan=\"2\" scope=\"rowgroup\">{}</th></tr>",
+                chamber_chip(house)
+            ));
+        }
+        for step in run {
+            out.push_str(&format!(
+                "<tr><td class=\"date\">{}</td><td>{}</td></tr>",
+                esc(&format_date(&step.date)),
+                esc(event_description(&step.event))
+            ));
+        }
+        out.push_str("</tbody>");
+    }
+    out
+}
+
+/// What a division on a bill's page is called there. Under the bill's own
+/// heading, a division on this bill alone reads as its stage. A division
+/// that names other bills too, as a cognate debate's does, keeps its whole
+/// name: the stage alone would hide what else the vote decided.
+fn bill_division_label<'d>(bill: &Bill, division: &'d Division) -> &'d str {
+    match (
+        data::division_matter(&division.name).strip_prefix("Bills \u{2014} "),
+        data::division_stage(&division.name),
+    ) {
+        (Some(matter), Some(stage)) if matter == bill.title => stage,
+        _ => &division.name,
+    }
+}
+
 pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     let related: Vec<&Division> = bill
         .division_ids
@@ -1457,21 +1514,15 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     if !bill.timeline.is_empty() {
         body.push_str("<h2>Progress</h2>");
         body.push_str(&table_scroll("Progress"));
-        body.push_str("<table><tbody>");
-        for step in &bill.timeline {
-            body.push_str(&format!(
-                "<tr><td class=\"date\">{}</td><td>{}</td></tr>",
-                esc(&format_date(&step.date)),
-                esc(&step.event)
-            ));
-        }
-        body.push_str("</tbody></table></div>");
+        body.push_str("<table class=\"progress\"><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Step</th></tr></thead>");
+        body.push_str(&progress_phases(bill));
+        body.push_str("</table></div>");
     }
 
     if !related.is_empty() {
         body.push_str("<h2>Divisions on this bill</h2><ul class=\"ledger\">");
         for d in &related {
-            body.push_str(&ledger_row(d));
+            body.push_str(&ledger_row_labelled(d, bill_division_label(bill, d)));
         }
         body.push_str("</ul>");
     }

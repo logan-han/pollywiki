@@ -1018,6 +1018,74 @@ fn bill_pages_show_progress_and_legislation_data() {
 }
 
 #[test]
+fn bill_progress_reads_in_chamber_phases_under_a_labelled_head() {
+    let data = sample_data();
+    // Senate, then House, then assent, which the record places in neither.
+    let bill = data.bill_by_id("sample-4").expect("sample bill");
+    let html = render(&data, &pages::bill_page(&data, bill));
+    let (_, progress) = html.split_once("<h2>Progress</h2>").expect("progress");
+    let table = &progress[..progress.find("</table>").expect("table ends")];
+    let phase = |chip: &str| {
+        format!("<tr class=\"phase\"><th colspan=\"2\" scope=\"rowgroup\">{chip}</th></tr>")
+    };
+    let expected = format!(
+        "<table class=\"progress\"><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Step</th></tr></thead>\
+         <tbody>{}<tr><td class=\"date\">2 Nov 2024</td><td>Introduced</td></tr>\
+         <tr><td class=\"date\">1 Dec 2024</td><td>Third reading agreed to</td></tr></tbody>\
+         <tbody>{}<tr><td class=\"date\">14 Feb 2025</td><td>Third reading agreed to</td></tr></tbody>\
+         <tbody><tr><td class=\"date\">3 Mar 2025</td><td>Assent</td></tr></tbody>",
+        phase("<span class=\"chip senate\">Senate</span>"),
+        phase("<span class=\"chip house\">House</span>"),
+    );
+    assert!(table.ends_with(&expected), "progress table was {table}");
+    // The chamber moves into the phase header; no step repeats it.
+    assert!(!table.contains("(Senate)") && !table.contains("(House of"));
+}
+
+#[test]
+fn a_bill_page_names_its_divisions_by_stage_unless_they_decided_more() {
+    let mut data = sample_data();
+    let bill = data.bill_by_id("sample-1").expect("sample bill").clone();
+    let id = bill.division_ids[0].clone();
+    let rename = |data: &mut SiteData, name: &str| {
+        let i = data
+            .divisions
+            .iter()
+            .position(|d| d.id == id)
+            .expect("division on the bill");
+        data.divisions[i].name = name.to_string();
+    };
+    let ledger = |data: &SiteData| -> String {
+        let html = render(data, &pages::bill_page(data, &bill));
+        let (_, list) = html
+            .split_once("<h2>Divisions on this bill</h2>")
+            .expect("divisions list");
+        list[..list.find("</ul>").expect("list ends")].to_string()
+    };
+    let link = |text: &str| format!("/\">{text}</a></span>");
+
+    // The bill's own heading already names it: the row says the stage.
+    rename(
+        &mut data,
+        "Bills \u{2014} Demonstration Data Bill 2025; Second Reading",
+    );
+    let own = ledger(&data);
+    assert!(own.contains(&link("Second Reading")), "{own}");
+    assert!(own.contains("<span class=\"when\">1 Aug 2025</span>"));
+
+    // A cognate debate's division decided other bills too; the full name
+    // says so.
+    let cognate =
+        "Bills \u{2014} Demonstration Data Bill 2025, Placeholder Amendment Bill 2025; Second Reading";
+    rename(&mut data, cognate);
+    assert!(ledger(&data).contains(&link(cognate)));
+
+    // A name in any other shape is left whole.
+    rename(&mut data, "Demonstration Data Bill 2025 - Second Reading");
+    assert!(ledger(&data).contains(&link("Demonstration Data Bill 2025 - Second Reading")));
+}
+
+#[test]
 fn person_pages_are_profiles_with_a_result_column() {
     let data = sample_data();
     for person in &data.people {
