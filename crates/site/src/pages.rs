@@ -3,8 +3,9 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, ledger_row_in_month,
-    person_card, result_chip, result_word, seat_bar, series_row, vote_bar, BILL_DOTS_LEGEND,
+    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row, month_jump, person_card,
+    result_chip, result_word, seat_bar, series_row, series_row_in_month, vote_bar,
+    BILL_DOTS_LEGEND,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
@@ -858,21 +859,29 @@ pub fn divisions_index(data: &SiteData) -> Page {
     body.push_str("<div class=\"filter-bar\"><span class=\"segmented\" id=\"division-house\" role=\"group\" aria-label=\"Filter by chamber\"><button aria-pressed=\"true\" data-house=\"\">Both chambers</button><button aria-pressed=\"false\" data-house=\"representatives\">House</button><button aria-pressed=\"false\" data-house=\"senate\">Senate</button></span><input type=\"search\" id=\"division-filter-text\" placeholder=\"Filter by division name\" enterkeyhint=\"done\" aria-label=\"Filter divisions\"></div>");
     body.push_str(&filter_feedback("No divisions match these filters."));
     if !data.divisions.is_empty() {
-        // Divisions arrive newest first, so each month is already one run.
-        let mut months: Vec<(&str, Vec<&Division>)> = Vec::new();
-        for d in &data.divisions {
-            let key = d.date.get(..7).unwrap_or(d.date.as_str());
-            if months.last().map(|(m, _)| *m) == Some(key) {
-                months.last_mut().expect("just matched").1.push(d);
-            } else {
-                months.push((key, vec![d]));
+        // One entry per matter a chamber divided on in a sitting day, as on
+        // home: a bill put fifteen times in a day reads as one story rather
+        // than fifteen lines told apart only by their tallies. Series sit
+        // where their newest division does, so each month is already one
+        // run, and its divider counts divisions, not entries.
+        let mut months: Vec<(&str, Vec<data::DivisionSeries>)> = Vec::new();
+        for series in data.latest_series(usize::MAX) {
+            let key = series.date.get(..7).unwrap_or(series.date);
+            match months.last_mut() {
+                Some((month, entries)) if *month == key => entries.push(series),
+                _ => months.push((key, vec![series])),
             }
         }
+        let counts: Vec<(&str, usize)> = months
+            .iter()
+            .map(|(month, entries)| (*month, entries.iter().map(|s| s.divisions.len()).sum()))
+            .collect();
+        body.push_str(&month_jump(&counts, "division"));
         body.push_str("<ul class=\"ledger\" id=\"division-list\">");
-        for (month, rows) in &months {
-            body.push_str(&ledger_month(month, rows.len(), "division"));
-            for d in rows {
-                body.push_str(&ledger_row_in_month(d));
+        for ((month, entries), (_, count)) in months.iter().zip(&counts) {
+            body.push_str(&ledger_month(month, *count, "division"));
+            for series in entries {
+                body.push_str(&series_row_in_month(data, series));
             }
         }
         body.push_str("</ul>");
@@ -1138,6 +1147,11 @@ pub fn bills_index(data: &SiteData) -> Page {
                 months.push((key, vec![b]));
             }
         }
+        let counts: Vec<(&str, usize)> = months
+            .iter()
+            .map(|(month, rows)| (*month, rows.len()))
+            .collect();
+        body.push_str(&month_jump(&counts, "bill"));
         // The key comes before the rows it explains, not after the last of them.
         body.push_str(BILL_DOTS_LEGEND);
         body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");

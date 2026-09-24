@@ -1,17 +1,18 @@
 // Bills index: status pills plus a text box, combinable, and kept in the URL
 // as ?q= and ?status=, so /search/ and the quick-search footer row can hand a
-// query off here. Month dividers recount as rows hide, and drop out once
-// their month is empty.
+// query off here. Month dividers and the month strip recount as rows hide,
+// and drop out once their month is empty.
 const text = document.getElementById('bill-filter')
 const statusGroup = document.getElementById('bill-status')
 const items = [...document.querySelectorAll('#bill-rows > li')]
 const list = document.getElementById('bill-rows')
+const strip = document.getElementById('month-jump')
 const legend = document.querySelector('.dots-legend')
 const count = document.getElementById('filter-count')
 const empty = document.getElementById('filter-empty')
 const clear = document.getElementById('filter-clear')
 
-const months = monthsOf(items)
+const months = monthsOf(items, strip)
 const rows = items.filter((item) => item.dataset.status !== undefined)
 // Each row's title and portfolio, folded once rather than on every keystroke.
 const hay = new Map(rows.map((row) => [row, fold(row.dataset.text)]))
@@ -36,6 +37,7 @@ function apply() {
   const nothing = filtered && shown === 0
   if (empty) empty.hidden = !nothing
   if (list) list.hidden = nothing
+  if (strip) strip.hidden = nothing
   if (legend) legend.hidden = nothing
   writeUrl({ q: text?.value.trim(), status })
 }

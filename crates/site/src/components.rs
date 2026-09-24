@@ -154,9 +154,34 @@ fn ledger_li(division: &Division, when: &str) -> String {
 /// decided, and one step per question, so a bill amended and put again reads
 /// as one story instead of ten identical lines.
 pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
-    if let [single] = series.divisions.as_slice() {
-        return ledger_row(single);
+    match series.divisions.as_slice() {
+        [single] => ledger_row(single),
+        _ => series_li(data, series, &esc(&format_date(series.date))),
     }
+}
+
+/// A series under a month divider: the date drops its year, as a plain row
+/// does there, and the full date stays machine-readable in the <time>.
+pub fn series_row_in_month(data: &SiteData, series: &DivisionSeries) -> String {
+    match series.divisions.as_slice() {
+        [single] => ledger_row_in_month(single),
+        _ => series_li(
+            data,
+            series,
+            &format!(
+                "<time datetime=\"{}\">{}</time>",
+                esc_attr(series.date),
+                esc(&short_date(series.date))
+            ),
+        ),
+    }
+}
+
+/// The folded row. It says how many divisions it stands for in data-count,
+/// so an index filter can count divisions rather than rows. Like a plain
+/// row it carries no lower-cased copy of its text: a filter reads the title
+/// and the step labels from the row itself.
+fn series_li(data: &SiteData, series: &DivisionSeries, when: &str) -> String {
     let chamber = match series.house {
         House::Senate => "Senate",
         House::Representatives => "House",
@@ -206,7 +231,6 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
         None => String::new(),
     };
 
-    let mut text = title.to_lowercase();
     let mut steps = String::new();
     let (mut machine_written, mut volunteer_written) = (false, false);
     for d in &series.divisions {
@@ -229,22 +253,22 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
             None => "",
         };
         let question = question.map(|(text, _)| text);
-        let (label, note) = match (stage, question) {
-            (Some(stage), question) => (Some(stage.to_string()), question),
-            (None, Some(question)) => (Some(question), None),
-            (None, None) => (None, None),
+        // A stage is the rest of the division's official name; a question is
+        // a description of it. The stage link says which it is, so the index
+        // filter can match a series on its divisions' names alone, as it
+        // matches a plain row, and never on a written description.
+        let (label, class, note) = match (stage, question) {
+            (Some(stage), question) => (Some(stage.to_string()), " class=\"stage\"", question),
+            (None, Some(question)) => (Some(question), "", None),
+            (None, None) => (None, "", None),
         };
-        if let Some(label) = &label {
-            text.push(' ');
-            text.push_str(&label.to_lowercase());
-        }
         // The number identifies the step; the link sits on whatever describes
         // it, and on the number only when nothing does.
         let (number, what) = match label {
             Some(label) => (
                 format!("Division {}", d.number),
                 format!(
-                    "<a href=\"{href}\">{}</a>{}",
+                    "<a{class} href=\"{href}\">{}</a>{}",
                     esc(&label),
                     match note {
                         Some(note) => format!("<span class=\"q\">{}{ai_mark}</span>", esc(&note)),
@@ -282,11 +306,9 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
     };
 
     format!(
-        "<li class=\"ledger-series\" data-house=\"{house}\" data-text=\"{text}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary>{bill_line}<ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
+        "<li class=\"ledger-series\" data-house=\"{house}\" data-count=\"{n}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary>{bill_line}<ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
         house = series.house,
-        text = esc_attr(&text),
         title = esc(&title),
-        when = esc(&format_date(series.date)),
         n = series.divisions.len(),
         strip = outcome_strip(&series.divisions),
     )
@@ -328,12 +350,12 @@ fn outcome_strip(divisions: &[&Division]) -> String {
 }
 
 /// Month divider for a dated index: mono-caps month, hairline, count. The
-/// month is a heading, so a long index can be walked a month at a time. The
-/// noun names what is being counted ("division", "bill"); it is pluralised by
-/// appending an s.
+/// month is a heading, so a long index can be walked a month at a time, and
+/// its id is the target the month strip links to. The noun names what is
+/// being counted ("division", "bill"); it is pluralised by appending an s.
 pub fn ledger_month(month: &str, count: usize, noun: &str) -> String {
     format!(
-        "<li class=\"ledger-month\" data-month=\"{key}\"><h2 class=\"m\">{label}</h2><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} {noun}{plural}</span></li>",
+        "<li class=\"ledger-month\" id=\"m-{key}\" data-month=\"{key}\"><h2 class=\"m\">{label}</h2><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">{count} {noun}{plural}</span></li>",
         key = esc_attr(month),
         label = esc(&month_label(month)),
         noun = esc(noun),
@@ -358,14 +380,46 @@ const MONTH_NAMES: [&str; 12] = [
 
 /// "2026-08" -> "August 2026". Unparseable keys pass through unchanged.
 pub fn month_label(month: &str) -> String {
-    let (year, m) = match month.split_once('-') {
-        Some(parts) => parts,
-        None => return month.to_string(),
-    };
-    match m.parse::<usize>() {
-        Ok(n) if (1..=12).contains(&n) => format!("{} {year}", MONTH_NAMES[n - 1]),
-        _ => month.to_string(),
+    match parse_month(month) {
+        Some((year, n)) => format!("{} {year}", MONTH_NAMES[n - 1]),
+        None => month.to_string(),
     }
+}
+
+/// "2026-08" -> "Aug 2026", for the month strip, where sixteen full names
+/// would run to several lines on a phone. Unparseable keys pass through.
+pub fn month_short(month: &str) -> String {
+    match parse_month(month) {
+        Some((year, n)) => format!("{} {year}", &MONTH_NAMES[n - 1][..3]),
+        None => month.to_string(),
+    }
+}
+
+fn parse_month(month: &str) -> Option<(&str, usize)> {
+    let (year, m) = month.split_once('-')?;
+    let n = m.parse::<usize>().ok()?;
+    (1..=12).contains(&n).then_some((year, n))
+}
+
+/// A strip of links to the month dividers of a dated index, newest first, so
+/// a reader can reach March without scrolling past every row since. Each
+/// link counts what its month holds; the filter hides and recounts them with
+/// the dividers. The noun is spelt out for a screen reader only, since the
+/// strip sits right under the filter that names what is listed.
+pub fn month_jump(months: &[(&str, usize)], noun: &str) -> String {
+    let mut out =
+        String::from("<nav class=\"month-jump\" id=\"month-jump\" aria-label=\"Jump to month\">");
+    for (month, count) in months {
+        out.push_str(&format!(
+            "<a href=\"#m-{key}\" data-month=\"{key}\">{label} <span class=\"n\">{count}</span><span class=\"visually-hidden\"> {noun}{plural}</span></a>",
+            key = esc_attr(month),
+            label = esc(&month_short(month)),
+            noun = esc(noun),
+            plural = if *count == 1 { "" } else { "s" },
+        ));
+    }
+    out.push_str("</nav>");
+    out
 }
 
 /// Which chamber a status line such as "Before the Senate" points at.
@@ -577,6 +631,14 @@ mod tests {
     }
 
     #[test]
+    fn short_month_labels_keep_the_year() {
+        assert_eq!(month_short("2026-09"), "Sep 2026");
+        assert_eq!(month_short("2025-05"), "May 2025");
+        assert_eq!(month_short("2026-13"), "2026-13");
+        assert_eq!(month_short("undated"), "undated");
+    }
+
+    #[test]
     fn result_words_use_the_question_terminology() {
         assert_eq!(result_word(DivisionResult::Passed), "Carried");
         assert_eq!(result_word(DivisionResult::Rejected), "Negatived");
@@ -663,6 +725,9 @@ mod tests {
     #[test]
     fn month_divider_counts_agree_with_the_run() {
         let row = ledger_month("2026-07", 1, "division");
+        assert!(
+            row.starts_with("<li class=\"ledger-month\" id=\"m-2026-07\" data-month=\"2026-07\">")
+        );
         assert!(row.contains("July 2026"));
         assert!(row.contains("1 division<"));
         assert!(ledger_month("2026-07", 5, "division").contains("5 divisions<"));

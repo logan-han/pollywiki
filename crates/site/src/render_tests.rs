@@ -446,7 +446,8 @@ fn divisions_index_groups_into_months_that_match_their_runs() {
     assert!(html.contains("id=\"filter-count\""));
     assert!(html.contains("id=\"filter-clear\""));
 
-    // Every month divider reports the number of rows that follow it.
+    // Every month divider reports the number of divisions that follow it: a
+    // plain row is one, and a folded series is as many as its data-count.
     let mut months: Vec<(String, usize)> = Vec::new();
     for chunk in html.split("<li class=\"ledger-month\"").skip(1) {
         let key_start = chunk.find("data-month=\"").expect("month key") + 12;
@@ -457,12 +458,21 @@ fn divisions_index_groups_into_months_that_match_their_runs() {
             .and_then(|s| s.split(' ').next())
             .and_then(|n| n.parse().ok())
             .expect("month count");
-        let rows = chunk
-            .split("<li class=\"ledger-month\"")
-            .next()
-            .unwrap_or(chunk)
-            .matches("<li data-house=")
-            .count();
+        let run = chunk.split("</ul>").next().unwrap_or(chunk);
+        let plain = run.matches("<li data-house=").count();
+        let folded: usize = run
+            .split("<li class=\"ledger-series\"")
+            .skip(1)
+            .map(|entry| {
+                let start = entry.find("data-count=\"").expect("series count") + 12;
+                entry[start..]
+                    .split('"')
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .expect("series count value")
+            })
+            .sum();
+        let rows = plain + folded;
         assert_eq!(claimed, rows, "month {key} claims {claimed} but has {rows}");
         months.push((key.to_string(), rows));
     }
@@ -475,6 +485,132 @@ fn divisions_index_groups_into_months_that_match_their_runs() {
         months.iter().map(|(_, n)| n).sum::<usize>(),
         data.divisions.len()
     );
+}
+
+#[test]
+fn divisions_index_folds_a_days_divisions_on_one_matter_into_a_series() {
+    let data = sample_data();
+    let html = render(&data, &pages::divisions_index(&data));
+    let list = html
+        .split("<ul class=\"ledger\" id=\"division-list\">")
+        .nth(1)
+        .and_then(|s| s.split("</ul>").next())
+        .expect("division list");
+
+    // As on home, one chamber's divisions on one matter in one sitting day
+    // fold into one entry that says how many divisions it stands for, dated
+    // like the plain rows around it: no year under the month divider.
+    assert!(list.contains(
+        "<li class=\"ledger-series\" data-house=\"senate\" data-count=\"3\"><details><summary><span class=\"when\"><time datetime=\"2025-08-05\">5 Aug</time></span>"
+    ));
+    assert!(list.contains(
+        "<li class=\"ledger-series\" data-house=\"representatives\" data-count=\"2\"><details><summary><span class=\"when\"><time datetime=\"2025-08-01\">1 Aug</time></span>"
+    ));
+    // A matter divided on once stays a plain row.
+    assert_eq!(list.matches("<li data-house=").count(), 1);
+
+    // Folding hides no division: each is linked exactly once, from its step
+    // or its row.
+    for d in &data.divisions {
+        let href = format!("href=\"/divisions/{}/{}/\"", d.house, division_key(d));
+        assert_eq!(list.matches(&href).count(), 1, "{href}");
+    }
+
+    // The filter weighs each entry by the divisions it holds, so its counts
+    // stay in divisions.
+    assert!(html.contains("Number(row.dataset.count ?? 1)"));
+
+    // A series answers to its divisions' names and nothing more: the matter,
+    // and the stage that ends each name. A stage link is marked so the filter
+    // can find it; a step labelled by a written description is not, so a
+    // folded matter never matches on words a plain row would not.
+    assert!(html.contains("row.querySelectorAll('.series-steps a.stage')"));
+    let senate = list
+        .split("<li class=\"ledger-series\" data-house=\"senate\"")
+        .nth(1)
+        .and_then(|s| s.split("</details></li>").next())
+        .expect("senate series");
+    assert!(senate.contains(
+        "<span class=\"what\"><a class=\"stage\" href=\"/divisions/senate/2025-08-05-3/\">First Reading</a>"
+    ));
+    assert_eq!(senate.matches("<a class=\"stage\"").count(), 3);
+    let house = list
+        .split("<li class=\"ledger-series\" data-house=\"representatives\"")
+        .nth(1)
+        .and_then(|s| s.split("</details></li>").next())
+        .expect("house series");
+    assert!(house
+        .contains("<span class=\"matter\">Demonstration Data Bill 2025 - Second Reading</span>"));
+    assert!(
+        !house.contains("class=\"stage\""),
+        "a description marked as a name"
+    );
+}
+
+#[test]
+fn a_month_strip_links_every_divider_with_the_same_count() {
+    let data = sample_data();
+    for (page, noun) in [
+        (pages::divisions_index(&data), "division"),
+        (pages::bills_index(&data), "bill"),
+    ] {
+        let html = render(&data, &page);
+        let strip = html
+            .split("<nav class=\"month-jump\" id=\"month-jump\" aria-label=\"Jump to month\">")
+            .nth(1)
+            .and_then(|s| s.split("</nav>").next())
+            .expect("month strip");
+        // The strip comes after the filter's feedback and before the list.
+        let at = |needle: &str| html.find(needle).expect(needle);
+        assert!(at("id=\"filter-empty\"") < at("class=\"month-jump\""));
+        assert!(at("class=\"month-jump\"") < at("<li class=\"ledger-month\""));
+
+        let count_after = |text: &str| -> usize {
+            text.split("<span class=\"n\">")
+                .nth(1)
+                .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse().ok())
+                .expect("a count")
+        };
+        let links: Vec<(String, usize)> = strip
+            .split("<a href=\"#m-")
+            .skip(1)
+            .map(|a| {
+                let key = a.split('"').next().expect("link key");
+                assert!(a.contains(&format!("data-month=\"{key}\"")), "{key}");
+                (key.to_string(), count_after(a))
+            })
+            .collect();
+        let dividers: Vec<(String, usize)> = html
+            .split("<li class=\"ledger-month\" id=\"m-")
+            .skip(1)
+            .map(|li| {
+                let key = li.split('"').next().expect("divider key");
+                assert!(li.contains(&format!("data-month=\"{key}\"")), "{key}");
+                (key.to_string(), count_after(li))
+            })
+            .collect();
+        assert!(dividers.len() >= 2, "{}", page.path);
+        assert_eq!(
+            html.matches("<li class=\"ledger-month\"").count(),
+            dividers.len(),
+            "a divider with no id on {}",
+            page.path
+        );
+        assert_eq!(links, dividers, "{}", page.path);
+
+        // Short month names keep the strip to a few lines on a phone; the
+        // noun is there for a screen reader.
+        assert!(strip.contains(&format!("<span class=\"visually-hidden\"> {noun}")));
+    }
+
+    let divisions = render(&data, &pages::divisions_index(&data));
+    assert!(divisions.contains(
+        "<a href=\"#m-2025-08\" data-month=\"2025-08\">Aug 2025 <span class=\"n\">5</span><span class=\"visually-hidden\"> divisions</span></a>"
+    ));
+    assert!(divisions.contains(
+        "<a href=\"#m-2025-07\" data-month=\"2025-07\">Jul 2025 <span class=\"n\">1</span><span class=\"visually-hidden\"> division</span></a>"
+    ));
 }
 
 #[test]
@@ -685,7 +821,7 @@ fn ledger_rows_split_the_tally_and_drop_the_year_only_under_a_month() {
     // The tally is four pieces the grid lines up as columns, with a space
     // between the words for anyone who hears or copies the row as text.
     assert!(index.contains(
-        "<span class=\"tally\"><span class=\"result-chip carried\">Carried</span> <span class=\"ch\">Senate</span> <span class=\"fig\">2\u{2013}0</span><span class=\"vote-bar\""
+        "<span class=\"tally\"><span class=\"result-chip negatived\">Negatived</span> <span class=\"ch\">House</span> <span class=\"fig\">2\u{2013}2</span><span class=\"vote-bar\""
     ));
 
     // The filter reads each title from the row itself, so the 990 rows carry
@@ -693,13 +829,17 @@ fn ledger_rows_split_the_tally_and_drop_the_year_only_under_a_month() {
     assert!(!index.contains("data-text="));
     assert!(index.contains("row.querySelector('.what')"));
 
-    // Under a month divider every date drops its year; the <time> keeps it.
+    // Under a month divider every date drops its year, a folded series's
+    // as well as a plain row's; the <time> keeps it.
     let whens: Vec<&str> = index
         .split("<span class=\"when\">")
         .skip(1)
         .map(|s| s.split("</span>").next().expect("when end"))
         .collect();
-    assert_eq!(whens.len(), data.divisions.len());
+    let entries = index.matches("<li data-house=").count()
+        + index.matches("<li class=\"ledger-series\"").count();
+    assert_eq!(whens.len(), entries);
+    assert!(entries < data.divisions.len(), "nothing was folded");
     assert!(whens.contains(&"<time datetime=\"2025-08-05\">5 Aug</time>"));
     for when in &whens {
         let shown = when

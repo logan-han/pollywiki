@@ -703,14 +703,24 @@ td.date {
 }
 
 /* Under a month divider the date drops its year, and the title takes the
-   width back. Desktop only: a phone stacks the row instead. */
+   width back; a folded series narrows its date column to match, and what
+   opens under it moves in to the title column. Desktop only: a phone
+   stacks the row instead. */
 @media (min-width: 40.01rem) {
-  #division-list > li:not(.ledger-month) {
+  #division-list > li:not(.ledger-month),
+  #division-list .ledger-series summary {
     grid-template-columns: 3.5rem minmax(0, 1fr) 15rem;
+  }
+
+  #division-list .series-bill,
+  #division-list .series-steps,
+  #division-list .series-credit {
+    padding-left: 4.375rem;
   }
 }
 
-/* Month dividers: mono-caps month, hairline, count. Not a link, not a row. */
+/* Month dividers: mono-caps month, hairline, count. Not a link, not a row,
+   but the target of one in the month strip, landing with a little air. */
 .ledger li.ledger-month,
 .bill-list li.ledger-month {
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -718,6 +728,7 @@ td.date {
   align-items: center;
   padding: 1.3rem 0 0.5rem;
   border-bottom: 0;
+  scroll-margin-top: 1rem;
 }
 
 /* The month is an h2, so a long index can be walked by heading; it keeps
@@ -760,9 +771,20 @@ td.date {
   overflow-clip-margin: 0.375rem;
 }
 
+/* A folded series stands in at its own height: its title runs over a
+   second line of counts, and its padding sits inside the summary, so the
+   size is the whole row. */
+.ledger > li.ledger-series {
+  contain-intrinsic-size: auto 5.4rem;
+}
+
 @media (max-width: 40rem) {
   .ledger > li:not(.ledger-month) {
     contain-intrinsic-size: auto 4.9rem;
+  }
+
+  .ledger > li.ledger-series {
+    contain-intrinsic-size: auto 7.1rem;
   }
 
   .bill-list > li:not(.ledger-month) {
@@ -1465,6 +1487,35 @@ td.date {
   border-color: var(--ink);
 }
 
+/* Month strip: every month of a dated index as a link to its divider, in the
+   divider's mono caps. Each link is padded to a 24px target, so the strip
+   is a list of taps and not a line of prose. */
+.month-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+  margin: 0.6rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.month-jump a {
+  padding: 0.25rem 0;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.month-jump a:hover {
+  color: var(--ink);
+}
+
+.month-jump .n {
+  color: var(--faint);
+}
+
 /* Context cards: AI summaries and TVFY context */
 .context-box {
   background: var(--card);
@@ -1945,6 +1996,7 @@ img.avatar.large {
   .filter-bar,
   .filter-count,
   .filter-empty,
+  .month-jump,
   .site-footer nav,
   .segmented,
   .pills,

@@ -43,9 +43,9 @@ function press(group, key, value) {
 
 // The state goes into the query string a moment after the last change:
 // WebKit throws once a page rewrites its history too often. Parameters the
-// filter does not own are left alone, and so is the hash. A write still
-// waiting when the reader follows a row is made on the way out, so Back
-// returns to the view they left.
+// filter does not own are left alone, and so is the hash, so a link to a
+// month keeps its place. A write still waiting when the reader follows a
+// row is made on the way out, so Back returns to the view they left.
 let urlState = null
 let urlTimer = 0
 
@@ -98,12 +98,18 @@ function doneOnEnter(input) {
   })
 }
 
-// A month row owns every row that follows it up to the next one.
-function monthsOf(items) {
+// A month row owns every row that follows it up to the next one, and its
+// link in the month strip.
+function monthsOf(items, strip) {
   const months = []
   for (const item of items) {
     if (item.dataset.month !== undefined) {
-      months.push({ row: item, rows: [], label: item.querySelector('.n') })
+      months.push({
+        row: item,
+        rows: [],
+        label: item.querySelector('.n'),
+        link: strip?.querySelector(`a[data-month="${item.dataset.month}"]`),
+      })
     } else if (months.length) {
       months[months.length - 1].rows.push(item)
     }
@@ -111,9 +117,16 @@ function monthsOf(items) {
   return months
 }
 
-// A month's divider recounts what it still holds, and drops out once the
-// month is empty.
+// A month's divider and its link in the strip give the same count, and both
+// drop out once the month is empty.
 function recountMonth(month, visible, noun) {
+  const counted = `${noun}${visible === 1 ? '' : 's'}`
   month.row.style.display = visible ? '' : 'none'
-  if (month.label) month.label.textContent = `${visible} ${noun}${visible === 1 ? '' : 's'}`
+  if (month.label) month.label.textContent = `${visible} ${counted}`
+  if (!month.link) return
+  month.link.hidden = !visible
+  const figure = month.link.querySelector('.n')
+  if (figure) figure.textContent = String(visible)
+  const spoken = month.link.querySelector('.visually-hidden')
+  if (spoken) spoken.textContent = ` ${counted}`
 }
