@@ -66,3 +66,11 @@ const params = new URLSearchParams(location.search)
 if (text && params.has('q')) text.value = params.get('q')
 status = press(statusGroup, 'status', params.get('status') ?? '')
 apply()
+
+// Back or Forward between the page's own entries brings back that entry's
+// filter.
+onRestore((params) => {
+  restoreText(text, params.get('q'))
+  status = press(statusGroup, 'status', params.get('status') ?? '')
+  apply()
+})

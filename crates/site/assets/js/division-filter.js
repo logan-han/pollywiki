@@ -82,3 +82,11 @@ const params = new URLSearchParams(location.search)
 if (text && params.has('q')) text.value = params.get('q')
 house = press(houseGroup, 'house', params.get('house') ?? '')
 apply()
+
+// Back or Forward between the page's own entries brings back that entry's
+// filter.
+onRestore((params) => {
+  restoreText(text, params.get('q'))
+  house = press(houseGroup, 'house', params.get('house') ?? '')
+  apply()
+})

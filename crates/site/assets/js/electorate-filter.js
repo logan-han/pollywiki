@@ -41,3 +41,10 @@ clear?.addEventListener('click', () => {
 const params = new URLSearchParams(location.search)
 if (text && params.has('q')) text.value = params.get('q')
 apply()
+
+// Back or Forward between the page's own entries brings back that entry's
+// filter.
+onRestore((params) => {
+  restoreText(text, params.get('q'))
+  apply()
+})

@@ -686,6 +686,21 @@ fn index_filters_keep_their_state_in_the_url_and_match_words_in_any_order() {
             );
         }
 
+        // A link within the page lands any waiting write before it copies
+        // the address into a new entry, and Back or Forward between the
+        // page's own entries brings the view round to the address, dropping
+        // a write meant for the entry just left.
+        assert!(
+            html.contains("if (event.target.closest?.('a[href]')) flushUrl()"),
+            "{path}"
+        );
+        assert!(html.contains("addEventListener('popstate', () => {\n    clearTimeout(urlTimer)\n    urlState = null"), "{path}");
+        assert!(html.contains("onRestore((params) => {"), "{path}");
+        assert!(
+            html.contains("restoreText(text, params.get('q'))"),
+            "{path}"
+        );
+
         // Folded terms in any order, split where the quick search splits a
         // name, and a count that settles before it is announced.
         assert!(html.contains(".normalize('NFD')"), "{path}");

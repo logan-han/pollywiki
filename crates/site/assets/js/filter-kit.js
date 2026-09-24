@@ -1,7 +1,7 @@
 // Shared by the four index filters, inlined ahead of each page's own script.
 // Every index keeps its filter in the query string, so a filtered view can
-// be shared or bookmarked, and a reload, or a Back that misses the page
-// cache, comes back to the same rows.
+// be shared or bookmarked, and a reload, a Back that misses the page cache,
+// or a Back past a month link comes back to the same rows.
 
 // Case, accents and apostrophes drop out, as in the quick search: "veterans'
 // affairs" finds the title APH writes with a curly apostrophe, and 'oneil'
@@ -76,6 +76,41 @@ function flushUrl() {
 }
 
 addEventListener('pagehide', flushUrl)
+
+// A link within the page, the month strip's or the skip link, adds an entry
+// that copies the address as it stands. A write still waiting lands first,
+// or the entry left behind would keep the words from before the last few
+// keystrokes. This listens in the capture phase, ahead of the link's own
+// navigation; a link to another page only has its write made a little
+// sooner than pagehide would.
+document.addEventListener(
+  'click',
+  (event) => {
+    if (event.target.closest?.('a[href]')) flushUrl()
+  },
+  true,
+)
+
+// Back and Forward between this page's own entries, such as a month link and
+// the view before it, change the address without reloading, so the view
+// follows the address. A write still waiting belongs to the entry just left
+// and is dropped rather than stamped on this one. A link within the page
+// fires this too, once its write above has landed, so it reads the view
+// already on screen.
+function onRestore(restore) {
+  addEventListener('popstate', () => {
+    clearTimeout(urlTimer)
+    urlState = null
+    restore(new URLSearchParams(location.search))
+  })
+}
+
+// The box takes the address's words, or empties when it has none, unless it
+// already holds them: the address keeps them trimmed, and a space typed just
+// before a month link stays where the reader put it.
+function restoreText(input, value) {
+  if (input && input.value.trim() !== (value ?? '')) input.value = value ?? ''
+}
 
 // The live count speaks once the reader pauses rather than on every
 // keystroke; the rows themselves change at once.

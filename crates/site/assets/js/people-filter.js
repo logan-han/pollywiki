@@ -92,3 +92,12 @@ if (text && params.has('q')) text.value = params.get('q')
 house = press(houseGroup, 'house', params.get('house') ?? '')
 party = press(partyGroup, 'group', params.get('party') ?? '')
 apply()
+
+// Back or Forward between the page's own entries brings back that entry's
+// filter.
+onRestore((params) => {
+  restoreText(text, params.get('q'))
+  house = press(houseGroup, 'house', params.get('house') ?? '')
+  party = press(partyGroup, 'group', params.get('party') ?? '')
+  apply()
+})
