@@ -1,5 +1,7 @@
 use crate::data::{format_date, SiteData};
 use crate::html::{esc, esc_attr};
+use crate::strip::js_without_comment_lines;
+use std::sync::LazyLock;
 
 pub const DEFAULT_DESCRIPTION: &str = "The Australian federal record, unedited. Parliamentarians, divisions, bills and election results generated from official sources.";
 
@@ -14,12 +16,14 @@ pub const INDEXED_ROBOTS: &str = "index, follow, max-image-preview:large";
 const GTAG_SCRIPT: &str = "\n      window.dataLayer = window.dataLayer || []\n      function gtag() {\n        dataLayer.push(arguments)\n      }\n      gtag('js', new Date())\n      gtag('config', 'G-ZHJ3V1JWPX')\n    ";
 
 // Header behaviour (the quick search and the phone nav row), inlined at the
-// end of every page.
-const QUICK_SEARCH_JS: &str = include_str!("../assets/js/quick-search.js");
+// end of every page. Inlined scripts ship without their comment lines.
+static QUICK_SEARCH_JS: LazyLock<String> =
+    LazyLock::new(|| js_without_comment_lines(include_str!("../assets/js/quick-search.js")));
 
 // Gives a sideways-scrolling table wrapper its tab stop while, and only while,
 // its table overflows. Inlined after the header script on pages with a table.
-const TABLE_SCROLL_JS: &str = include_str!("../assets/js/table-scroll.js");
+static TABLE_SCROLL_JS: LazyLock<String> =
+    LazyLock::new(|| js_without_comment_lines(include_str!("../assets/js/table-scroll.js")));
 
 /// The two latin subsets every page renders text with; the rest load on demand.
 const PRELOAD_FONTS: [&str; 2] = [
@@ -223,11 +227,11 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
         ))
     ));
     out.push_str("</div><nav aria-label=\"About\"><a href=\"/about/\">About</a><a href=\"/about/data-sources/\">Data sources</a><a href=\"/about/methodology/\">Methodology</a><a href=\"/about/corrections/\">Corrections</a><a href=\"/divisions/feed.xml\">Divisions feed</a><a href=\"/bills/feed.xml\">Bills feed</a><a href=\"https://github.com/logan-han/pollywiki\">Source code</a><a href=\"https://han.life/coffee\" target=\"_blank\" rel=\"noopener\">\u{2615} Buy me a coffee</a></nav><p class=\"legal\">Voting data © <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> (ODbL). Election data © AEC (CC BY 4.0). Photos via Wikimedia Commons, credited per page.</p></div></footer><script type=\"module\">");
-    out.push_str(QUICK_SEARCH_JS);
+    out.push_str(&QUICK_SEARCH_JS);
     out.push_str("</script>");
     if page.body.contains("<div class=\"table-scroll\"") {
         out.push_str("<script type=\"module\">");
-        out.push_str(TABLE_SCROLL_JS);
+        out.push_str(&TABLE_SCROLL_JS);
         out.push_str("</script>");
     }
     out.push_str("</body></html>");

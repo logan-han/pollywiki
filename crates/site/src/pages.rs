@@ -16,6 +16,7 @@ use crate::html::{esc, esc_attr};
 use crate::layout::Page;
 use crate::markdown;
 use crate::procedures::procedure_for;
+use crate::strip::js_without_comment_lines;
 use pollywiki_schema::{
     Bill, CandidateResult, Division, Electorate, House, JsNum, Party, Person, SummaryKind, Vote,
 };
@@ -24,25 +25,25 @@ use std::sync::LazyLock;
 
 // One filter script per index page, inlined where the page needs it, each
 // behind the helpers all four share: folded any-order matching, state in the
-// URL, a settled live count.
-const PEOPLE_FILTER_JS: &str = concat!(
-    include_str!("../assets/js/filter-kit.js"),
-    include_str!("../assets/js/people-filter.js")
-);
-const DIVISION_FILTER_JS: &str = concat!(
-    include_str!("../assets/js/filter-kit.js"),
-    include_str!("../assets/js/division-filter.js")
-);
-const BILL_FILTER_JS: &str = concat!(
-    include_str!("../assets/js/filter-kit.js"),
-    include_str!("../assets/js/bill-filter.js")
-);
-const ELECTORATE_FILTER_JS: &str = concat!(
-    include_str!("../assets/js/filter-kit.js"),
-    include_str!("../assets/js/electorate-filter.js")
-);
+// URL, a settled live count. Inlined scripts ship without their comment
+// lines; the commented sources stay in assets/js.
+fn filter_script(page_js: &str) -> String {
+    js_without_comment_lines(&format!(
+        "{}{page_js}",
+        include_str!("../assets/js/filter-kit.js")
+    ))
+}
+static PEOPLE_FILTER_JS: LazyLock<String> =
+    LazyLock::new(|| filter_script(include_str!("../assets/js/people-filter.js")));
+static DIVISION_FILTER_JS: LazyLock<String> =
+    LazyLock::new(|| filter_script(include_str!("../assets/js/division-filter.js")));
+static BILL_FILTER_JS: LazyLock<String> =
+    LazyLock::new(|| filter_script(include_str!("../assets/js/bill-filter.js")));
+static ELECTORATE_FILTER_JS: LazyLock<String> =
+    LazyLock::new(|| filter_script(include_str!("../assets/js/electorate-filter.js")));
 // Pagefind's interface on /search/, labelled, announced and kept in the URL.
-const SEARCH_JS: &str = include_str!("../assets/js/search.js");
+static SEARCH_JS: LazyLock<String> =
+    LazyLock::new(|| js_without_comment_lines(include_str!("../assets/js/search.js")));
 
 /// Live count plus an explicit empty state, shared by the four index pages.
 /// The count element stays in the DOM so its aria-live region is stable; it
@@ -450,7 +451,7 @@ pub fn people_index(data: &SiteData) -> Page {
     const DESCRIPTION: &str =
         "Every sitting member of the Australian House of Representatives and Senate.";
     let mut page = Page::new("People", Some(DESCRIPTION.to_string()), "/people/", body);
-    page.page_script = Some(PEOPLE_FILTER_JS);
+    page.page_script = Some(PEOPLE_FILTER_JS.as_str());
     page.jsonld = Some(jsonld_script(vec![
         collection_page(
             &data.site_url,
@@ -1001,7 +1002,7 @@ pub fn divisions_index(data: &SiteData) -> Page {
         body,
     );
     page.lastmod = newest_division_date(data);
-    page.page_script = Some(DIVISION_FILTER_JS);
+    page.page_script = Some(DIVISION_FILTER_JS.as_str());
     page.jsonld = Some(jsonld_script(vec![
         collection_page(
             &data.site_url,
@@ -1306,7 +1307,7 @@ pub fn bills_index(data: &SiteData) -> Page {
     const DESCRIPTION: &str = "Bills before the Australian federal parliament and their progress.";
     let mut page = Page::new("Bills", Some(DESCRIPTION.to_string()), "/bills/", body);
     page.lastmod = newest_bill_date(data);
-    page.page_script = Some(BILL_FILTER_JS);
+    page.page_script = Some(BILL_FILTER_JS.as_str());
     page.jsonld = Some(jsonld_script(vec![
         collection_page(
             &data.site_url,
@@ -1651,7 +1652,7 @@ pub fn electorates_index(data: &SiteData) -> Page {
         "/electorates/",
         body,
     );
-    page.page_script = Some(ELECTORATE_FILTER_JS);
+    page.page_script = Some(ELECTORATE_FILTER_JS.as_str());
     page.jsonld = Some(jsonld_script(vec![
         collection_page(
             &data.site_url,
@@ -2054,7 +2055,7 @@ pub fn search_page() -> Page {
         "/search/",
         body,
     );
-    page.page_script = Some(SEARCH_JS);
+    page.page_script = Some(SEARCH_JS.as_str());
     // A search box holds no record of its own, and indexed result pages are
     // exactly what search engines ask you not to publish.
     page.robots = Some("noindex, follow");

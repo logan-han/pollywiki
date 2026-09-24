@@ -9,6 +9,7 @@ mod pages;
 mod procedures;
 #[cfg(test)]
 mod render_tests;
+mod strip;
 
 use anyhow::{Context, Result};
 use data::SiteData;
@@ -175,7 +176,9 @@ fn write_assets(out_dir: &Path) -> Result<String> {
         .context("global.css missing from embedded assets")?
         .contents_utf8()
         .context("global.css not utf8")?;
-    let css = format!("{fonts_css}\n{global_css}");
+    // The commented sources stay in assets/; the file every page waits on
+    // ships without them.
+    let css = strip::css_without_comments(&format!("{fonts_css}\n{global_css}"));
     let css_name = format!("site.{:08x}.css", fnv1a(css.as_bytes()) & 0xffff_ffff);
 
     let assets_dir = out_dir.join("_assets");
