@@ -1029,7 +1029,7 @@ fn bill_progress_reads_in_chamber_phases_under_a_labelled_head() {
         format!("<tr class=\"phase\"><th colspan=\"2\" scope=\"rowgroup\">{chip}</th></tr>")
     };
     let expected = format!(
-        "<table class=\"progress\"><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Step</th></tr></thead>\
+        "<table class=\"progress\"><thead data-pagefind-ignore><tr><th scope=\"col\">Date</th><th scope=\"col\">Step</th></tr></thead>\
          <tbody>{}<tr><td class=\"date\">2 Nov 2024</td><td>Introduced</td></tr>\
          <tr><td class=\"date\">1 Dec 2024</td><td>Third reading agreed to</td></tr></tbody>\
          <tbody>{}<tr><td class=\"date\">14 Feb 2025</td><td>Third reading agreed to</td></tr></tbody>\
@@ -1359,6 +1359,144 @@ fn first_preferences_are_shares_of_formal_votes_and_informal_ballots_close_the_t
     let formal_only = render(&data, &pages::electorate_page(&data, &electorate));
     assert!(!first_prefs(&formal_only).contains("<tfoot>"));
     assert!(!formal_only.contains("informal share"));
+}
+
+#[test]
+fn the_search_page_names_its_field_announces_counts_and_keeps_the_query() {
+    let data = sample_data();
+    let html = render(&data, &pages::search_page());
+    // The heading names Pagefind's field, and a status region waits for the
+    // count; the mount itself carries no fixed style.
+    assert!(html.contains("<h1 id=\"search-heading\">Search the record</h1>"));
+    assert!(html.contains(
+        "<p id=\"search-status\" class=\"visually-hidden\" role=\"status\"></p><div id=\"search\"></div>"
+    ));
+    let (_, script) = html.split_once("<div id=\"search\"></div>").expect("mount");
+    let script = &script[..script.find("</main>").expect("main ends")];
+    assert!(script.starts_with("<script type=\"module\">"));
+    for part in [
+        "setAttribute('aria-labelledby', 'search-heading')",
+        "getElementById('search-status')",
+        "processTerm:",
+        "history.replaceState",
+        "ui.triggerSearch(q)",
+    ] {
+        assert!(script.contains(part), "search script lacks {part}");
+    }
+    // The index is loaded ahead of the script that drives it.
+    assert!(
+        html.find("/pagefind/pagefind-ui.js").expect("pagefind ui")
+            < html.find("processTerm").expect("search script")
+    );
+}
+
+#[test]
+fn search_facets_are_each_record_s_type_and_chamber() {
+    let data = sample_data();
+    let opening = |html: &str| -> String {
+        let (_, main) = html
+            .split_once("<main class=\"wrap\" id=\"main\">")
+            .expect("main");
+        main[..=main.find('>').expect("first tag ends")].to_string()
+    };
+    let facets = |kind: &str, chamber: Option<&str>| {
+        match chamber {
+        Some(chamber) => format!("<article data-pagefind-body data-pagefind-filter=\"chamber[data-chamber], type:{kind}\" data-chamber=\"{chamber}\">"),
+        None => format!("<article data-pagefind-body data-pagefind-filter=\"type:{kind}\">"),
+    }
+    };
+    let chamber = |house: House| match house {
+        House::Senate => "Senate",
+        House::Representatives => "House",
+    };
+    for person in &data.people {
+        let html = render(&data, &pages::person_page(&data, person));
+        assert_eq!(
+            opening(&html),
+            facets("Person", Some(chamber(person.house)))
+        );
+    }
+    for division in &data.divisions {
+        let html = render(&data, &pages::division_page(&data, division));
+        assert_eq!(
+            opening(&html),
+            facets("Division", Some(chamber(division.house)))
+        );
+    }
+    for bill in &data.bills {
+        let html = render(&data, &pages::bill_page(&data, bill));
+        assert_eq!(opening(&html), facets("Bill", Some(chamber(bill.chamber))));
+    }
+    for electorate in &data.electorates {
+        let html = render(&data, &pages::electorate_page(&data, electorate));
+        assert_eq!(opening(&html), facets("Electorate", None));
+    }
+    for party in &data.parties {
+        let html = render(&data, &pages::party_page(&data, party));
+        assert_eq!(opening(&html), facets("Party", None));
+    }
+    // Those are the only filters: a seat is not a chamber.
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        assert!(
+            html.matches("data-pagefind-filter").count() <= 1,
+            "a second filter on {}",
+            page.path
+        );
+    }
+}
+
+#[test]
+fn search_excerpts_skip_labels_and_keep_words_apart() {
+    let data = sample_data();
+    for page in all_pages(&data) {
+        let html = render(&data, &page);
+        let Some((_, article)) = html.split_once("<article data-pagefind-body") else {
+            continue;
+        };
+        // Column headers and context labels read as one run-together word
+        // in an excerpt; the index leaves them out.
+        assert_eq!(
+            article.matches("<thead").count(),
+            article.matches("<thead data-pagefind-ignore>").count(),
+            "an indexed table head on {}",
+            page.path
+        );
+        assert_eq!(
+            article.matches("class=\"context-top\"").count(),
+            article
+                .matches("class=\"context-top\" data-pagefind-ignore>")
+                .count(),
+            "an indexed context label on {}",
+            page.path
+        );
+        assert!(
+            !article.contains("<span class=\"avatar initials\" aria-hidden=\"true\">"),
+            "indexed initials on {}",
+            page.path
+        );
+    }
+
+    // Side-by-side spans in a flex row show no space, but an excerpt joins
+    // their words unless the markup has one.
+    let rossi = data.person_by_slug("morgan-rossi").expect("sample senator");
+    let html = render(&data, &pages::person_page(&data, rossi));
+    assert!(html.contains(
+        "<span class=\"chip senate\">Senate</span> <span>Senator for Tasmania</span> <span>· since"
+    ));
+    assert!(html.contains("data-pagefind-ignore>MR</span>"));
+    let bill = data.bill_by_id("sample-1").expect("sample bill");
+    let html = render(&data, &pages::bill_page(&data, bill));
+    assert!(html.contains(
+        "<span class=\"chip house\">House</span> sample-1</span> <span class=\"status\"><span class=\"label\">Status</span> <span class=\"value\">"
+    ));
+    let division = &data.divisions[0];
+    let html = render(&data, &pages::division_page(&data, division));
+    assert!(html.contains("</span> Division "));
+    assert!(html.contains("</strong> <span class=\"figures\">"));
+    let party = &data.parties[0];
+    let html = render(&data, &pages::party_page(&data, party));
+    assert!(html.contains("</span> <span class=\"sub\">"));
 }
 
 #[test]
@@ -2103,9 +2241,11 @@ fn every_page_opens_with_a_masthead_or_a_record_head() {
         let (_, main) = html
             .split_once("<main class=\"wrap\" id=\"main\">")
             .expect("main");
-        let top = main
-            .strip_prefix("<article data-pagefind-body>")
-            .unwrap_or(main);
+        // A record page opens its indexed article first, filters and all.
+        let top = match main.strip_prefix("<article data-pagefind-body") {
+            Some(rest) => &rest[rest.find('>').expect("article tag ends") + 1..],
+            None => main,
+        };
         // The page-top space lives in these three openers; a bare h1 would
         // sit against the header rule.
         assert!(
@@ -2607,7 +2747,7 @@ fn a_sitting_day_lists_every_division_with_this_one_marked() {
     // the others link to their pages.
     assert_eq!(day.matches("aria-current=\"true\"").count(), 1);
     assert!(day.contains(&format!(
-        "<li data-house=\"senate\" aria-current=\"true\"><span class=\"when\">Division 4</span><span class=\"what\">{}</span>",
+        "<li data-house=\"senate\" aria-current=\"true\"><span class=\"when\">Division 4</span> <span class=\"what\">{}</span>",
         division.name
     )));
     assert!(!day.contains("/divisions/senate/2025-08-05-4/"));

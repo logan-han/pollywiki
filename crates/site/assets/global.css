@@ -1583,9 +1583,133 @@ th[scope='rowgroup'] {
 }
 
 /* Pagefind's field on /search/ sits where the filter bar sits on the other
-   indexes, the same step below the masthead. */
+   indexes, the same step below the masthead, drawn in the site's own
+   system. Its custom properties are set here on the mount so they win over
+   the :root of pagefind-ui.css, which loads later, and follow the dark
+   remap with every other token. The rules after it carry the id so they
+   beat Pagefind's .svelte-* pairs; they track Pagefind UI's markup, so
+   check them again on a Pagefind upgrade. */
 #search {
   margin-top: 1.2rem;
+  --pagefind-ui-scale: 0.8;
+  --pagefind-ui-primary: var(--ink);
+  --pagefind-ui-text: var(--ink);
+  --pagefind-ui-background: var(--field);
+  --pagefind-ui-border: var(--hair);
+  --pagefind-ui-tag: var(--panel);
+  --pagefind-ui-border-width: 1px;
+  --pagefind-ui-border-radius: 4px;
+  --pagefind-ui-font: var(--sans);
+}
+
+/* Pagefind's reset puts the browser's own ring back; this restores ours. */
+#search :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The field: a filter-bar input at the full body size, which also keeps
+   iOS from zooming on focus. */
+#search .pagefind-ui__search-input {
+  height: 2.6rem;
+  font-size: 1rem;
+  font-weight: 400;
+  border-color: var(--hair-strong);
+  color: var(--ink);
+}
+
+#search .pagefind-ui__search-input::placeholder {
+  color: var(--faint);
+  opacity: 1;
+}
+
+/* The magnifier, centred on the shorter field. */
+#search .pagefind-ui__form::before {
+  top: calc(1.3rem - 7.2px);
+}
+
+#search .pagefind-ui__search-clear {
+  height: calc(2.6rem - 6px);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Result count and facet names: the mono caps label voice of a th. */
+#search .pagefind-ui__message,
+#search .pagefind-ui__filter-name {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+#search .pagefind-ui__filter-label {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+#search .pagefind-ui__filter-block {
+  border-bottom: 1px solid var(--hair);
+}
+
+/* A ticked box fills with ink; its tick is paper, so it shows in either
+   scheme rather than white on the dark scheme's pale ink. */
+#search .pagefind-ui__filter-value::before {
+  border-color: var(--paper);
+}
+
+/* Results read as ledger rows: hairline, sans title link, muted excerpt. */
+#search .pagefind-ui__result {
+  padding: 0.9rem 0 1rem;
+  border-color: var(--hair);
+}
+
+#search .pagefind-ui__result:first-of-type {
+  border-top-color: var(--hair-strong);
+}
+
+#search .pagefind-ui__result-title {
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+#search .pagefind-ui__result-title .pagefind-ui__result-link {
+  text-decoration: underline;
+  text-decoration-color: var(--hair-strong);
+  text-underline-offset: 3px;
+}
+
+#search .pagefind-ui__result-title .pagefind-ui__result-link:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
+#search .pagefind-ui__result-excerpt {
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+#search mark {
+  background: var(--banner);
+  color: var(--ink);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
+#search .pagefind-ui__button {
+  font-size: 0.8125rem;
+  font-weight: 400;
+  border-color: var(--hair-strong);
+  border-radius: 999px;
+  height: auto;
+  padding: 5px 14px;
+  width: auto;
 }
 
 /* iOS Safari zooms any field under 16px on focus and leaves the page zoomed.

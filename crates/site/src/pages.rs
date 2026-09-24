@@ -41,6 +41,8 @@ const ELECTORATE_FILTER_JS: &str = concat!(
     include_str!("../assets/js/filter-kit.js"),
     include_str!("../assets/js/electorate-filter.js")
 );
+// Pagefind's interface on /search/, labelled, announced and kept in the URL.
+const SEARCH_JS: &str = include_str!("../assets/js/search.js");
 
 /// Live count plus an explicit empty state, shared by the four index pages.
 /// The count element stays in the DOM so its aria-live region is stable; it
@@ -63,6 +65,21 @@ fn table_scroll(label: &str) -> String {
         "<div class=\"table-scroll\" role=\"region\" aria-label=\"{}\">",
         esc_attr(label)
     )
+}
+
+/// Opens a record page: the article Pagefind indexes, carrying the facts
+/// /search/ offers as filters. Type says what kind of record it is; chamber
+/// is given only where the record belongs to one. Pagefind takes a literal
+/// `key:value` only as the last filter in its attribute, so the chamber is
+/// read by reference from an attribute of its own.
+fn record_article(kind: &str, chamber: Option<House>) -> String {
+    match chamber {
+        Some(house) => format!(
+            "<article data-pagefind-body data-pagefind-filter=\"chamber[data-chamber], type:{kind}\" data-chamber=\"{}\">",
+            chamber_word(house)
+        ),
+        None => format!("<article data-pagefind-body data-pagefind-filter=\"type:{kind}\">"),
+    }
 }
 
 /// JSON-LD for a <script> block. Angle brackets are escaped so no title can
@@ -530,27 +547,26 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         .collect();
 
     let mut body = String::new();
-    body.push_str("<article data-pagefind-body>");
+    body.push_str(&record_article("Person", Some(person.house)));
     body.push_str("<div class=\"profile-head\">");
     body.push_str(&avatar(person, true));
     body.push_str("<div><div class=\"meta-row\"><span class=\"ids\">");
+    // The spaces between the identifiers cost nothing in the inline-flex
+    // row; they keep the words apart in search excerpts and when copied.
     body.push_str(&chamber_chip(person.house));
-    body.push_str(&format!(
-        "<span data-pagefind-filter=\"chamber\">{}</span>",
-        esc(&seat)
-    ));
+    body.push_str(&format!(" <span>{}</span>", esc(&seat)));
     match (&person.since, &person.until) {
         (Some(since), Some(until)) => body.push_str(&format!(
-            "<span>· {} to {}</span>",
+            " <span>· {} to {}</span>",
             esc(&format_date(since)),
             esc(&format_date(until))
         )),
         (Some(since), None) => body.push_str(&format!(
-            "<span>· since {}</span>",
+            " <span>· since {}</span>",
             esc(&format_date(since))
         )),
         (None, Some(until)) => body.push_str(&format!(
-            "<span>· until {}</span>",
+            " <span>· until {}</span>",
             esc(&format_date(until))
         )),
         (None, None) => {}
@@ -560,23 +576,25 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         "<h1 data-pagefind-meta=\"title\">{}</h1>",
         esc(&person.name)
     ));
+    // As in the meta row, a space before each item keeps them apart in an
+    // excerpt at no cost to the flex line.
     body.push_str("<div class=\"meta-line\">");
     body.push_str(&group_chip(data, &person.group_slug, &person.group, true));
     if let Some(e) = electorate {
         body.push_str(&format!(
-            "<a href=\"/electorates/{}/\">Electorate profile</a>",
+            " <a href=\"/electorates/{}/\">Electorate profile</a>",
             e.slug
         ));
     }
     if let Some(wikipedia) = &person.links.wikipedia {
         body.push_str(&format!(
-            "<a href=\"{}\">Wikipedia</a>",
+            " <a href=\"{}\">Wikipedia</a>",
             esc_attr(wikipedia)
         ));
     }
     if person.ids.tvfy.is_some() {
         body.push_str(&format!(
-            "<a href=\"https://theyvoteforyou.org.au/people/{}/{}\">They Vote For You</a>",
+            " <a href=\"https://theyvoteforyou.org.au/people/{}/{}\">They Vote For You</a>",
             person.house,
             person.electorate.as_deref().unwrap_or("")
         ));
@@ -594,16 +612,16 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if let Some(stats) = stats.filter(|s| s.divisions_eligible > 0) {
         body.push_str("<div class=\"stat-strip\">");
         body.push_str(&format!(
-            "<div class=\"stat\"><span class=\"n\"><a href=\"#voting-record\">{} / {}</a></span><span class=\"l\">divisions voted in this parliament</span></div>",
+            "<div class=\"stat\"><span class=\"n\"><a href=\"#voting-record\">{} / {}</a></span> <span class=\"l\">divisions voted in this parliament</span></div>",
             stats.divisions_voted, stats.divisions_eligible
         ));
         body.push_str(&format!(
-            "<div class=\"stat\"><span class=\"n\">{}</span><span class=\"l\">votes against their party's majority position</span></div>",
+            "<div class=\"stat\"><span class=\"n\">{}</span> <span class=\"l\">votes against their party's majority position</span></div>",
             stats.against_group_majority
         ));
         if let Some(years) = &service_years {
             body.push_str(&format!(
-                "<div class=\"stat\"><span class=\"n\">{years}</span><span class=\"l\">years in federal parliament</span></div>"
+                "<div class=\"stat\"><span class=\"n\">{years}</span> <span class=\"l\">years in federal parliament</span></div>"
             ));
         }
         body.push_str("</div>");
@@ -635,7 +653,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     }
 
     if let Some(note) = &person.ai_note {
-        body.push_str("<aside class=\"context-box\"><div class=\"context-top\"><span class=\"context-head\">Voting record in brief</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
+        body.push_str("<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">Voting record in brief</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
         body.push_str(&data.link_bill_titles(&note.text));
         body.push_str("</p></div><div class=\"context-credit\">Written by AI from the voting record below; describes subjects and votes, never merit. May contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>");
     }
@@ -681,7 +699,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
 
         if !background.qualifications.is_empty() {
             body.push_str(&table_scroll("Qualifications"));
-            body.push_str("<table><thead><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
+            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
             for q in &background.qualifications {
                 let parsed = parse_qualification(q);
                 body.push_str(&format!(
@@ -703,7 +721,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             let has_period = rows.iter().any(|o| !o.period.is_empty());
             body.push_str("<h3>Occupations before parliament</h3>");
             body.push_str(&table_scroll("Occupations before parliament"));
-            body.push_str("<table><thead><tr><th scope=\"col\">Role</th>");
+            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th>");
             if has_org {
                 body.push_str("<th scope=\"col\">Organisation</th>");
             }
@@ -749,7 +767,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         rows.sort_by_key(|(p, _)| p.to.is_some());
         body.push_str("<h2 id=\"positions\">Positions held</h2>");
         body.push_str(&table_scroll("Positions held"));
-        body.push_str("<table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
         for (pos, ministries) in &rows {
             body.push_str(&format!(
                 "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
@@ -778,7 +796,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if let Some(elections) = elections {
         body.push_str("<h2 id=\"elections\">Election history</h2>");
         body.push_str(&table_scroll("Election history"));
-        body.push_str("<table><thead><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for e in elections {
             // A seat abolished at a redistribution has no page of its own; the
             // contest stays on the record as plain text.
@@ -806,7 +824,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if !raised.is_empty() {
         body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
         body.push_str(&table_scroll("Bills raised"));
-        body.push_str("<table><thead><tr><th scope=\"col\">Bill</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Bill</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
         for r in &raised {
             body.push_str(&format!(
                 "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td></tr>",
@@ -832,7 +850,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             if votes.len() == 1 { "" } else { "s" }
         ));
         body.push_str(&table_scroll("Voting record"));
-        body.push_str("<table class=\"vote-record\"><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Division</th><th scope=\"col\">Vote</th><th scope=\"col\">Result</th></tr></thead>");
+        body.push_str("<table class=\"vote-record\"><thead data-pagefind-ignore><tr><th scope=\"col\">Date</th><th scope=\"col\">Division</th><th scope=\"col\">Vote</th><th scope=\"col\">Result</th></tr></thead>");
         fn month_of<'v>(vote: &data::PersonVote<'v>) -> &'v str {
             vote.division.date.get(..7).unwrap_or("")
         }
@@ -1042,11 +1060,11 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
     };
 
     let mut body = String::new();
-    body.push_str("<article data-pagefind-body>");
+    body.push_str(&record_article("Division", Some(division.house)));
     body.push_str("<div class=\"meta-row\"><span class=\"ids\">");
     body.push_str(&chamber_chip(division.house));
     body.push_str(&format!(
-        "Division {} · {}",
+        " Division {} · {}",
         division.number,
         esc(&format_date(&division.date))
     ));
@@ -1057,7 +1075,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         esc(&division.name)
     ));
     body.push_str(&format!(
-        "<div class=\"result-line\"><strong>{}</strong><span class=\"figures\">{} aye · {} no</span>{}</div>",
+        "<div class=\"result-line\"><strong>{}</strong> <span class=\"figures\">{} aye · {} no</span>{}</div>",
         result_word(division.result),
         division.ayes,
         division.noes,
@@ -1070,7 +1088,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         .as_deref()
         .unwrap_or("https://theyvoteforyou.org.au");
     if let Some(html) = &summary_html {
-        body.push_str("<aside class=\"context-box\"><div class=\"context-top\"><span class=\"context-head\">What this vote was about</span></div><div class=\"context-body\">");
+        body.push_str("<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">What this vote was about</span></div><div class=\"context-body\">");
         body.push_str(html);
         body.push_str(&format!(
             "</div><div class=\"context-credit\">Context written by <a href=\"{}\">They Vote For You</a> volunteers (ODbL), reproduced unchanged.</div></aside>",
@@ -1079,7 +1097,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
     }
 
     if let Some(ai) = &division.ai_summary {
-        body.push_str("<aside class=\"context-box\"><div class=\"context-top\"><span class=\"context-head\">What this vote was about</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
+        body.push_str("<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">What this vote was about</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
         body.push_str(&data.link_bill_titles(&ai.text));
         body.push_str(&format!(
             "</p></div><div class=\"context-credit\">Written by AI from the <a href=\"{}\">official record</a>; may contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>",
@@ -1109,7 +1127,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
 
     body.push_str("<h2>By party</h2>");
     body.push_str(&table_scroll("By party"));
-    body.push_str("<table><thead><tr><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Aye</th><th class=\"num\" scope=\"col\">No</th></tr></thead><tbody>");
+    body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Aye</th><th class=\"num\" scope=\"col\">No</th></tr></thead><tbody>");
     for row in &breakdown {
         body.push_str(&format!(
             "<tr><td>{}</td><td class=\"{}\">{}</td><td class=\"{}\">{}</td></tr>",
@@ -1407,12 +1425,13 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     };
 
     let mut body = String::new();
-    body.push_str("<article data-pagefind-body>");
+    body.push_str(&record_article("Bill", Some(bill.chamber)));
     body.push_str("<div class=\"meta-row\"><span class=\"ids\">");
     body.push_str(&chamber_chip(bill.chamber));
+    body.push(' ');
     body.push_str(&esc(&bill.id));
     body.push_str(
-        "</span><span class=\"status\"><span class=\"label\">Status</span><span class=\"value\">",
+        "</span> <span class=\"status\"><span class=\"label\">Status</span> <span class=\"value\">",
     );
     body.push_str(&esc(&bill.status));
     body.push_str("</span>");
@@ -1431,11 +1450,11 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     if has_meta_line {
         body.push_str("<div class=\"meta-line\">");
         if let Some(t) = &bill.bill_type {
-            body.push_str(&format!("<span>{}</span>", esc(t)));
+            body.push_str(&format!(" <span>{}</span>", esc(t)));
         }
         if let Some(portfolio) = &bill.portfolio {
             body.push_str(&format!(
-                "<span><strong>Portfolio:</strong> {}</span>",
+                " <span><strong>Portfolio:</strong> {}</span>",
                 esc(portfolio)
             ));
         }
@@ -1458,13 +1477,13 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         };
         if !bill.sponsors.is_empty() {
             body.push_str(&format!(
-                "<span><strong>Sponsor{}:</strong> {}</span>",
+                " <span><strong>Sponsor{}:</strong> {}</span>",
                 if bill.sponsors.len() > 1 { "s" } else { "" },
                 raiser_links(&bill.sponsors)
             ));
         } else if !bill.movers.is_empty() {
             body.push_str(&format!(
-                "<span><strong>Introduced by</strong> {}</span>",
+                " <span><strong>Introduced by</strong> {}</span>",
                 raiser_links(&bill.movers)
             ));
         }
@@ -1506,7 +1525,7 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
 
     if let Some(ai) = &bill.ai_summary {
         body.push_str(&format!(
-            "<aside class=\"context-box\"><div class=\"context-top\"><span class=\"context-head\">What this bill is about</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>{}</p></div><div class=\"context-credit\">Written by AI to explain the official summary in plain terms; specifics come from that summary only. May contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>",
+            "<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">What this bill is about</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>{}</p></div><div class=\"context-credit\">Written by AI to explain the official summary in plain terms; specifics come from that summary only. May contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>",
             esc(&ai.text)
         ));
     }
@@ -1514,7 +1533,7 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     if !bill.timeline.is_empty() {
         body.push_str("<h2>Progress</h2>");
         body.push_str(&table_scroll("Progress"));
-        body.push_str("<table class=\"progress\"><thead><tr><th scope=\"col\">Date</th><th scope=\"col\">Step</th></tr></thead>");
+        body.push_str("<table class=\"progress\"><thead data-pagefind-ignore><tr><th scope=\"col\">Date</th><th scope=\"col\">Step</th></tr></thead>");
         body.push_str(&progress_phases(bill));
         body.push_str("</table></div>");
     }
@@ -1652,7 +1671,7 @@ pub fn electorates_index(data: &SiteData) -> Page {
 /// Both result tables on an electorate page open with one head and one set
 /// of columns, so the deciding count and the first preferences under it
 /// read down the same grid.
-const RESULT_HEAD: &str = "<colgroup><col class=\"cand\"><col class=\"party\"><col class=\"votes\"><col class=\"pct\"><col class=\"swing\"></colgroup><thead><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead>";
+const RESULT_HEAD: &str = "<colgroup><col class=\"cand\"><col class=\"party\"><col class=\"votes\"><col class=\"pct\"><col class=\"swing\"></colgroup><thead data-pagefind-ignore><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead>";
 
 /// Votes as a percentage of a total, or nothing of nothing.
 fn share(votes: i64, total: i64) -> f64 {
@@ -1699,7 +1718,7 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
     let tcp_total: i64 = tcp.iter().map(|c| c.votes).sum();
 
     let mut body = String::new();
-    body.push_str("<article data-pagefind-body>");
+    body.push_str(&record_article("Electorate", None));
     body.push_str(&format!(
         "<div class=\"masthead\"><h1 data-pagefind-meta=\"title\">{}</h1><p class=\"motto\">Federal electorate · {}</p></div>",
         esc(&electorate.name),
@@ -1928,7 +1947,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     let senate_seats = party.seats.as_ref().map(|s| s.senate).unwrap_or(0);
 
     let mut body = String::new();
-    body.push_str("<article data-pagefind-body>");
+    body.push_str(&record_article("Party", None));
     body.push_str(&format!(
         "<div class=\"masthead\"><h1 data-pagefind-meta=\"title\">{}</h1><p class=\"motto\">{} House {} · {} Senate {}</p></div>",
         group_chip(data, &party.slug, &party.name, false),
@@ -1973,7 +1992,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     if !leadership.is_empty() {
         body.push_str("<h2>Parliamentary leadership</h2>");
         body.push_str(&table_scroll("Parliamentary leadership"));
-        body.push_str("<table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Member</th><th class=\"num\" scope=\"col\">Since</th></tr></thead><tbody>");
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th><th scope=\"col\">Member</th><th class=\"num\" scope=\"col\">Since</th></tr></thead><tbody>");
         for l in &leadership {
             body.push_str(&format!(
                 "<tr><td>{}</td><td><a href=\"/people/{}/\">{}</a></td>{}</tr>",
@@ -2023,14 +2042,9 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
 }
 
 pub fn search_page() -> Page {
-    // Pagefind renders its own input, so a ?q= term has to be poured in after
-    // init and announced with an input event for the UI to run the query.
-    const SEARCH_INLINE_JS: &str = "\n    window.addEventListener('DOMContentLoaded', () => {\n      if (typeof PagefindUI !== 'undefined') {\n        new PagefindUI({ element: '#search', showSubResults: false, showImages: false })\n        const input = document.querySelector('#search input')\n        if (input) {\n          const q = new URLSearchParams(location.search).get('q')\n          if (q) {\n            input.value = q\n            input.dispatchEvent(new Event('input', { bubbles: true }))\n          }\n          input.focus()\n        }\n      } else {\n        document.getElementById('search').textContent =\n          'Search index not built. Run the full build to generate it.'\n      }\n    })\n  ";
     let mut body = String::new();
-    body.push_str("<div class=\"masthead\"><h1>Search the record</h1><p class=\"lede\">People, divisions, bills, electorates and parties.</p></div>");
-    body.push_str("<link href=\"/pagefind/pagefind-ui.css\" rel=\"stylesheet\"><script src=\"/pagefind/pagefind-ui.js\"></script><div id=\"search\"></div><script>");
-    body.push_str(SEARCH_INLINE_JS);
-    body.push_str("</script>");
+    body.push_str("<div class=\"masthead\"><h1 id=\"search-heading\">Search the record</h1><p class=\"lede\">People, divisions, bills, electorates and parties.</p></div>");
+    body.push_str("<link href=\"/pagefind/pagefind-ui.css\" rel=\"stylesheet\"><script src=\"/pagefind/pagefind-ui.js\"></script><p id=\"search-status\" class=\"visually-hidden\" role=\"status\"></p><div id=\"search\"></div>");
     let mut page = Page::new(
         "Search",
         Some(
@@ -2040,6 +2054,7 @@ pub fn search_page() -> Page {
         "/search/",
         body,
     );
+    page.page_script = Some(SEARCH_JS);
     // A search box holds no record of its own, and indexed result pages are
     // exactly what search engines ask you not to publish.
     page.robots = Some("noindex, follow");

@@ -37,7 +37,7 @@ pub fn avatar(person: &Person, large: bool) -> String {
                 .take(2)
                 .collect();
             format!(
-                "<span class=\"{class}\" aria-hidden=\"true\">{initials}</span>",
+                "<span class=\"{class}\" aria-hidden=\"true\" data-pagefind-ignore>{initials}</span>",
                 class = if large {
                     "avatar initials large"
                 } else {
@@ -149,8 +149,9 @@ pub fn sitting_day_row(division: &Division, current: bool) -> String {
 }
 
 /// The tally splits into outcome, chamber, figures and bar so each lines up
-/// down the ledger as a column. The spaces between the spans cost nothing in
-/// the grid; they keep the words apart when read aloud or copied. The row
+/// down the ledger as a column. The spaces between the spans, the date, title
+/// and tally's included, cost nothing in the grid; they keep the words apart
+/// when read aloud, copied or quoted in a search excerpt. The row
 /// carries no lower-cased copy of its title for the filter: the script reads
 /// the title itself, which spares the index a fifth of its weight. The label
 /// is what the title column shows; a current row shows it unlinked.
@@ -173,7 +174,7 @@ fn ledger_li(division: &Division, when: &str, label: &str, current: bool) -> Str
         )
     };
     format!(
-        "<li data-house=\"{house}\"{attrs}><span class=\"when\">{when}</span><span class=\"what\">{what}</span><span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
+        "<li data-house=\"{house}\"{attrs}><span class=\"when\">{when}</span> <span class=\"what\">{what}</span> <span class=\"tally\">{chip} <span class=\"ch\">{chamber}</span> <span class=\"fig\">{ayes}\u{2013}{noes}</span>{bar}</span></li>",
         house = division.house,
         chip = result_chip(division.result),
         ayes = division.ayes,
@@ -558,7 +559,7 @@ pub fn person_card(data: &SiteData, person: &Person) -> String {
         None => seat,
     };
     format!(
-        "<a class=\"person-card\" href=\"/people/{slug}/\">{avatar}<span class=\"name\">{name}</span><span class=\"sub\">{sub}</span></a>",
+        "<a class=\"person-card\" href=\"/people/{slug}/\">{avatar}<span class=\"name\">{name}</span> <span class=\"sub\">{sub}</span></a>",
         slug = person.slug,
         avatar = avatar(person, false),
         name = esc(&person.name),
