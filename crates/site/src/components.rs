@@ -61,20 +61,36 @@ pub fn chamber_chip(house: House) -> String {
 pub const GROUP_FALLBACK_COLOUR: &str = "#6e7b74";
 
 pub fn group_chip(data: &SiteData, group_slug: &str, group: &str, link: bool) -> String {
+    let label = data
+        .party_by_slug(group_slug)
+        .map(|p| p.name.as_str())
+        .unwrap_or(group);
+    group_chip_labelled(data, group_slug, label, "", link)
+}
+
+/// The group chip under a label the caller chooses, with `extra_html`, markup
+/// the caller has already escaped, inside the chip after the label. Every vote
+/// heads each party's names this way, with the party's code and a count.
+pub fn group_chip_labelled(
+    data: &SiteData,
+    group_slug: &str,
+    label: &str,
+    extra_html: &str,
+    link: bool,
+) -> String {
     let party = data.party_by_slug(group_slug);
     let colour = party
         .and_then(|p| p.colour.as_deref())
         .unwrap_or(GROUP_FALLBACK_COLOUR);
-    let label = party.map(|p| p.name.as_str()).unwrap_or(group);
     // A group with no sitting members has no page, so the chip stays plain.
     if link && party.is_some() {
         format!(
-            "<a class=\"group-chip\" href=\"/parties/{group_slug}/\"><span class=\"dot\" style=\"background:{colour}\" aria-hidden=\"true\"></span>{}</a>",
+            "<a class=\"group-chip\" href=\"/parties/{group_slug}/\"><span class=\"dot\" style=\"background:{colour}\" aria-hidden=\"true\"></span>{}{extra_html}</a>",
             esc(label),
         )
     } else {
         format!(
-            "<span class=\"group-chip\"><span class=\"dot\" style=\"background:{colour}\" aria-hidden=\"true\"></span>{}</span>",
+            "<span class=\"group-chip\"><span class=\"dot\" style=\"background:{colour}\" aria-hidden=\"true\"></span>{}{extra_html}</span>",
             esc(label),
         )
     }
@@ -350,7 +366,7 @@ fn series_li(data: &SiteData, series: &DivisionSeries, when: &str, describe: boo
     };
 
     format!(
-        "<li class=\"ledger-series\" data-house=\"{house}\" data-count=\"{n}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title}</span><span class=\"series-note\">{n} divisions \u{b7} {carried} carried \u{b7} {negatived} negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary>{bill_line}<ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
+        "<li class=\"ledger-series\" data-house=\"{house}\" data-count=\"{n}\"><details><summary><span class=\"when\">{when}</span><span class=\"what\"><span class=\"matter\">{title}</span><span class=\"series-note\">{n}\u{a0}divisions \u{b7} {carried}\u{a0}carried \u{b7} {negatived}\u{a0}negatived</span></span><span class=\"tally\">{strip} <span class=\"ch\">{chamber}</span></span></summary>{bill_line}<ol class=\"series-steps\">{steps}</ol>{credit}</details></li>",
         house = series.house,
         title = esc(&title),
         n = series.divisions.len(),

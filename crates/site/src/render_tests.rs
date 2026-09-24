@@ -232,6 +232,37 @@ fn the_quick_search_placeholder_fits_a_phone_but_the_name_stays_whole() {
 }
 
 #[test]
+fn index_filter_placeholders_fit_a_phone() {
+    let data = sample_data();
+    // At 16px a 320px screen leaves each filter field about 250px, which
+    // holds some 31 characters of placeholder; the field's name says the rest.
+    for page in [
+        pages::people_index(&data),
+        pages::divisions_index(&data),
+        pages::bills_index(&data),
+        pages::electorates_index(&data),
+    ] {
+        let html = render(&data, &page);
+        let field = html
+            .split("<div class=\"filter-bar\">")
+            .nth(1)
+            .and_then(|bar| bar.split("<input type=\"search\"").nth(1))
+            .unwrap_or_else(|| panic!("no filter field on {}", page.path));
+        let placeholder = field
+            .split("placeholder=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or_else(|| panic!("no placeholder on {}", page.path));
+        assert!(
+            placeholder.chars().count() <= 31,
+            "{placeholder:?} is cut off at 320px on {}",
+            page.path
+        );
+        assert!(field.contains("aria-label=\"Filter "), "{}", page.path);
+    }
+}
+
+#[test]
 fn the_quick_search_is_a_labelled_search_form_that_works_without_script() {
     let data = sample_data();
     for page in [pages::home(&data), pages::search_page()] {
@@ -358,7 +389,8 @@ fn home_folds_a_days_divisions_on_one_matter_into_a_series() {
     assert!(senate.contains(
         "<span class=\"matter\">Bills — Sex Discrimination Amendment (Restoring Common Sense and Recognising Biological Sex) Bill 2026</span>"
     ));
-    assert!(senate.contains("3 divisions · 1 carried · 2 negatived"));
+    // Each count keeps its noun where the note wraps.
+    assert!(senate.contains("3\u{a0}divisions · 1\u{a0}carried · 2\u{a0}negatived"));
     let order: Vec<usize> = ["Division 3<", "Division 4<", "Division 5<"]
         .iter()
         .map(|needle| senate.find(needle).expect(needle))
@@ -993,7 +1025,7 @@ fn bills_index_labels_its_columns_and_keys_the_dots_before_the_rows() {
     // data-status, so the filter script skips it, and it is hidden from
     // assistive tech, which reads each row's own labels instead.
     assert!(html.contains(
-        "<ul class=\"bill-list\" id=\"bill-rows\"><li class=\"bill-head\" aria-hidden=\"true\"><span>Moved</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li><li class=\"ledger-month\""
+        "<ul class=\"bill-list\" id=\"bill-rows\"><li class=\"bill-head\" aria-hidden=\"true\"><span>Latest</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li><li class=\"ledger-month\""
     ));
 
     // Every row names its title as the ledger does, so a phone can lift it
@@ -1536,7 +1568,7 @@ fn search_excerpts_skip_labels_and_keep_words_apart() {
     let rossi = data.person_by_slug("morgan-rossi").expect("sample senator");
     let html = render(&data, &pages::person_page(&data, rossi));
     assert!(html.contains(
-        "<span class=\"chip senate\">Senate</span> <span>Senator for Tasmania</span> <span>· since"
+        "<span class=\"chip senate\">Senate</span> <span class=\"seat\">Senator for Tasmania</span> <span class=\"term\"><span class=\"sep\" aria-hidden=\"true\">· </span>since 1 Jul 2022</span>"
     ));
     assert!(html.contains("data-pagefind-ignore>MR</span>"));
     let bill = data.bill_by_id("sample-1").expect("sample bill");
@@ -1582,11 +1614,15 @@ fn seat_bars_mark_the_majority_and_link_each_party() {
         assert!(bar.contains("class=\"majority\">majority "), "{house}");
         assert!(bar.contains("class=\"tick\""), "{house}");
         // The majority is already in the label; the figure over the tick is
-        // drawn for the eye and kept out of the reading order.
-        assert!(
-            bar.contains("class=\"tick-label\"") && bar.contains("aria-hidden=\"true\">"),
-            "{house}"
-        );
+        // drawn for the eye and kept out of the reading order. The check reads
+        // the figure's own start tag: the tick beside it is hidden as well, so
+        // a match anywhere in the bar would pass without it.
+        let tick_label = bar
+            .split("class=\"tick-label\"")
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .expect("tick-label");
+        assert!(tick_label.contains("aria-hidden=\"true\""), "{house}");
 
         // The bar is one picture with one text alternative and nothing inside
         // it to tab to: a control inside role="img" has no name.
@@ -2862,8 +2898,17 @@ fn a_profile_links_its_record_and_its_sections() {
         .expect("sample member");
     let html = render(&data, &pages::person_page(&data, person));
 
-    // The divisions figure opens the record it counts.
-    assert!(html.contains("<span class=\"n\"><a href=\"#voting-record\">2 / 2</a></span>"));
+    // The divisions figure opens the record it counts, and is named by the
+    // figure and its label together.
+    assert!(html.contains(
+        "<span class=\"n\"><a id=\"stat-voted\" href=\"#voting-record\" aria-labelledby=\"stat-voted stat-voted-l\">2 / 2</a></span>"
+    ));
+    assert!(html.contains(
+        "<span class=\"l\" id=\"stat-voted-l\">divisions voted in this parliament</span>"
+    ));
+    for id in ["stat-voted", "stat-voted-l"] {
+        assert_eq!(html.matches(&format!("id=\"{id}\"")).count(), 1, "{id}");
+    }
     assert!(html.contains(
         "<h2 id=\"voting-record\">Voting record <span class=\"count\">3 divisions</span></h2>"
     ));

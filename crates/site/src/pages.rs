@@ -3,9 +3,9 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, group_chip, ledger_month, ledger_row_labelled, month_jump,
-    month_label, person_card, result_chip, result_word, seat_bar, series_row, series_row_in_month,
-    sitting_day_row, vote_bar, BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
+    avatar, bill_dots, chamber_chip, group_chip, group_chip_labelled, ledger_month,
+    ledger_row_labelled, month_jump, month_label, person_card, result_chip, result_word, seat_bar,
+    series_row, series_row_in_month, sitting_day_row, vote_bar, BILL_DOTS_LEGEND,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
@@ -389,7 +389,7 @@ pub fn people_index(data: &SiteData) -> Page {
             esc(p.code.as_deref().unwrap_or(&p.name)),
         ));
     }
-    body.push_str("</span><input type=\"search\" id=\"people-filter\" placeholder=\"Filter by name, electorate or state\" enterkeyhint=\"done\" aria-label=\"Filter people\"></div>");
+    body.push_str("</span><input type=\"search\" id=\"people-filter\" placeholder=\"Name, electorate or state\" enterkeyhint=\"done\" aria-label=\"Filter people\"></div>");
     body.push_str(&filter_feedback("No one matches these filters."));
 
     // What the text filter matches a card against: the name, the seat, and
@@ -555,19 +555,24 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     // The spaces between the identifiers cost nothing in the inline-flex
     // row; they keep the words apart in search excerpts and when copied.
     body.push_str(&chamber_chip(person.house));
-    body.push_str(&format!(" <span>{}</span>", esc(&seat)));
+    body.push_str(&format!(" <span class=\"seat\">{}</span>", esc(&seat)));
+    // The term's middot is a span of its own, so the stylesheet can hang it
+    // in the gap after the seat and drop it when the term wraps to a line of
+    // its own. It stays in the text for excerpts and copying, but a screen
+    // reader has no use for it.
+    const TERM_SEP: &str = "<span class=\"sep\" aria-hidden=\"true\">\u{b7} </span>";
     match (&person.since, &person.until) {
         (Some(since), Some(until)) => body.push_str(&format!(
-            " <span>· {} to {}</span>",
+            " <span class=\"term\">{TERM_SEP}{} to {}</span>",
             esc(&format_date(since)),
             esc(&format_date(until))
         )),
         (Some(since), None) => body.push_str(&format!(
-            " <span>· since {}</span>",
+            " <span class=\"term\">{TERM_SEP}since {}</span>",
             esc(&format_date(since))
         )),
         (None, Some(until)) => body.push_str(&format!(
-            " <span>· until {}</span>",
+            " <span class=\"term\">{TERM_SEP}until {}</span>",
             esc(&format_date(until))
         )),
         (None, None) => {}
@@ -612,8 +617,10 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
 
     if let Some(stats) = stats.filter(|s| s.divisions_eligible > 0) {
         body.push_str("<div class=\"stat-strip\">");
+        // The link is named by its figure and the label beside it, so it
+        // reads as more than "2 / 2" in a list of links.
         body.push_str(&format!(
-            "<div class=\"stat\"><span class=\"n\"><a href=\"#voting-record\">{} / {}</a></span> <span class=\"l\">divisions voted in this parliament</span></div>",
+            "<div class=\"stat\"><span class=\"n\"><a id=\"stat-voted\" href=\"#voting-record\" aria-labelledby=\"stat-voted stat-voted-l\">{} / {}</a></span> <span class=\"l\" id=\"stat-voted-l\">divisions voted in this parliament</span></div>",
             stats.divisions_voted, stats.divisions_eligible
         ));
         body.push_str(&format!(
@@ -1166,17 +1173,18 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
             list.len()
         ));
         for (row, votes) in data.votes_by_group(&breakdown, list) {
-            body.push_str(&format!(
-                "<li class=\"vote-group\"><span class=\"group-chip\"><span class=\"dot\" style=\"background:{}\" aria-hidden=\"true\"></span>{} <span class=\"n\">{}</span></span><ul>",
+            // The chip gives the party's code, or its name where it has none,
+            // and the count of names under it.
+            let chip = group_chip_labelled(
+                data,
+                &row.slug,
                 row.party
-                    .and_then(|p| p.colour.as_deref())
-                    .unwrap_or(GROUP_FALLBACK_COLOUR),
-                esc(row
-                    .party
                     .map(|p| p.code.as_deref().unwrap_or(&p.name))
-                    .unwrap_or(&row.group)),
-                votes.len(),
-            ));
+                    .unwrap_or(&row.group),
+                &format!(" <span class=\"n\">{}</span>", votes.len()),
+                false,
+            );
+            body.push_str(&format!("<li class=\"vote-group\">{chip}<ul>"));
             for v in votes {
                 body.push_str(&format!(
                     "<li>{}{}</li>",
@@ -1251,7 +1259,7 @@ pub fn bills_index(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>Bills</h1><p class=\"lede\">");
     body.push_str(&format!(
-        "{} bills of the 48th Parliament, from the official APH record, most recently moved first.",
+        "{} bills of the 48th Parliament, from the official APH record, most recent step first.",
         data.bills.len()
     ));
     body.push_str("</p></div>");
@@ -1292,8 +1300,9 @@ pub fn bills_index(data: &SiteData) -> Page {
         // Column labels for the eye. Each row already says what its cells are
         // (the date's title, the dots' label), so the header stays out of the
         // accessibility tree, and with neither data-month nor data-status the
-        // filter passes over it.
-        body.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Moved</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
+        // filter passes over it. The date is the bill's latest step, and the
+        // label says so; "Moved" read as the day the bill was introduced.
+        body.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Latest</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
         for (month, rows) in &months {
             body.push_str(&ledger_month(month, rows.len(), "bill"));
             for b in rows {

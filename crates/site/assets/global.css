@@ -498,6 +498,27 @@ main.wrap > h1:first-child {
   color: var(--muted);
 }
 
+/* On a profile the term of service follows the seat after a middot. The
+   dot hangs in the gap before the term, in room the seat keeps at its end
+   (the dot and its space are two characters of the mono face), so on one
+   line nothing moves. A term that wraps to a line of its own starts flush
+   with the row, and its dot, left of the row's edge, is clipped away. Only
+   the left edge clips: the chip fills the row's height, and a clip there
+   would shave its border. */
+.meta-row .seat:not(:last-child) {
+  margin-right: 2ch;
+}
+
+.meta-row .term .sep {
+  display: inline-block;
+  width: 2ch;
+  margin-left: -2ch;
+}
+
+.profile-head .meta-row .ids {
+  clip-path: inset(-1rem -1rem -1rem 0);
+}
+
 .meta-row .status .label {
   font-family: var(--mono);
   font-size: 0.6875rem;
@@ -848,13 +869,15 @@ td.date {
   display: none;
 }
 
+/* The note wraps where the title column is too narrow for it; each count
+   is joined to its noun by a no-break space, so it breaks only between
+   clauses. */
 .ledger-series .series-note {
   display: block;
   margin-top: 0.15rem;
   font-family: var(--mono);
   font-size: 0.6875rem;
   color: var(--muted);
-  white-space: nowrap;
 }
 
 /* The triangle is for the eye; the summary's own expanded state says the
@@ -902,9 +925,10 @@ td.date {
 }
 
 /* An opened series about one bill leads with the link to it, in the title
-   column, since the summary above it is a toggle and links nowhere. */
+   column, since the summary above it is a toggle and links nowhere. The gap
+   above keeps a tap meant for the link clear of the toggle. */
 .series-bill {
-  margin: 0.1rem 0 0.4rem;
+  margin: 0.35rem 0 0.4rem;
   padding-left: 6.625rem;
   font-size: 0.875rem;
 }
@@ -1961,7 +1985,10 @@ h2 .count {
 }
 
 /* A wide screen gives each side two newspaper columns, halving a House list.
-   A name never splits between columns, and a party's label never ends one. */
+   A name never splits between columns, and a party's label never ends one.
+   The space over the first label moves from its margin to the list's
+   padding: a margin is dropped at a column break, so whatever opened the
+   second column would otherwise sit higher than the first. */
 @media (min-width: 48rem) {
   .vote-columns ul {
     line-height: 1.9;
@@ -1970,6 +1997,11 @@ h2 .count {
   .vote-columns > div > ul {
     columns: 2;
     column-gap: 1rem;
+    padding-top: 0.2rem;
+  }
+
+  .vote-columns li.vote-group:first-child {
+    margin-top: 0;
   }
 
   .vote-columns li.vote-group > ul > li {
