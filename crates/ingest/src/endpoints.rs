@@ -27,6 +27,8 @@ pub struct Endpoints {
     pub legislation: String,
     /// data.gov.au's CKAN action API.
     pub data_gov: String,
+    /// The AEC Transparency Register, home of the bulk disclosure downloads.
+    pub aec_transparency: String,
     /// Replaces every source's own per-host spacing when set. Only tests set
     /// it; the real intervals are what keeps these APIs willing to answer.
     pub min_interval_ms: Option<u64>,
@@ -47,6 +49,7 @@ impl Default for Endpoints {
             aec_profiles: "https://www.aec.gov.au".to_string(),
             legislation: "https://api.prod.legislation.gov.au/v1".to_string(),
             data_gov: "https://data.gov.au/data/api/3/action".to_string(),
+            aec_transparency: "https://transparency.aec.gov.au".to_string(),
             min_interval_ms: None,
             backoff_ms: None,
         }
@@ -78,6 +81,7 @@ impl Endpoints {
             aec_profiles: format!("{base}/aec"),
             legislation: format!("{base}/legislation"),
             data_gov: format!("{base}/data-gov"),
+            aec_transparency: format!("{base}/aec-transparency"),
             min_interval_ms: Some(1),
             backoff_ms: Some(1),
         }

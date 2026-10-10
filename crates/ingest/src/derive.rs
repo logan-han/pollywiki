@@ -1,5 +1,6 @@
 use crate::manifest::read_manifest;
 use crate::sources::aec::pct_of;
+use crate::sources::aec_disclosures::{Disclosures, PartyReturnRow, KEY as DISCLOSURES_KEY};
 use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
 use crate::sources::ipea::{IpeaParliamentarian, IpeaQuarter};
@@ -9,10 +10,11 @@ use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonN
 use anyhow::Result;
 use indexmap::IndexMap;
 use pollywiki_schema::{
-    js_compare, slugify, title_from_slug, Act, AiText, Bill, Division, ElectionContest, Electorate,
-    ElectorateResult, ExpenseLine, ExpenseQuarter, House, JsNum, Meta, Party, PartyFacts,
-    PartySeats, Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult, SenateSeat,
-    StateCode, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES,
+    js_compare, slugify, title_from_slug, Act, AiText, AnnualReturn, Bill, CandidateFunding,
+    Division, DonorTotal, ElectionContest, Electorate, ElectorateResult, ExpenseLine,
+    ExpenseQuarter, House, JsNum, MemberFunding, Meta, Party, PartyFacts, PartyFunding, PartySeats,
+    Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult, SenateSeat, StateCode,
+    SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES,
     BUNDLE_PARTIES, BUNDLE_PEOPLE,
 };
 use serde::Serialize;
@@ -24,6 +26,21 @@ struct PartyReferenceEntry {
     name: Option<String>,
     code: Option<String>,
     colour: Option<String>,
+    /// The AEC party groups, or party names for parties with no group, whose
+    /// disclosure returns are this group's.
+    #[serde(default)]
+    aec: Vec<String>,
+}
+
+fn party_reference() -> IndexMap<String, PartyReferenceEntry> {
+    let path = crate::reference_path("parties.json");
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => {
+            eprintln!("derive: data/reference/parties.json not found, using defaults");
+            IndexMap::new()
+        }
+    }
 }
 
 /// Turns canonical entities into the precomputed bundles the site build reads.
@@ -253,7 +270,9 @@ pub async fn derive(store: &Store) -> Result<()> {
     attach_expenses(store, &mut people).await?;
     compute_vote_stats(&mut people, &divisions);
     link_bills(&mut bills, &divisions);
-    let mut parties = build_parties(&people);
+    let reference = party_reference();
+    let disclosures: Disclosures = store.get_json(DISCLOSURES_KEY).await?.unwrap_or_default();
+    let mut parties = build_parties(&people, &reference);
     for party in &mut parties {
         if let Some(facts) = store
             .get_json::<PartyFacts>(&format!("canonical/party-facts/{}.json", party.slug))
@@ -261,7 +280,11 @@ pub async fn derive(store: &Store) -> Result<()> {
         {
             party.facts = Some(facts);
         }
+        if let Some(entry) = reference.get(&party.slug) {
+            party.funding = party_funding(&entry.aec, &disclosures);
+        }
     }
+    attach_person_funding(&mut people, &slug_to_index, &disclosures);
 
     // Each current electorate shows its own most recent contest, so a seat
     // decided at a by-election displays that result, not the older general.
@@ -375,6 +398,147 @@ pub async fn derive(store: &Store) -> Result<()> {
         current_elections.len()
     );
     Ok(())
+}
+
+/// A party's returns: those lodged by its AEC party group, or under its own
+/// name where the AEC groups it with nothing. Branches lodge separately and
+/// pass money between themselves, so the returns are listed, never summed.
+fn party_funding(names: &[String], disclosures: &Disclosures) -> Option<PartyFunding> {
+    let belongs = |r: &PartyReturnRow| match &r.group {
+        Some(group) => names.contains(group),
+        None => names.contains(&r.name),
+    };
+    let mut returns: Vec<&PartyReturnRow> = disclosures
+        .party_returns
+        .iter()
+        .filter(|r| belongs(r))
+        .collect();
+    if returns.is_empty() {
+        return None;
+    }
+    returns.sort_by(|a, b| b.year.cmp(&a.year).then(b.receipts.cmp(&a.receipts)));
+    let latest = returns[0].year.clone();
+    let recipients: HashSet<&str> = returns.iter().map(|r| r.name.as_str()).collect();
+    let mut by_donor: IndexMap<&str, DonorTotal> = IndexMap::new();
+    for d in disclosures
+        .party_donations
+        .iter()
+        .filter(|d| d.year == latest && recipients.contains(d.recipient.as_str()))
+    {
+        let total = by_donor.entry(&d.donor).or_insert_with(|| DonorTotal {
+            donor: d.donor.clone(),
+            value: 0,
+            gifts: 0,
+        });
+        total.value += d.value;
+        total.gifts += 1;
+    }
+    let mut donations: Vec<DonorTotal> = by_donor.into_values().collect();
+    donations.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| js_compare(&a.donor, &b.donor))
+    });
+    Some(PartyFunding {
+        returns: returns
+            .into_iter()
+            .map(|r| AnnualReturn {
+                year: r.year.clone(),
+                name: r.name.clone(),
+                receipts: r.receipts,
+                payments: r.payments,
+                debts: r.debts,
+            })
+            .collect(),
+        donations_year: (!donations.is_empty()).then_some(latest),
+        donations,
+    })
+}
+
+/// Honorifics and post-nominals the AEC keeps on a member's return name.
+const STYLES: [&str; 22] = [
+    "the",
+    "hon",
+    "dr",
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "prof",
+    "professor",
+    "senator",
+    "mp",
+    "am",
+    "ao",
+    "ac",
+    "oam",
+    "csc",
+    "psm",
+    "apm",
+    "kc",
+    "qc",
+    "sc",
+    "mbe",
+];
+
+/// Members' own returns: annual returns matched on the name with its styles
+/// removed, candidate returns as election history is, within the state.
+fn attach_person_funding(
+    people: &mut [Person],
+    slug_to_index: &HashMap<String, usize>,
+    disclosures: &Disclosures,
+) {
+    for r in &disclosures.member_returns {
+        let bare: Vec<&str> = r
+            .name
+            .split_whitespace()
+            .filter(|w| !STYLES.contains(&w.trim_matches(['.', ',']).to_lowercase().as_str()))
+            .collect();
+        let Some(&i) = slug_to_index.get(&slugify(&bare.join(" "))) else {
+            continue;
+        };
+        people[i]
+            .funding
+            .get_or_insert_with(Default::default)
+            .annual
+            .push(MemberFunding {
+                year: r.year.clone(),
+                donations: r.donations,
+                donors: r.donors,
+            });
+    }
+    for r in &disclosures.candidate_returns {
+        let Some(state) = StateCode::parse(&r.state.to_uppercase()) else {
+            continue;
+        };
+        let (surname, given) = r.name.split_once(',').unwrap_or((r.name.as_str(), ""));
+        let first = given.split_whitespace().next().unwrap_or("");
+        let names = [
+            format!("{} {}", given.trim(), surname.trim()),
+            format!("{first} {}", surname.trim()),
+        ];
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let Some(i) = find_candidate(people, slug_to_index, &names, state) else {
+            continue;
+        };
+        people[i]
+            .funding
+            .get_or_insert_with(Default::default)
+            .elections
+            .push(CandidateFunding {
+                event: r.event.clone(),
+                electorate: r.electorate.clone(),
+                nil: r.nil,
+                gifts: r.gifts,
+                donors: r.donors,
+                expenditure: r.expenditure,
+            });
+    }
+    for person in people.iter_mut() {
+        if let Some(funding) = &mut person.funding {
+            funding.annual.sort_by(|a, b| b.year.cmp(&a.year));
+        }
+    }
 }
 
 /// Each member's latest quarters of IPEA expenses, newest first. IPEA names
@@ -584,18 +748,10 @@ fn link_bills(bills: &mut [Bill], divisions: &[Division]) {
     }
 }
 
-fn build_parties(people: &[Person]) -> Vec<Party> {
-    let reference: IndexMap<String, PartyReferenceEntry> = {
-        let path = crate::reference_path("parties.json");
-        match std::fs::read_to_string(&path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-            Err(_) => {
-                eprintln!("derive: data/reference/parties.json not found, using defaults");
-                IndexMap::new()
-            }
-        }
-    };
-
+fn build_parties(
+    people: &[Person],
+    reference: &IndexMap<String, PartyReferenceEntry>,
+) -> Vec<Party> {
     let mut groups: IndexMap<String, Party> = IndexMap::new();
     // Seat counts describe the parliament as it stands, so former members are
     // left out; a group only they belonged to drops off with them.
@@ -616,6 +772,7 @@ fn build_parties(people: &[Person]) -> Vec<Party> {
                     senate: 0,
                 }),
                 facts: None,
+                funding: None,
             }
         });
         if let Some(seats) = &mut entry.seats {
@@ -1240,6 +1397,122 @@ mod tests {
             expenses[0].total.0, 25.0,
             "the NSW namesake is not added in"
         );
+    }
+
+    #[test]
+    fn party_funding_lists_a_group_s_returns_and_sums_the_latest_year_s_donors() {
+        use crate::sources::aec_disclosures::DonationRow;
+        let ret = |year: &str, name: &str, group: Option<&str>, receipts: i64| PartyReturnRow {
+            year: year.to_string(),
+            name: name.to_string(),
+            group: group.map(str::to_string),
+            receipts,
+            payments: 1,
+            debts: 0,
+        };
+        let gift = |year: &str, recipient: &str, donor: &str, value: i64| DonationRow {
+            year: year.to_string(),
+            recipient: recipient.to_string(),
+            donor: donor.to_string(),
+            value,
+        };
+        let disclosures = Disclosures {
+            party_returns: vec![
+                ret("2023-24", "Example Party (VIC)", Some("Example"), 50),
+                ret("2024-25", "Example Party (VIC)", Some("Example"), 10),
+                ret("2024-25", "Example Party", Some("Example"), 90),
+                ret("2024-25", "Small Party", None, 5),
+                ret("2024-25", "Example Lookalike", None, 5),
+            ],
+            party_donations: vec![
+                gift("2024-25", "Example Party", "Acme", 100),
+                gift("2024-25", "Example Party (VIC)", "Acme", 50),
+                gift("2024-25", "Example Party", "Zed", 150),
+                gift("2023-24", "Example Party", "Old Donor", 999),
+                gift("2024-25", "Small Party", "Elsewhere", 1),
+            ],
+            ..Default::default()
+        };
+        let funding = party_funding(&["Example".to_string()], &disclosures).expect("funding");
+        let rows: Vec<(&str, &str)> = funding
+            .returns
+            .iter()
+            .map(|r| (r.year.as_str(), r.name.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("2024-25", "Example Party"),
+                ("2024-25", "Example Party (VIC)"),
+                ("2023-24", "Example Party (VIC)")
+            ],
+            "newest year first, then by receipts; another group's names are not matched"
+        );
+        assert_eq!(funding.donations_year.as_deref(), Some("2024-25"));
+        let donors: Vec<(&str, i64, i64)> = funding
+            .donations
+            .iter()
+            .map(|d| (d.donor.as_str(), d.value, d.gifts))
+            .collect();
+        // Summed across the group's returns; ties by value go alphabetical.
+        assert_eq!(donors, [("Acme", 150, 2), ("Zed", 150, 1)]);
+
+        // An ungrouped party is matched by its own name.
+        let small = party_funding(&["Small Party".to_string()], &disclosures).expect("small");
+        assert_eq!(small.returns.len(), 1);
+        assert_eq!(small.donations[0].donor, "Elsewhere");
+        assert!(party_funding(&[], &disclosures).is_none());
+    }
+
+    #[tokio::test]
+    async fn members_returns_attach_by_name_without_styles_and_within_the_state() {
+        let store = seeded("member-funding").await;
+        put(
+            &store,
+            DISCLOSURES_KEY,
+            r#"{"partyReturns":[],"partyDonations":[],
+              "memberReturns":[
+                {"year":"2023-24","name":"Dr Alex Paterson MP","donations":100,"donors":1},
+                {"year":"2024-25","name":"Hon. Alex Paterson MP","donations":200,"donors":2},
+                {"year":"2024-25","name":"Senator the Hon Someone Else","donations":9,"donors":9}],
+              "candidateReturns":[
+                {"event":"2025 Federal Election","name":"PATERSON, Alex James","party":"Example",
+                 "electorate":"Sampleford","state":"VIC","nil":false,"gifts":1200,"donors":3,
+                 "expenditure":5100},
+                {"event":"2019 Federal Election","name":"PATERSON, Alex","party":"Other",
+                 "electorate":"Elsewhere","state":"NSW","nil":false,"gifts":1,"donors":1,
+                 "expenditure":1},
+                {"event":"2025 Federal Election","name":"ROSSI, Morgan","party":"Example",
+                 "electorate":"","state":"tas","nil":true,"gifts":0,"donors":0,"expenditure":0}]}"#,
+        )
+        .await;
+        derive(&store).await.expect("derive");
+        let people: Vec<Person> = lines(
+            &store
+                .get_raw("bundles/people.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let alex = people.iter().find(|p| p.slug == "alex-paterson").unwrap();
+        let funding = alex.funding.as_ref().expect("funding");
+        assert_eq!(
+            funding
+                .annual
+                .iter()
+                .map(|a| a.year.as_str())
+                .collect::<Vec<_>>(),
+            ["2024-25", "2023-24"],
+            "titles stripped, newest first"
+        );
+        assert_eq!(
+            funding.elections.len(),
+            1,
+            "the NSW namesake is someone else"
+        );
+        assert_eq!(funding.elections[0].expenditure, 5100);
+        let rossi = people.iter().find(|p| p.slug == "morgan-rossi").unwrap();
+        assert!(rossi.funding.as_ref().expect("funding").elections[0].nil);
     }
 
     #[tokio::test]

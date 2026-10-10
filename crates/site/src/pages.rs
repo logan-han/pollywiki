@@ -643,12 +643,17 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     let committees = person.committees.as_deref().filter(|c| !c.is_empty());
     let elections = person.elections.as_deref().filter(|e| !e.is_empty());
     let expenses = person.expenses.as_deref().filter(|e| !e.is_empty());
+    let funding = person
+        .funding
+        .as_ref()
+        .filter(|f| !f.elections.is_empty() || !f.annual.is_empty());
     let sections: Vec<(&str, &str)> = [
         ("background", "Background", person.background.is_some()),
         ("positions", "Positions held", positions.is_some()),
         ("committees", "Committee service", committees.is_some()),
         ("elections", "Election history", elections.is_some()),
         ("expenses", "Expenses", expenses.is_some()),
+        ("funding", "Funding", funding.is_some()),
         ("bills-raised", "Bills raised", !raised.is_empty()),
         ("voting-record", "Voting record", true),
     ]
@@ -930,6 +935,46 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("<p class=\"note\">Expenditure as the Independent Parliamentary Expenses Authority publishes it each quarter, in its own categories, rounded to the dollar. Travel distances, office locations and roles differ, so totals do not compare between members. <a href=\"https://www.ipea.gov.au/reporting\">IPEA's reports and notes.</a></p>");
     }
 
+    if let Some(funding) = funding {
+        body.push_str("<h2 id=\"funding\">Funding disclosures</h2>");
+        if !funding.elections.is_empty() {
+            body.push_str(&table_scroll("Election returns"));
+            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th><th class=\"num\" scope=\"col\">Expenditure</th></tr></thead><tbody>");
+            for e in &funding.elections {
+                body.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td>{}</tr>",
+                    esc(&e.event),
+                    esc(&e.electorate),
+                    if e.nil {
+                        "<td class=\"num zero\" colspan=\"3\">Nil return</td>".to_string()
+                    } else {
+                        format!(
+                            "<td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
+                            dollars(e.gifts as f64),
+                            locale_int(e.donors),
+                            dollars(e.expenditure as f64)
+                        )
+                    }
+                ));
+            }
+            body.push_str("</tbody></table></div>");
+        }
+        if !funding.annual.is_empty() {
+            body.push_str(&table_scroll("Annual returns"));
+            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Financial year</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th></tr></thead><tbody>");
+            for a in &funding.annual {
+                body.push_str(&format!(
+                    "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+                    esc(&a.year),
+                    dollars(a.donations as f64),
+                    locale_int(a.donors)
+                ));
+            }
+            body.push_str("</tbody></table></div>");
+        }
+        body.push_str("<p class=\"note\">Returns as lodged with the AEC: a candidate's return covers the gifts received and electoral expenditure for that election, a member's annual return the gifts received in the financial year. <a href=\"https://transparency.aec.gov.au\">AEC Transparency Register.</a></p>");
+    }
+
     if !raised.is_empty() {
         body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
         body.push_str(&table_scroll("Bills raised"));
@@ -1003,7 +1048,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         ));
     }
     body.push_str(&format!(
-        "<p class=\"attribution\">Sources: Wikidata{}{}{}{}. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
+        "<p class=\"attribution\">Sources: Wikidata{}{}{}{}{}. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
         if person.background.is_some() {
             ", Parliamentary Handbook"
         } else {
@@ -1016,6 +1061,11 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         },
         if expenses.is_some() {
             ", IPEA (CC BY 3.0 AU)"
+        } else {
+            ""
+        },
+        if funding.is_some() {
+            ", AEC disclosures (CC BY 4.0)"
         } else {
             ""
         },
@@ -2243,6 +2293,47 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
         }
         body.push_str("</div>");
     }
+
+    if let Some(funding) = party.funding.as_ref().filter(|f| !f.returns.is_empty()) {
+        body.push_str("<h2 id=\"funding\">Funding disclosures</h2>");
+        body.push_str(&table_scroll("Annual returns"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Year</th><th scope=\"col\">Return</th><th class=\"num\" scope=\"col\">Receipts</th><th class=\"num\" scope=\"col\">Payments</th><th class=\"num\" scope=\"col\">Debts</th></tr></thead><tbody>");
+        for r in &funding.returns {
+            body.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+                esc(&r.year),
+                esc(&r.name),
+                dollars(r.receipts as f64),
+                dollars(r.payments as f64),
+                dollars(r.debts as f64)
+            ));
+        }
+        body.push_str("</tbody></table></div>");
+        if let (Some(year), false) = (&funding.donations_year, funding.donations.is_empty()) {
+            let total: i64 = funding.donations.iter().map(|d| d.value).sum();
+            let donors = funding.donations.len();
+            body.push_str(&format!(
+                "<details class=\"donations\"><summary>Donations itemised in {} returns: {} from {} donor{}</summary>",
+                esc(year),
+                dollars(total as f64),
+                locale_int(donors as i64),
+                if donors == 1 { "" } else { "s" }
+            ));
+            body.push_str(&table_scroll("Donations itemised"));
+            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Donor</th><th class=\"num\" scope=\"col\">Gifts</th><th class=\"num\" scope=\"col\">Value</th></tr></thead><tbody>");
+            for d in &funding.donations {
+                body.push_str(&format!(
+                    "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+                    esc(&d.donor),
+                    locale_int(d.gifts),
+                    dollars(d.value as f64)
+                ));
+            }
+            body.push_str("</tbody></table></div></details>");
+        }
+        body.push_str("<p class=\"note\">Annual returns as lodged with the AEC. A party's branches lodge their own and pass money between themselves, so the returns are listed, not added together. Only gifts above the disclosure threshold are itemised; donations are those the returns list as donations, summed by donor across the party's returns for the latest year. <a href=\"https://transparency.aec.gov.au\">AEC Transparency Register.</a></p>");
+        body.push_str("<p class=\"attribution\">Funding disclosures © Commonwealth of Australia (AEC), CC BY 4.0.</p>");
+    }
     body.push_str("</article>");
 
     let description = format!("{}: members in the 48th federal parliament.", party.name);
@@ -2315,7 +2406,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         licence: &'static str,
         link: &'static str,
     }
-    const SOURCES: [Source; 7] = [
+    const SOURCES: [Source; 8] = [
         Source {
             key: "wikidata",
             name: "Wikidata & Wikimedia Commons",
@@ -2336,6 +2427,13 @@ pub fn data_sources(data: &SiteData) -> Page {
             what: "Bills before parliament and their progress.",
             licence: "Commonwealth of Australia; reproduced fairly and accurately with acknowledgement",
             link: "https://www.aph.gov.au",
+        },
+        Source {
+            key: "aec-disclosures",
+            name: "AEC Transparency Register",
+            what: "Parties' and members' annual returns, the donations party returns itemise, and candidates' election returns.",
+            licence: "CC BY 4.0 © Commonwealth of Australia (AEC)",
+            link: "https://transparency.aec.gov.au",
         },
         Source {
             key: "ipea",

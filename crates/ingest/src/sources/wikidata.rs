@@ -310,6 +310,7 @@ pub fn people_from_members(
             elections: None,
             stats: None,
             expenses: None,
+            funding: None,
         });
     }
     people

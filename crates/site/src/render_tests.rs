@@ -2937,6 +2937,7 @@ fn a_profile_links_its_record_and_its_sections() {
             "committees",
             "elections",
             "expenses",
+            "funding",
             "bills-raised",
             "voting-record"
         ]
@@ -3199,4 +3200,50 @@ fn expenses_read_by_category_and_quarter_with_their_caveat() {
     let other = data.person_by_slug("jordan-nguyen").expect("sample member");
     let html = render(&data, &pages::person_page(&data, other));
     assert!(!html.contains("Parliamentary expenses"));
+}
+
+#[test]
+fn a_member_s_funding_returns_read_by_election_and_year() {
+    let data = sample_data();
+    let person = data.person_by_slug("alex-paterson").expect("sample member");
+    let html = render(&data, &pages::person_page(&data, person));
+    assert!(html.contains("<h2 id=\"funding\">Funding disclosures</h2>"));
+    assert!(html.contains(
+        "<tr><td>2025 Federal Election</td><td>Sampleford</td><td class=\"num\">$12,500</td><td class=\"num\">4</td><td class=\"num\">$48,210</td></tr>"
+    ));
+    assert!(html.contains(
+        "<tr><td>2024-25</td><td class=\"num\">$4,484</td><td class=\"num\">6</td></tr>"
+    ));
+    assert!(html.contains(", AEC disclosures (CC BY 4.0)"));
+
+    // A nil return says so rather than showing three zeros.
+    let former = data.person_by_slug("casey-obrien").expect("sample member");
+    let html = render(&data, &pages::person_page(&data, former));
+    assert!(html.contains("<td class=\"num zero\" colspan=\"3\">Nil return</td>"));
+    assert!(
+        !html.contains("aria-label=\"Annual returns\""),
+        "no annual returns, no table"
+    );
+}
+
+#[test]
+fn a_party_lists_its_returns_and_folds_its_itemised_donations() {
+    let data = sample_data();
+    let party = data.party_by_slug("example-party").expect("sample party");
+    let html = render(&data, &pages::party_page(&data, party));
+    assert!(html.contains(
+        "<tr><td>2024-25</td><td>Example Party (Federal Secretariat)</td><td class=\"num\">$2,450,000</td><td class=\"num\">$2,210,500</td><td class=\"num\">$150,000</td></tr>"
+    ));
+    assert!(html.contains(
+        "<details class=\"donations\"><summary>Donations itemised in 2024-25 returns: $175,000 from 2 donors</summary>"
+    ));
+    assert!(html.contains("<tr><td>Sample Holdings Pty Ltd</td><td class=\"num\">3</td><td class=\"num\">$150,000</td></tr>"));
+    assert!(html.contains("the returns are listed, not added together"));
+    assert!(html.contains("Funding disclosures © Commonwealth of Australia (AEC), CC BY 4.0."));
+
+    let other = data
+        .party_by_slug("placeholder-alliance")
+        .expect("sample party");
+    let html = render(&data, &pages::party_page(&data, other));
+    assert!(!html.contains("Funding disclosures"));
 }

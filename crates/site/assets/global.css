@@ -2492,3 +2492,13 @@ td .sub {
   color: var(--faint);
   font-size: 0.78125rem;
 }
+
+/* A party's itemised donations sit folded under their totals. */
+details.donations {
+  margin: 0.8rem 0;
+}
+
+details.donations summary {
+  cursor: pointer;
+  color: var(--muted);
+}

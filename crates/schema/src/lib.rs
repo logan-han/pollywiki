@@ -298,6 +298,38 @@ pub struct PersonStats {
     pub against_group_majority: i64,
 }
 
+/// A parliamentarian's own disclosure returns to the AEC.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonFunding {
+    /// Candidate returns, one per election stood at, newest first.
+    #[serde(default)]
+    pub elections: Vec<CandidateFunding>,
+    /// Annual returns as a member, newest first.
+    #[serde(default)]
+    pub annual: Vec<MemberFunding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateFunding {
+    /// The AEC's event name, e.g. "2025 Federal Election".
+    pub event: String,
+    pub electorate: String,
+    pub nil: bool,
+    pub gifts: i64,
+    pub donors: i64,
+    pub expenditure: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberFunding {
+    pub year: String,
+    pub donations: i64,
+    pub donors: i64,
+}
+
 /// One quarter of a parliamentarian's expenses as IPEA reports them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -363,6 +395,9 @@ pub struct Person {
     /// The latest quarters of parliamentary expenses, newest first (IPEA).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expenses: Option<Vec<ExpenseQuarter>>,
+    /// Disclosure returns lodged with the AEC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<PersonFunding>,
 }
 
 impl Person {
@@ -414,6 +449,39 @@ pub struct PartyFacts {
     pub wikipedia: Option<String>,
 }
 
+/// A party's disclosure returns to the AEC, as lodged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartyFunding {
+    /// Annual returns of the party and each of its branches, newest year first.
+    pub returns: Vec<AnnualReturn>,
+    /// The financial year the donations below were disclosed in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub donations_year: Option<String>,
+    /// Donations itemised in that year's returns, summed by donor, largest first.
+    #[serde(default)]
+    pub donations: Vec<DonorTotal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnualReturn {
+    pub year: String,
+    pub name: String,
+    pub receipts: i64,
+    pub payments: i64,
+    pub debts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DonorTotal {
+    pub donor: String,
+    pub value: i64,
+    /// Itemised gifts making up the value.
+    pub gifts: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Party {
@@ -427,6 +495,8 @@ pub struct Party {
     pub seats: Option<PartySeats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub facts: Option<PartyFacts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<PartyFunding>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

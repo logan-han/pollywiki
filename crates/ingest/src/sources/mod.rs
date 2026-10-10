@@ -1,4 +1,5 @@
 pub mod aec;
+pub mod aec_disclosures;
 pub mod aec_profiles;
 pub mod aph_bills;
 pub mod handbook;
