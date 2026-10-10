@@ -246,6 +246,31 @@ pub struct SenateCandidate {
     pub elected_order: Option<i64>,
 }
 
+/// A division's map: its outline over the divisions around it, already
+/// projected into the view box.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Boundary {
+    /// The ABS boundary set drawn, e.g. "ASGS 2025".
+    pub set: String,
+    pub view_box: String,
+    /// SVG path data for the division, rings filled even-odd.
+    pub path: String,
+    #[serde(default)]
+    pub neighbours: Vec<BoundaryNeighbour>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundaryNeighbour {
+    pub slug: String,
+    pub name: String,
+    pub path: String,
+    /// Where the name fits, in view units; none when it has no room.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<(i64, i64)>,
+}
+
 /// Who won a seat at one event, for an electorate's run of past results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -535,6 +560,9 @@ pub struct Electorate {
     /// Every contest for the seat under this name, newest first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<Vec<SeatResult>>,
+    /// The division's map, from the ABS boundary set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<Boundary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

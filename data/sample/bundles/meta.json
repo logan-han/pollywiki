@@ -10,6 +10,7 @@
     "legislation": { "lastSync": "2026-08-14T01:12:00.000Z", "ok": true },
     "ipea": { "lastSync": "2026-08-14T01:13:00.000Z", "ok": true },
     "aec-disclosures": { "lastSync": "2026-08-14T01:14:00.000Z", "ok": true },
+    "boundaries": { "lastSync": "2026-08-14T01:15:00.000Z", "ok": true },
     "aec-profiles": { "lastSync": "2026-08-01T01:14:00.000Z", "ok": false, "note": "sample failure, shown as stale" }
   }
 }

@@ -2502,3 +2502,53 @@ details.donations summary {
   cursor: pointer;
   color: var(--muted);
 }
+
+/* An electorate's map: its own shape over the outlines of the divisions
+   around it, drawn in view units so the strokes stay hairline at any width. */
+.boundary-map {
+  margin: 1.2rem 0;
+}
+
+.boundary-map svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 24rem;
+}
+
+.boundary-map .neighbours path {
+  fill: var(--panel);
+  stroke: var(--hair-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  fill-rule: evenodd;
+}
+
+.boundary-map .division {
+  fill: var(--house-tint);
+  stroke: var(--house);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  fill-rule: evenodd;
+}
+
+.boundary-map text {
+  font-family: var(--mono);
+  font-size: 24px;
+  fill: var(--muted);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  /* A halo keeps a name legible where it crosses a boundary line. */
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 6px;
+  stroke-linejoin: round;
+}
+
+.boundary-map figcaption {
+  color: var(--faint);
+  font-size: 0.78125rem;
+  margin-top: 0.4rem;
+}

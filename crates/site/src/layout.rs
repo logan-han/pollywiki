@@ -64,6 +64,7 @@ fn source_label(name: &str) -> &str {
         "legislation" => "Legislation Register",
         "ipea" => "IPEA expenses",
         "aec-disclosures" => "AEC disclosures",
+        "boundaries" => "ABS boundaries",
         other => other,
     }
 }

@@ -19,7 +19,7 @@ use store::{LocalStore, S3Store, Store};
 const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [options]
   --store local|s3       default local (.store/); s3 needs POLLYWIKI_DATA_BUCKET
   --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec,
-                         legislation,ipea,aec-disclosures
+                         legislation,ipea,aec-disclosures,boundaries
   --event <ids>          AEC event id(s), comma-separated, or all (default 31496)
   --rebuild              tvfy only: re-normalise from cached raw, no API calls
 summarise needs GEMINI_API_KEY; 'all' runs it between sync and derive when set.
@@ -228,6 +228,12 @@ async fn sync(
             sources::aec_disclosures::sync_aec_disclosures(store, endpoints)
         );
     }
+    if has("boundaries") {
+        run_source!(
+            "boundaries",
+            sources::boundaries::sync_boundaries(store, endpoints)
+        );
+    }
     if has("ipea") {
         run_source!("ipea", sources::ipea::sync_ipea(store, endpoints));
     }
@@ -305,7 +311,18 @@ mod orchestration_tests {
     use crate::test_http::{Response, TestServer};
     use std::path::PathBuf;
 
-    const ALL_SOURCES: [&str; 6] = ["wikidata", "aec", "aph", "handbook", "aec-profiles", "tvfy"];
+    const ALL_SOURCES: [&str; 10] = [
+        "wikidata",
+        "aec",
+        "aph",
+        "handbook",
+        "legislation",
+        "aec-disclosures",
+        "boundaries",
+        "ipea",
+        "aec-profiles",
+        "tvfy",
+    ];
 
     fn new_store(name: &str) -> Store {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -354,7 +371,7 @@ mod orchestration_tests {
     async fn every_named_source_runs_and_each_failure_is_counted_and_recorded() {
         let server = dead_server();
         let store = new_store("failures");
-        // --rebuild reaches tvfy without an API key, so all six run.
+        // --rebuild reaches tvfy without an API key, so every source runs.
         let failures = sync(
             &store,
             &options(&ALL_SOURCES, true).sources,
@@ -364,7 +381,7 @@ mod orchestration_tests {
         )
         .await
         .expect("a source failure is not a run failure");
-        assert_eq!(failures, 6, "one per source");
+        assert_eq!(failures, ALL_SOURCES.len(), "one per source");
 
         let manifest = read_manifest(&store).await.expect("manifest");
         let mut names: Vec<&String> = manifest.sources.keys().collect();
@@ -373,9 +390,13 @@ mod orchestration_tests {
             names,
             vec![
                 "aec",
+                "aec-disclosures",
                 "aec-profiles",
                 "aph-bills",
+                "boundaries",
                 "handbook",
+                "ipea",
+                "legislation",
                 "tvfy",
                 "wikidata"
             ],

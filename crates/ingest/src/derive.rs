@@ -10,12 +10,12 @@ use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonN
 use anyhow::Result;
 use indexmap::IndexMap;
 use pollywiki_schema::{
-    js_compare, slugify, title_from_slug, Act, AiText, AnnualReturn, Bill, CandidateFunding,
-    Division, DonorTotal, ElectionContest, Electorate, ElectorateResult, ExpenseLine,
-    ExpenseQuarter, House, JsNum, MemberFunding, Meta, Party, PartyFacts, PartyFunding, PartySeats,
-    Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult, SenateSeat, StateCode,
-    SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES,
-    BUNDLE_PARTIES, BUNDLE_PEOPLE,
+    js_compare, slugify, title_from_slug, Act, AiText, AnnualReturn, Bill, Boundary,
+    CandidateFunding, Division, DonorTotal, ElectionContest, Electorate, ElectorateResult,
+    ExpenseLine, ExpenseQuarter, House, JsNum, MemberFunding, Meta, Party, PartyFacts,
+    PartyFunding, PartySeats, Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult,
+    SenateSeat, StateCode, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS,
+    BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -249,6 +249,13 @@ pub async fn derive(store: &Store) -> Result<()> {
             electorate.profile = Some(profile.profile);
             electorate.enrolment = profile.enrolment;
         }
+        electorate.boundary = store
+            .get_json::<Boundary>(&format!(
+                "{}{}.json",
+                crate::sources::boundaries::PREFIX,
+                electorate.slug
+            ))
+            .await?;
         let history: Vec<SeatResult> = elections
             .iter()
             .filter(|r| r.electorate_slug == electorate.slug && r.state == electorate.state)

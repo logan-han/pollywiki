@@ -1970,6 +1970,32 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
             esc(location)
         ));
     }
+    if let Some(map) = &electorate.boundary {
+        body.push_str(&format!(
+            "<figure class=\"boundary-map\"><svg viewBox=\"{}\" role=\"img\" aria-labelledby=\"map-title\"><title id=\"map-title\">Map of {} and the divisions around it</title><g class=\"neighbours\">",
+            esc_attr(&map.view_box),
+            esc(&electorate.name)
+        ));
+        for n in &map.neighbours {
+            body.push_str(&format!("<path d=\"{}\"/>", esc_attr(&n.path)));
+        }
+        body.push_str(&format!(
+            "</g><path class=\"division\" d=\"{}\"/><g class=\"labels\" aria-hidden=\"true\">",
+            esc_attr(&map.path)
+        ));
+        for n in &map.neighbours {
+            if let Some((x, y)) = n.label {
+                body.push_str(&format!(
+                    "<text x=\"{x}\" y=\"{y}\">{}</text>",
+                    esc(&n.name)
+                ));
+            }
+        }
+        body.push_str(&format!(
+            "</g></svg><figcaption>Boundary as the ABS approximates it ({}), © Commonwealth of Australia (ABS), CC BY 4.0. The AEC's own maps show the legal boundary.</figcaption></figure>",
+            esc(&map.set)
+        ));
+    }
     if profile.is_some() || electorate.enrolment.is_some() || electorate.established.is_some() {
         body.push_str(&table_scroll("Electorate profile"));
         body.push_str("<table class=\"facts\"><tbody>");
@@ -2297,18 +2323,25 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
     if let Some(funding) = party.funding.as_ref().filter(|f| !f.returns.is_empty()) {
         body.push_str("<h2 id=\"funding\">Funding disclosures</h2>");
         body.push_str(&table_scroll("Annual returns"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Year</th><th scope=\"col\">Return</th><th class=\"num\" scope=\"col\">Receipts</th><th class=\"num\" scope=\"col\">Payments</th><th class=\"num\" scope=\"col\">Debts</th></tr></thead><tbody>");
-        for r in &funding.returns {
+        // One row group per financial year, headed by it, newest first.
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Return</th><th class=\"num\" scope=\"col\">Receipts</th><th class=\"num\" scope=\"col\">Payments</th><th class=\"num\" scope=\"col\">Debts</th></tr></thead>");
+        for year in funding.returns.chunk_by(|a, b| a.year == b.year) {
             body.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-                esc(&r.year),
-                esc(&r.name),
-                dollars(r.receipts as f64),
-                dollars(r.payments as f64),
-                dollars(r.debts as f64)
+                "<tbody><tr class=\"month\"><th colspan=\"4\" scope=\"rowgroup\">{}</th></tr>",
+                esc(&year[0].year)
             ));
+            for r in year {
+                body.push_str(&format!(
+                    "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+                    esc(&r.name),
+                    dollars(r.receipts as f64),
+                    dollars(r.payments as f64),
+                    dollars(r.debts as f64)
+                ));
+            }
+            body.push_str("</tbody>");
         }
-        body.push_str("</tbody></table></div>");
+        body.push_str("</table></div>");
         if let (Some(year), false) = (&funding.donations_year, funding.donations.is_empty()) {
             let total: i64 = funding.donations.iter().map(|d| d.value).sum();
             let donors = funding.donations.len();
@@ -2406,7 +2439,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         licence: &'static str,
         link: &'static str,
     }
-    const SOURCES: [Source; 8] = [
+    const SOURCES: [Source; 9] = [
         Source {
             key: "wikidata",
             name: "Wikidata & Wikimedia Commons",
@@ -2441,6 +2474,13 @@ pub fn data_sources(data: &SiteData) -> Page {
             what: "Each parliamentarian's expenses for the latest four quarters, by IPEA category.",
             licence: "CC BY 3.0 AU, via data.gov.au",
             link: "https://www.ipea.gov.au",
+        },
+        Source {
+            key: "boundaries",
+            name: "Australian Bureau of Statistics",
+            what: "Electorate maps, from the ABS's yearly approximation of each division's boundary.",
+            licence: "CC BY 4.0 © Commonwealth of Australia (ABS)",
+            link: "https://www.abs.gov.au/statistics/standards/australian-statistical-geography-standard-asgs-edition-3/jul2021-jun2026/non-abs-structures/commonwealth-electoral-divisions",
         },
         Source {
             key: "legislation",

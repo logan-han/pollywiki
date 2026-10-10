@@ -158,6 +158,7 @@ async fn sync_house(
                 enrolment: None,
                 established: None,
                 history: None,
+                boundary: None,
             };
             store
                 .put_json(

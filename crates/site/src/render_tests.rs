@@ -3231,9 +3231,13 @@ fn a_party_lists_its_returns_and_folds_its_itemised_donations() {
     let data = sample_data();
     let party = data.party_by_slug("example-party").expect("sample party");
     let html = render(&data, &pages::party_page(&data, party));
+    // Each financial year heads its own group of returns, newest first.
     assert!(html.contains(
-        "<tr><td>2024-25</td><td>Example Party (Federal Secretariat)</td><td class=\"num\">$2,450,000</td><td class=\"num\">$2,210,500</td><td class=\"num\">$150,000</td></tr>"
+        "<tbody><tr class=\"month\"><th colspan=\"4\" scope=\"rowgroup\">2024-25</th></tr><tr><td>Example Party (Federal Secretariat)</td><td class=\"num\">$2,450,000</td><td class=\"num\">$2,210,500</td><td class=\"num\">$150,000</td></tr>"
     ));
+    assert!(
+        html.find(">2024-25</th>").expect("newest") < html.find(">2023-24</th>").expect("older")
+    );
     assert!(html.contains(
         "<details class=\"donations\"><summary>Donations itemised in 2024-25 returns: $175,000 from 2 donors</summary>"
     ));
@@ -3246,4 +3250,31 @@ fn a_party_lists_its_returns_and_folds_its_itemised_donations() {
         .expect("sample party");
     let html = render(&data, &pages::party_page(&data, other));
     assert!(!html.contains("Funding disclosures"));
+}
+
+#[test]
+fn an_electorate_map_names_itself_and_its_neighbours_with_room() {
+    let data = sample_data();
+    let electorate = data
+        .electorate_by_slug("sampleford")
+        .expect("sample electorate");
+    let html = render(&data, &pages::electorate_page(&data, electorate));
+    assert!(html.contains(
+        "<figure class=\"boundary-map\"><svg viewBox=\"0 0 1000 800\" role=\"img\" aria-labelledby=\"map-title\"><title id=\"map-title\">Map of Sampleford and the divisions around it</title>"
+    ));
+    assert!(
+        html.contains("<path class=\"division\" d=\"M300 200L700 180L760 520L420 640L280 470Z\"/>")
+    );
+    assert_eq!(html.matches("<g class=\"neighbours\"><path").count(), 1);
+    // Only a neighbour with room for its name is labelled, and the labels
+    // stay out of the accessibility tree: the title already says it all.
+    assert!(html.contains("<g class=\"labels\" aria-hidden=\"true\"><text x=\"150\" y=\"250\">Placeholder Bay</text></g>"));
+    assert!(!html.contains(">Oldbridge</text>"));
+    assert!(html.contains("Boundary as the ABS approximates it (ASGS 2025)"));
+
+    let bare = data
+        .electorate_by_slug("placeholder-bay")
+        .expect("sample electorate");
+    let html = render(&data, &pages::electorate_page(&data, bare));
+    assert!(!html.contains("boundary-map"));
 }
