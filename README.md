@@ -84,7 +84,12 @@ timing and failures. Traces are named by the job (`pollywiki.bill-notes`,
 `pollywiki.division-context`, `pollywiki.member-note`) and grouped into one
 session per workflow run. Spans go to Langfuse's v4 OpenTelemetry endpoint as
 OTLP/HTTP JSON; without the keys nothing is sent. `LANGFUSE_RECORD_CONTENT=off`
-keeps only the shape of each call.
+keeps only the shape of each call. Read traces back through the Observations
+API v2 (`GET /api/public/v2/observations`, scores through
+`GET /api/public/v3/scores`): the v1 reads such as `/api/public/observations`
+and `/api/public/traces` stop working when Langfuse Cloud moves to v4 on
+16 November 2026, and until then each call shows as an action item on the
+project's migration page.
 
 ## Data licences
 
