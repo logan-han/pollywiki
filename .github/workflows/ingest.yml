@@ -10,7 +10,7 @@ on:
         description: Comma-separated sources for the main job (wikidata,aec-profiles,aec)
         default: wikidata,aec-profiles
       event:
-        description: AEC event id(s), comma-separated (aec source only)
+        description: AEC event id(s), comma-separated, or all (aec source only)
         default: '31496'
 
 permissions:

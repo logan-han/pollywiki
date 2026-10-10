@@ -190,6 +190,76 @@ pub struct ElectionContest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub swing: Option<JsNum>,
     pub elected: bool,
+    /// Senate contests only. The count is state-wide, and votes and pct are
+    /// the whole group's first preferences, not the candidate's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub senate: Option<SenateSeat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenateSeat {
+    pub state: StateCode,
+    pub vacancies: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elected_order: Option<i64>,
+}
+
+/// One state's Senate count at one event, from the AEC's first-preference
+/// and senators-elected files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenateResult {
+    pub event_id: String,
+    pub event_name: String,
+    pub state: StateCode,
+    pub vacancies: i64,
+    pub formal_votes: i64,
+    /// Ranked by first preferences. Ungrouped candidates stand alone.
+    pub groups: Vec<SenateGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenateGroup {
+    /// The ballot-paper letter, or "UG" for an ungrouped candidate.
+    pub ticket: String,
+    pub party: String,
+    /// Above-the-line votes plus every group candidate's own first preferences.
+    pub votes: i64,
+    pub pct: JsNum,
+    pub candidates: Vec<SenateCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenateCandidate {
+    pub name: String,
+    /// First given name and surname, where the ballot also carries middle
+    /// names ("Kim John Carr" is "Kim Carr").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
+    pub party: String,
+    /// Below-the-line first preferences for this candidate alone.
+    pub votes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elected_order: Option<i64>,
+}
+
+/// Who won a seat at one event, for an electorate's run of past results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatResult {
+    pub event: String,
+    pub event_name: String,
+    pub member: String,
+    pub party: String,
+    /// The winner's share of the two-candidate-preferred count, where the
+    /// AEC published one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tcp_pct: Option<JsNum>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub person_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -369,6 +439,9 @@ pub struct Electorate {
     /// Date the division was proclaimed, from the Parliamentary Handbook.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub established: Option<String>,
+    /// Every contest for the seat under this name, newest first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<SeatResult>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

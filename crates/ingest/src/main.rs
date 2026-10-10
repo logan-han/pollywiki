@@ -18,7 +18,7 @@ use store::{LocalStore, S3Store, Store};
 const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [options]
   --store local|s3       default local (.store/); s3 needs POLLYWIKI_DATA_BUCKET
   --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec
-  --event <ids>          AEC event id(s), comma-separated (default 31496)
+  --event <ids>          AEC event id(s), comma-separated, or all (default 31496)
   --rebuild              tvfy only: re-normalise from cached raw, no API calls
 summarise needs GEMINI_API_KEY; 'all' runs it between sync and derive when set.
 ";
@@ -185,7 +185,12 @@ async fn sync(
         }
     }
     if has("aec") {
-        for id in event.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let events = if event == "all" {
+            sources::aec::all_event_ids()
+        } else {
+            event.to_string()
+        };
+        for id in events.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             run_source!("aec", sources::aec::sync_aec(store, id, endpoints));
         }
     }

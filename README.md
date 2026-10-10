@@ -51,6 +51,7 @@ Run a real ingest locally (no key needed for wikidata/aec):
 
 ```sh
 cargo run -p pollywiki-ingest -- sync --sources wikidata,aec --event 31496   # writes .store/
+cargo run -p pollywiki-ingest -- sync --sources aec --event all              # every event since 2004
 cargo run -p pollywiki-ingest -- derive
 BUNDLES_DIR=$PWD/.store/bundles cargo run -p pollywiki-site -- --out dist
 ```

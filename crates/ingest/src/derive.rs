@@ -9,8 +9,8 @@ use indexmap::IndexMap;
 use pollywiki_schema::{
     js_compare, slugify, title_from_slug, AiText, Bill, Division, ElectionContest, Electorate,
     ElectorateResult, House, Meta, Party, PartyFacts, PartySeats, Person, PersonStats,
-    QuickSearchEntry, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS,
-    BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
+    QuickSearchEntry, SeatResult, SenateResult, SenateSeat, SummaryKind, BUNDLE_BILLS,
+    BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -31,6 +31,7 @@ pub async fn derive(store: &Store) -> Result<()> {
     let mut divisions = load_all::<Division>(store, "canonical/divisions/").await?;
     let mut bills = load_all::<Bill>(store, "canonical/bills/").await?;
     let elections = load_all::<ElectorateResult>(store, "canonical/elections/").await?;
+    let senate = load_all::<SenateResult>(store, "canonical/senate/").await?;
 
     let electorate_index: HashMap<String, usize> = electorates
         .iter()
@@ -147,6 +148,11 @@ pub async fn derive(store: &Store) -> Result<()> {
             let Some(&i) = slug_to_index.get(&slugify(&candidate.name)) else {
                 continue;
             };
+            // Twenty years of candidates hold namesakes; one who stood in
+            // another state is someone else.
+            if people[i].state.is_some_and(|s| s != result.state) {
+                continue;
+            }
             let person = &mut people[i];
             person
                 .elections
@@ -161,7 +167,45 @@ pub async fn derive(store: &Store) -> Result<()> {
                     pct: pct_of(candidate.votes as f64, formal),
                     swing: candidate.swing,
                     elected: candidate.elected,
+                    senate: None,
                 });
+        }
+    }
+    // Senate contests carry the whole group's share: the count is state-wide
+    // and most votes are cast for the group, not the candidate.
+    for result in &senate {
+        for group in &result.groups {
+            for candidate in &group.candidates {
+                let Some(&i) = [Some(&candidate.name), candidate.short_name.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|name| slug_to_index.get(&slugify(name)))
+                else {
+                    continue;
+                };
+                if people[i].state != Some(result.state) {
+                    continue;
+                }
+                people[i]
+                    .elections
+                    .get_or_insert_with(Vec::new)
+                    .push(ElectionContest {
+                        event: result.event_id.clone(),
+                        event_name: result.event_name.clone(),
+                        electorate_slug: String::new(),
+                        electorate_name: result.state.as_str().to_string(),
+                        party: candidate.party.clone(),
+                        votes: group.votes,
+                        pct: group.pct,
+                        swing: None,
+                        elected: candidate.elected_order.is_some(),
+                        senate: Some(SenateSeat {
+                            state: result.state,
+                            vacancies: result.vacancies,
+                            elected_order: candidate.elected_order,
+                        }),
+                    });
+            }
         }
     }
     for person in &mut people {
@@ -186,6 +230,12 @@ pub async fn derive(store: &Store) -> Result<()> {
             electorate.profile = Some(profile.profile);
             electorate.enrolment = profile.enrolment;
         }
+        let history: Vec<SeatResult> = elections
+            .iter()
+            .filter(|r| r.electorate_slug == electorate.slug && r.state == electorate.state)
+            .filter_map(|r| seat_result(r, &people))
+            .sorted_newest_first();
+        electorate.history = (!history.is_empty()).then_some(history);
         // A name can be reused after a division is abolished, so only the
         // sitting division of that name in that state counts.
         electorate.established = handbook_electorates
@@ -322,6 +372,48 @@ pub async fn derive(store: &Store) -> Result<()> {
         current_elections.len()
     );
     Ok(())
+}
+
+/// Who took the seat at one event, with their two-candidate-preferred share
+/// where the AEC published the count. The winner links to a profile only
+/// when that member sat for the same state.
+fn seat_result(result: &ElectorateResult, people: &[Person]) -> Option<SeatResult> {
+    let winner = result
+        .first_prefs
+        .iter()
+        .find(|c| c.elected && !c.is_informal())?;
+    let tcp_total: i64 = result.tcp.iter().map(|c| c.votes).sum();
+    let tcp_pct = result
+        .tcp
+        .iter()
+        .find(|c| c.name == winner.name)
+        .filter(|_| tcp_total > 0)
+        .map(|c| pct_of(c.votes as f64, tcp_total as f64));
+    let slug = slugify(&winner.name);
+    let person_slug = people
+        .iter()
+        .any(|p| p.slug == slug && p.state.is_none_or(|s| s == result.state))
+        .then_some(slug);
+    Some(SeatResult {
+        event: result.event_id.clone(),
+        event_name: result.event_name.clone(),
+        member: winner.name.clone(),
+        party: winner.party.clone(),
+        tcp_pct,
+        person_slug,
+    })
+}
+
+trait NewestFirst {
+    fn sorted_newest_first(self) -> Vec<SeatResult>;
+}
+
+impl<I: Iterator<Item = SeatResult>> NewestFirst for I {
+    fn sorted_newest_first(self) -> Vec<SeatResult> {
+        let mut out: Vec<SeatResult> = self.collect();
+        out.sort_by(|a, b| js_compare(&b.event, &a.event));
+        out
+    }
 }
 
 fn compute_vote_stats(people: &mut [Person], divisions: &[Division]) {
@@ -807,6 +899,144 @@ mod tests {
             "bills are indexed by id"
         );
         assert!(quick.iter().any(|e| e.sub == "Before Senate"));
+    }
+
+    #[tokio::test]
+    async fn senate_counts_seat_histories_and_handbook_extras_join_within_the_state() {
+        let store = seeded("senate-history").await;
+        put(
+            &store,
+            "canonical/senate/31496/tas.json",
+            r#"{
+            "eventId":"31496","eventName":"2025 federal election","state":"TAS",
+            "vacancies":6,"formalVotes":1000,
+            "groups":[{"ticket":"A","party":"Example Party","votes":400,"pct":40,
+              "candidates":[
+                {"name":"Morgan Lee Rossi","shortName":"Morgan Rossi","party":"Example Party",
+                 "votes":50,"electedOrder":2},
+                {"name":"Alex Paterson","party":"Example Party","votes":3}]}]}"#,
+        )
+        .await;
+        // A namesake who stood for a House seat in another state.
+        put(
+            &store,
+            "canonical/elections/namesake.json",
+            r#"{
+            "eventId":"24310","eventName":"2019 federal election","electorateSlug":"elsewhere",
+            "electorateName":"Elsewhere","state":"NSW",
+            "firstPrefs":[{"name":"Alex Paterson","party":"Other Party","votes":10,"pct":10,
+                           "elected":false}],"tcp":[]}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/elections/2004.json",
+            r#"{
+            "eventId":"12246","eventName":"2004 federal election","electorateSlug":"sampleford",
+            "electorateName":"Sampleford","state":"VIC",
+            "firstPrefs":[{"name":"Casey Doe","party":"Independent","votes":60,"pct":60,
+                           "elected":true},
+                          {"name":"Alex Paterson","party":"Example Party","votes":40,"pct":40,
+                           "elected":false}],
+            "tcp":[{"name":"Casey Doe","party":"Independent","votes":55,"pct":55,"elected":true},
+                   {"name":"Alex Paterson","party":"Example Party","votes":45,"pct":45,
+                    "elected":false}]}"#,
+        )
+        .await;
+        put(
+            &store,
+            "canonical/handbook/alex-paterson.json",
+            r#"{
+            "phid":"ALEX1","storedAt":"2026-08-01T00:00:00.000Z",
+            "background":{"occupations":[],"qualifications":[]},"positions":[],
+            "committees":[{"name":"Example Affairs","kind":"Joint Standing","from":"2025-07-28"}]}"#,
+        )
+        .await;
+        put(
+            &store,
+            ELECTORATES_KEY,
+            r#"{"storedAt":"2026-08-01T00:00:00.000Z","electorates":[
+              {"name":"Sampleford","state":"NSW","established":"1949-03-11"},
+              {"name":"Sampleford","state":"VIC","established":"1900-10-08","ceased":"1922-01-01"},
+              {"name":"Sampleford","state":"VIC","established":"1922-01-02"}]}"#,
+        )
+        .await;
+        derive(&store).await.expect("derive");
+
+        let people: Vec<Person> = lines(
+            &store
+                .get_raw("bundles/people.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let alex = people.iter().find(|p| p.slug == "alex-paterson").unwrap();
+        let events: Vec<&str> = alex
+            .elections
+            .iter()
+            .flatten()
+            .map(|e| e.event.as_str())
+            .collect();
+        // The NSW namesake and the Tasmanian Senate candidate are someone else.
+        assert_eq!(events, ["31496", "27966", "12246"]);
+        assert!(alex.elections.iter().flatten().all(|e| e.senate.is_none()));
+        assert_eq!(
+            alex.committees.as_ref().map(|c| c[0].name.as_str()),
+            Some("Example Affairs")
+        );
+
+        let rossi = people.iter().find(|p| p.slug == "morgan-rossi").unwrap();
+        let contest = &rossi.elections.as_ref().expect("senate contest")[0];
+        let seat = contest.senate.as_ref().expect("a Senate row");
+        assert_eq!((seat.vacancies, seat.elected_order), (6, Some(2)));
+        assert!(contest.elected);
+        assert_eq!(
+            contest.votes, 400,
+            "the group's votes, not the candidate's own"
+        );
+        assert_eq!(contest.pct.0, 40.0);
+        assert!(rossi.committees.is_none(), "no profile, no committees");
+
+        let electorates: Vec<Electorate> = lines(
+            &store
+                .get_raw("bundles/electorates.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let sampleford = electorates.iter().find(|e| e.slug == "sampleford").unwrap();
+        // The sitting division of the name in the seat's own state.
+        assert_eq!(sampleford.established.as_deref(), Some("1922-01-02"));
+        let history = sampleford.history.as_ref().expect("history");
+        let rows: Vec<(&str, &str, Option<&str>)> = history
+            .iter()
+            .map(|h| {
+                (
+                    h.event.as_str(),
+                    h.member.as_str(),
+                    h.person_slug.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("31496", "Alex Paterson", Some("alex-paterson")),
+                ("27966", "Casey Doe", None),
+                ("12246", "Casey Doe", None)
+            ]
+        );
+        assert!(
+            history[0].tcp_pct.is_none(),
+            "no two-candidate count, no figure"
+        );
+        assert_eq!(history[2].tcp_pct.map(|p| p.0), Some(55.0));
+        assert!(electorates
+            .iter()
+            .find(|e| e.slug == "placeholder-bay")
+            .unwrap()
+            .history
+            .is_none());
     }
 
     #[tokio::test]

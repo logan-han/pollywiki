@@ -844,14 +844,29 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
         for e in elections {
             // A seat abolished at a redistribution has no page of its own; the
-            // contest stays on the record as plain text.
-            let seat = match data.electorate_by_slug(&e.electorate_slug) {
-                Some(_) => format!(
+            // contest stays on the record as plain text. A Senate count is the
+            // whole state's.
+            let seat = match (&e.senate, data.electorate_by_slug(&e.electorate_slug)) {
+                (Some(senate), _) => format!(
+                    "Senate, {}",
+                    esc(state_name(senate.state.as_str()).unwrap_or(senate.state.as_str()))
+                ),
+                (None, Some(_)) => format!(
                     "<a href=\"/electorates/{}/\">{}</a>",
                     e.electorate_slug,
                     esc(&e.electorate_name)
                 ),
-                None => esc(&e.electorate_name),
+                (None, None) => esc(&e.electorate_name),
+            };
+            let result = match (&e.senate, e.elected) {
+                (Some(senate), true) => match senate.elected_order {
+                    Some(order) => {
+                        format!("Elected {} of {}", data::ordinal(order), senate.vacancies)
+                    }
+                    None => "Elected".to_string(),
+                },
+                (_, true) => "Elected".to_string(),
+                (_, false) => "Not elected".to_string(),
             };
             body.push_str(&format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
@@ -860,10 +875,14 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
                 esc(&e.party),
                 to_fixed(e.pct.0, 2),
                 signed(e.swing),
-                if e.elected { "Elected" } else { "Not elected" },
+                result,
             ));
         }
-        body.push_str("</tbody></table></div><p class=\"note\">House contests only; first-preference share of the formal vote at each event.</p>");
+        body.push_str("</tbody></table></div><p class=\"note\">First-preference share of the formal vote at each event, matched by name within the member's state.");
+        if elections.iter().any(|e| e.senate.is_some()) {
+            body.push_str(" A Senate row gives the whole group's share of the state's formal vote, since most Senate votes are cast for a group above the line.");
+        }
+        body.push_str("</p>");
     }
 
     if !raised.is_empty() {
@@ -1872,6 +1891,26 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
         }
     }
 
+    if let Some(history) = electorate.history.as_deref().filter(|h| !h.is_empty()) {
+        body.push_str("<h2 id=\"past-results\">Results at each election</h2>");
+        body.push_str(&table_scroll("Results at each election"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Elected</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Two-candidate %</th></tr></thead><tbody>");
+        for h in history {
+            let member = match &h.person_slug {
+                Some(slug) => format!("<a href=\"/people/{slug}/\">{}</a>", esc(&h.member)),
+                None => esc(&h.member),
+            };
+            body.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td></tr>",
+                esc(&h.event_name),
+                member,
+                esc(&h.party),
+                h.tcp_pct.map(|p| to_fixed(p.0, 2)).unwrap_or_default(),
+            ));
+        }
+        body.push_str("</tbody></table></div><p class=\"note\">Every contest for a division of this name since 2004, each on the boundaries in force at the time. The two-candidate figure is the winner's share of the final count.</p>");
+    }
+
     body.push_str(&format!(
         "<p class=\"attribution\">Election figures and profile © Commonwealth of Australia (AEC), CC BY 4.0.{} ✓ marks the elected candidate.</p>",
         if electorate.established.is_some() {
@@ -2182,7 +2221,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         Source {
             key: "aec",
             name: "Australian Electoral Commission",
-            what: "Federal election results by electorate, 2019 onwards including by-elections.",
+            what: "Federal election results: House by electorate and Senate by state, from 2004 including by-elections.",
             licence: "CC BY 4.0 © Commonwealth of Australia",
             link: "https://results.aec.gov.au",
         },

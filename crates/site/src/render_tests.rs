@@ -3078,3 +3078,54 @@ fn an_electorate_page_dates_the_division_from_the_handbook() {
     assert!(!html.contains(">Established</th>"));
     assert!(!html.contains("Date established from the Parliamentary Handbook."));
 }
+
+#[test]
+fn a_senate_contest_reads_as_the_state_count_with_the_place_elected() {
+    let data = sample_data();
+    let senator = data.person_by_slug("morgan-rossi").expect("sample senator");
+    let html = render(&data, &pages::person_page(&data, senator));
+    assert!(html.contains(
+        "<tr><td>2025 federal election</td><td>Senate, Tasmania</td><td>Example Party</td><td class=\"num\">33.41</td><td class=\"num\"></td><td>Elected 2nd of 6</td></tr>"
+    ));
+    assert!(html.contains("<td>Senate, Tasmania</td><td>Example Party</td><td class=\"num\">27.90</td><td class=\"num\"></td><td>Not elected</td>"));
+    assert!(html.contains("A Senate row gives the whole group's share"));
+
+    // A member who only ever stood for the House gets no Senate caveat.
+    let mp = data.person_by_slug("alex-paterson").expect("sample member");
+    let html = render(&data, &pages::person_page(&data, mp));
+    assert!(!html.contains("A Senate row"));
+    assert!(html.contains("matched by name within the member's state"));
+    // An abolished seat stays plain text.
+    assert!(html.contains("<td>2004 federal election</td><td>Oldbridge</td>"));
+}
+
+#[test]
+fn an_electorate_lists_who_won_it_at_each_election() {
+    let data = sample_data();
+    let electorate = data
+        .electorate_by_slug("sampleford")
+        .expect("sample electorate");
+    let html = render(&data, &pages::electorate_page(&data, electorate));
+    let start = html
+        .find("<h2 id=\"past-results\">Results at each election</h2>")
+        .expect("history section");
+    let table = &html[start..start + html[start..].find("</table>").expect("table end")];
+    // A winner with a profile links to it; one without stays plain text.
+    assert!(table.contains(
+        "<tr><td>Sample election</td><td><a href=\"/people/alex-paterson/\">Alex Paterson</a></td><td>Example Party</td><td class=\"num\">53.00</td></tr>"
+    ));
+    assert!(
+        table.contains("<td>Dana Former</td><td>Retired Party</td><td class=\"num\">50.12</td>")
+    );
+    // No two-candidate count published, no figure invented.
+    assert!(
+        table.contains("<td>Robin Roe</td><td>Placeholder Alliance</td><td class=\"num\"></td>")
+    );
+    assert!(html.contains("each on the boundaries in force at the time"));
+
+    let bare = data
+        .electorate_by_slug("placeholder-bay")
+        .expect("sample electorate");
+    let html = render(&data, &pages::electorate_page(&data, bare));
+    assert!(!html.contains("past-results"));
+}

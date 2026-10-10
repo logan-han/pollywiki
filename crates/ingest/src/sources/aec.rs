@@ -1,31 +1,101 @@
 use crate::endpoints::Endpoints;
 use crate::http::fetch_text;
 use crate::store::Store;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use indexmap::IndexMap;
-use pollywiki_schema::{slugify, CandidateResult, Electorate, ElectorateResult, JsNum, StateCode};
+use pollywiki_schema::{
+    slugify, CandidateResult, Electorate, ElectorateResult, JsNum, SenateCandidate, SenateGroup,
+    SenateResult, StateCode,
+};
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
-fn event_name(event_id: &str) -> Option<&'static str> {
-    match event_id {
-        "31633" => Some("2026 Farrer by-election"),
-        "31496" => Some("2025 federal election"),
-        "29807" => Some("2024 Cook by-election"),
-        "29778" => Some("2024 Dunkley by-election"),
-        "29422" => Some("2023 Fadden by-election"),
-        "28791" => Some("2023 Aston by-election"),
-        "27966" => Some("2022 federal election"),
-        "24310" => Some("2019 federal election"),
-        _ => None,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// House and Senate, with per-candidate totals published directly.
+    General,
+    /// House only, published as polling-place files that are summed here.
+    ByElection,
+    /// A Senate count on its own, as the 2014 WA re-run.
+    SenateOnly,
 }
 
-// General elections publish per-candidate totals directly; by-elections only
-// publish polling-place level files, which are aggregated per candidate here.
-const BY_ELECTIONS: [&str; 7] = [
-    "31633", "29807", "29778", "29422", "28791", "25881", "25820",
+struct Event {
+    id: &'static str,
+    name: &'static str,
+    kind: Kind,
+}
+
+const fn event(id: &'static str, name: &'static str, kind: Kind) -> Event {
+    Event { id, name, kind }
+}
+
+/// Every event in the AEC's tally room from 2004 on, bar the 2005 Werriwa
+/// by-election, which has no downloads.
+const EVENTS: [Event; 33] = [
+    event("31633", "2026 Farrer by-election", Kind::ByElection),
+    event("31496", "2025 federal election", Kind::General),
+    event("29807", "2024 Cook by-election", Kind::ByElection),
+    event("29778", "2024 Dunkley by-election", Kind::ByElection),
+    event("29422", "2023 Fadden by-election", Kind::ByElection),
+    event("28791", "2023 Aston by-election", Kind::ByElection),
+    event("27966", "2022 federal election", Kind::General),
+    event("25881", "2020 Groom by-election", Kind::ByElection),
+    event("25820", "2020 Eden-Monaro by-election", Kind::ByElection),
+    event("24310", "2019 federal election", Kind::General),
+    event("22844", "2018 Wentworth by-election", Kind::ByElection),
+    event("22696", "2018 Perth by-election", Kind::ByElection),
+    event("22695", "2018 Mayo by-election", Kind::ByElection),
+    event("22694", "2018 Longman by-election", Kind::ByElection),
+    event("22693", "2018 Fremantle by-election", Kind::ByElection),
+    event("22692", "2018 Braddon by-election", Kind::ByElection),
+    event("21751", "2018 Batman by-election", Kind::ByElection),
+    event("21379", "2017 Bennelong by-election", Kind::ByElection),
+    event("21364", "2017 New England by-election", Kind::ByElection),
+    event("20499", "2016 federal election", Kind::General),
+    event("19402", "2015 North Sydney by-election", Kind::ByElection),
+    event("18126", "2015 Canning by-election", Kind::ByElection),
+    event("17875", "2014 WA Senate election", Kind::SenateOnly),
+    event("17552", "2014 Griffith by-election", Kind::ByElection),
+    event("17496", "2013 federal election", Kind::General),
+    event("15508", "2010 federal election", Kind::General),
+    event("14358", "2009 Higgins by-election", Kind::ByElection),
+    event("14357", "2009 Bradfield by-election", Kind::ByElection),
+    event("13827", "2008 Lyne by-election", Kind::ByElection),
+    event("13826", "2008 Mayo by-election", Kind::ByElection),
+    event("13813", "2008 Gippsland by-election", Kind::ByElection),
+    event("13745", "2007 federal election", Kind::General),
+    event("12246", "2004 federal election", Kind::General),
 ];
+
+fn find_event(event_id: &str) -> Option<&'static Event> {
+    EVENTS.iter().find(|e| e.id == event_id)
+}
+
+fn event_name(event_id: &str) -> Option<&'static str> {
+    find_event(event_id).map(|e| e.name)
+}
+
+/// Every event id the tally room has files for, for a full backfill.
+pub fn all_event_ids() -> String {
+    EVENTS.iter().map(|e| e.id).collect::<Vec<_>>().join(",")
+}
+
+/// The 2004 tally room predates the layout every later event shares: its
+/// files sit under results/ and carry no Elected column.
+fn is_legacy(event_id: &str) -> bool {
+    event_id == "12246"
+}
+
+fn downloads(endpoints: &Endpoints, event_id: &str) -> String {
+    let dir = if is_legacy(event_id) {
+        "results"
+    } else {
+        "Website"
+    };
+    format!("{}/{event_id}/{dir}/Downloads", endpoints.aec_results)
+}
 
 pub type AecRow = IndexMap<String, String>;
 
@@ -35,15 +105,34 @@ struct EventRows {
 }
 
 pub async fn sync_aec(store: &Store, event_id: &str, endpoints: &Endpoints) -> Result<()> {
-    let rows = if BY_ELECTIONS.contains(&event_id) {
+    let known = find_event(event_id);
+    // An event outside the table is read as a general election, House only.
+    let kind = known.map(|e| e.kind).unwrap_or(Kind::General);
+    let event_name = event_name(event_id)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("AEC event {event_id}"));
+    if kind != Kind::SenateOnly {
+        sync_house(store, event_id, &event_name, kind, endpoints).await?;
+    }
+    if known.is_some() && kind != Kind::ByElection {
+        sync_senate(store, event_id, &event_name, endpoints).await?;
+    }
+    Ok(())
+}
+
+async fn sync_house(
+    store: &Store,
+    event_id: &str,
+    event_name: &str,
+    kind: Kind,
+    endpoints: &Endpoints,
+) -> Result<()> {
+    let rows = if kind == Kind::ByElection {
         fetch_by_election(store, event_id, endpoints).await?
     } else {
         fetch_general(store, event_id, endpoints).await?
     };
 
-    let event_name = event_name(event_id)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("AEC event {event_id}"));
     // Electorate entities come only from the most recent general election;
     // historical events contribute results without redefining the seat map.
     let defines_electorates = event_id == "31496";
@@ -68,6 +157,7 @@ pub async fn sync_aec(store: &Store, event_id: &str, endpoints: &Endpoints) -> R
                 profile: None,
                 enrolment: None,
                 established: None,
+                history: None,
             };
             store
                 .put_json(
@@ -79,7 +169,7 @@ pub async fn sync_aec(store: &Store, event_id: &str, endpoints: &Endpoints) -> R
 
         let result = ElectorateResult {
             event_id: event_id.to_string(),
-            event_name: event_name.clone(),
+            event_name: event_name.to_string(),
             electorate_slug: electorate_slug.clone(),
             electorate_name: name.clone(),
             state: state_code,
@@ -97,28 +187,45 @@ pub async fn sync_aec(store: &Store, event_id: &str, endpoints: &Endpoints) -> R
 }
 
 async fn fetch_general(store: &Store, event_id: &str, endpoints: &Endpoints) -> Result<EventRows> {
-    let files = [
-        ("HouseFirstPrefsByCandidateByVoteTypeDownload", true),
-        ("HouseTcpByCandidateByVoteTypeDownload", false),
-    ];
-    let mut first_prefs = Vec::new();
-    let mut tcp = Vec::new();
-    for (file, is_first_prefs) in files {
-        let rows = fetch_csv(
+    let base = downloads(endpoints, event_id);
+    let mut first_prefs = fetch_csv(
+        store,
+        event_id,
+        &format!("{base}/HouseFirstPrefsByCandidateByVoteTypeDownload-{event_id}.csv"),
+        "HouseFirstPrefsByCandidateByVoteTypeDownload",
+        endpoints,
+    )
+    .await?;
+    let mut tcp = fetch_csv(
+        store,
+        event_id,
+        &format!("{base}/HouseTcpByCandidateByVoteTypeDownload-{event_id}.csv"),
+        "HouseTcpByCandidateByVoteTypeDownload",
+        endpoints,
+    )
+    .await?;
+    // Without an Elected column, the members-elected file says who won.
+    if is_legacy(event_id) {
+        let elected = fetch_csv(
             store,
             event_id,
-            &format!(
-                "{}/{event_id}/Website/Downloads/{file}-{event_id}.csv",
-                endpoints.aec_results
-            ),
-            file,
+            &format!("{base}/HouseMembersElectedDownload-{event_id}.csv"),
+            "HouseMembersElectedDownload",
             endpoints,
         )
         .await?;
-        if is_first_prefs {
-            first_prefs = rows;
-        } else {
-            tcp = rows;
+        let ids: HashSet<&str> = elected
+            .iter()
+            .filter_map(|r| r.get("CandidateID").map(String::as_str))
+            .collect();
+        for row in first_prefs.iter_mut().chain(tcp.iter_mut()) {
+            let won = row
+                .get("CandidateID")
+                .is_some_and(|id| ids.contains(id.as_str()));
+            row.insert(
+                "Elected".to_string(),
+                if won { "Y" } else { "N" }.to_string(),
+            );
         }
     }
     Ok(EventRows { first_prefs, tcp })
@@ -129,7 +236,7 @@ async fn fetch_by_election(
     event_id: &str,
     endpoints: &Endpoints,
 ) -> Result<EventRows> {
-    let base = format!("{}/{event_id}/Website/Downloads", endpoints.aec_results);
+    let base = downloads(endpoints, event_id);
     let candidates = fetch_csv(
         store,
         event_id,
@@ -163,6 +270,204 @@ async fn fetch_by_election(
         first_prefs: aggregate_polling_places(&first_prefs_pp),
         tcp: aggregate_polling_places(&tcp_pp),
     })
+}
+
+async fn sync_senate(
+    store: &Store,
+    event_id: &str,
+    event_name: &str,
+    endpoints: &Endpoints,
+) -> Result<()> {
+    let base = downloads(endpoints, event_id);
+    let first_prefs = fetch_csv(
+        store,
+        event_id,
+        &format!("{base}/SenateFirstPrefsByStateByVoteTypeDownload-{event_id}.csv"),
+        "SenateFirstPrefsByStateByVoteTypeDownload",
+        endpoints,
+    )
+    .await?;
+    let elected = fetch_csv(
+        store,
+        event_id,
+        &format!("{base}/SenateSenatorsElectedDownload-{event_id}.csv"),
+        "SenateSenatorsElectedDownload",
+        endpoints,
+    )
+    .await?;
+    let results = to_senate_results(event_id, event_name, &first_prefs, &elected)?;
+    if results.is_empty() {
+        bail!("event {event_id}: no Senate first preferences in the file");
+    }
+    for result in &results {
+        store
+            .put_json(
+                &format!(
+                    "canonical/senate/{event_id}/{}.json",
+                    result.state.as_str().to_lowercase()
+                ),
+                result,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// "SURNAME, Given Names" as the AEC prints Senate candidates, in reading
+/// order, with the short form when there are middle names to drop.
+fn senate_name(details: &str) -> (String, Option<String>) {
+    match details.split_once(',') {
+        Some((surname, given)) => {
+            let (surname, given) = (surname.trim(), given.trim());
+            let full = title_case(format!("{given} {surname}").trim());
+            let first = given.split_whitespace().next().unwrap_or("");
+            let short = title_case(format!("{first} {surname}").trim());
+            let short = (short != full).then_some(short);
+            (full, short)
+        }
+        None => (title_case(details.trim()), None),
+    }
+}
+
+/// Each state's groups, ranked by first preferences. A group's votes are its
+/// above-the-line votes plus its candidates' own; shares are of the state's
+/// formal vote, which is every row of the file summed.
+pub fn to_senate_results(
+    event_id: &str,
+    event_name: &str,
+    rows: &[AecRow],
+    elected: &[AecRow],
+) -> Result<Vec<SenateResult>> {
+    let mut by_state: IndexMap<String, Vec<&AecRow>> = IndexMap::new();
+    for row in rows {
+        let state = field(row, "StateAb");
+        if !state.is_empty() && row.contains_key("CandidateDetails") {
+            by_state.entry(state).or_default().push(row);
+        }
+    }
+    let mut results = Vec::new();
+    for (state, rows) in by_state {
+        let state_code =
+            StateCode::parse(&state).ok_or_else(|| anyhow!("invalid state code: {state:?}"))?;
+        let formal: f64 = rows.iter().map(|r| row_votes(r)).sum();
+        let winners: Vec<&AecRow> = elected
+            .iter()
+            .filter(|r| field(r, "StateAb") == state)
+            .collect();
+        let mut groups: IndexMap<String, SenateGroup> = IndexMap::new();
+        for row in rows {
+            // 2004 to 2013 files call the column Ticket; later ones Group.
+            let ticket = row
+                .get("Group")
+                .or_else(|| row.get("Ticket"))
+                .map(|t| t.trim().to_string())
+                .unwrap_or_default();
+            // The 2004 file marks sitting senators with a leading "#".
+            let details = field(row, "CandidateDetails")
+                .trim_start_matches(['#', '*'])
+                .trim()
+                .to_string();
+            let party = match field(row, "PartyName") {
+                p if p.is_empty() => "Independent".to_string(),
+                p => p,
+            };
+            let votes = row_votes(row) as i64;
+            if field(row, "BallotPosition") == "0" {
+                let group = groups.entry(ticket.clone()).or_insert_with(|| SenateGroup {
+                    ticket: ticket.clone(),
+                    party: party.clone(),
+                    votes: 0,
+                    pct: JsNum(0.0),
+                    candidates: Vec::new(),
+                });
+                group.party = party;
+                group.votes += votes;
+                continue;
+            }
+            let (name, short_name) = senate_name(&details);
+            let elected_order = winner_order(&winners, &details);
+            let candidate = SenateCandidate {
+                name,
+                short_name,
+                party: party.clone(),
+                votes,
+                elected_order,
+            };
+            // Ungrouped candidates each stand alone.
+            let key = if ticket == "UG" {
+                format!("UG:{details}")
+            } else {
+                ticket.clone()
+            };
+            let group = groups.entry(key).or_insert_with(|| SenateGroup {
+                ticket: ticket.clone(),
+                party,
+                votes: 0,
+                pct: JsNum(0.0),
+                candidates: Vec::new(),
+            });
+            group.votes += votes;
+            group.candidates.push(candidate);
+        }
+        let mut groups: Vec<SenateGroup> = groups
+            .into_values()
+            .map(|mut g| {
+                g.pct = pct_of(g.votes as f64, formal);
+                g
+            })
+            .collect();
+        groups.sort_by_key(|g| std::cmp::Reverse(g.votes));
+        results.push(SenateResult {
+            event_id: event_id.to_string(),
+            event_name: event_name.to_string(),
+            state: state_code,
+            vacancies: winners.len() as i64,
+            formal_votes: formal as i64,
+            groups,
+        });
+    }
+    Ok(results)
+}
+
+/// A candidate's place in the order elected, matched on surname and given
+/// names, or on surname and first given name where the files differ over
+/// middle names ("CARR, Kim John" against "Kim CARR").
+fn winner_order(winners: &[&AecRow], details: &str) -> Option<i64> {
+    let (surname, given) = details.split_once(',')?;
+    let surname = surname.trim().to_uppercase();
+    let given = given.trim().to_uppercase();
+    let first = |names: &str| names.split_whitespace().next().unwrap_or("").to_string();
+    let same_surname: Vec<&&AecRow> = winners
+        .iter()
+        .filter(|r| upper(r, "Surname") == surname)
+        .collect();
+    let winner = match same_surname.iter().find(|r| upper(r, "GivenNm") == given) {
+        Some(exact) => **exact,
+        None => {
+            let close: Vec<&AecRow> = same_surname
+                .iter()
+                .filter(|r| !given.is_empty() && first(&upper(r, "GivenNm")) == first(&given))
+                .map(|r| **r)
+                .collect();
+            match close.as_slice() {
+                [only] => *only,
+                _ => return None,
+            }
+        }
+    };
+    winner.get("ElectedOrder")?.trim().parse().ok()
+}
+
+fn upper(row: &AecRow, key: &str) -> String {
+    row.get(key)
+        .map(|v| v.trim().to_uppercase())
+        .unwrap_or_default()
+}
+
+fn field(row: &AecRow, key: &str) -> String {
+    row.get(key)
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// Sums polling-place rows into per-candidate totals shaped like the
@@ -384,12 +689,20 @@ mod tests {
         assert_eq!(event_name("31496"), Some("2025 federal election"));
         assert_eq!(event_name("29807"), Some("2024 Cook by-election"));
         assert_eq!(event_name("99999"), None);
-        // Every by-election id in the aggregation list is also a named event.
-        for id in BY_ELECTIONS {
-            if let Some(name) = event_name(id) {
-                assert!(name.contains("by-election"), "{id} is named {name}");
-            }
+        // Every by-election is named as one, and nothing else is.
+        for e in &EVENTS {
+            assert_eq!(
+                e.kind == Kind::ByElection,
+                e.name.contains("by-election"),
+                "{} is named {}",
+                e.id,
+                e.name
+            );
         }
+        let ids: HashSet<&str> = EVENTS.iter().map(|e| e.id).collect();
+        assert_eq!(ids.len(), EVENTS.len(), "no event is listed twice");
+        assert!(all_event_ids().starts_with("31633,31496,"));
+        assert!(all_event_ids().ends_with(",12246"));
     }
 
     #[test]
@@ -566,6 +879,9 @@ mod tests {
                     &["VIC,Sampleford,101,PATERSON,ALEXANDRA,Example Party,EX,52000,1.8"],
                 ));
             }
+            if let Some(senate) = senate_file(&req.path) {
+                return senate;
+            }
             Response::status(404, "unexpected file")
         });
         let store = new_store("general");
@@ -601,15 +917,173 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+
+        // A general election also stores each state's Senate count.
+        let senate: SenateResult = store
+            .get_json("canonical/senate/31496/tas.json")
+            .await
+            .unwrap()
+            .expect("senate count stored");
+        assert_eq!(senate.event_name, "2025 federal election");
+        assert_eq!(senate.vacancies, 2);
+    }
+
+    /// One state's Senate files, as the 2025 layout prints them.
+    fn senate_file(path: &str) -> Option<Response> {
+        if path.contains("SenateFirstPrefsByStateByVoteTypeDownload") {
+            return Some(Response::text(csv(
+                "StateAb,Group,CandidateID,BallotPosition,CandidateDetails,PartyName,OrdinaryVotes,TotalVotes",
+                &[
+                    "TAS,A,1,0,A Above-the-line Votes,Example Party,0,60000",
+                    "TAS,A,2,1,\"#ROSSI, Morgan Lee\",Example Party,0,5000",
+                    "TAS,A,3,2,\"PATEL, Jo\",Example Party,0,1000",
+                    "TAS,B,4,0,B Above-the-line Votes,Placeholder Alliance,0,24000",
+                    "TAS,B,5,1,\"ROSSI, Sam\",Placeholder Alliance,0,500",
+                    "TAS,UG,6,1,\"LONE, Pat\",,0,9500",
+                ],
+            )));
+        }
+        if path.contains("SenateSenatorsElectedDownload") {
+            return Some(Response::text(csv(
+                "StateAb,GivenNm,Surname,PartyNm,PartyAb,ElectedOrder",
+                &[
+                    "TAS,Morgan,ROSSI,Example Party,EX,1",
+                    "TAS,Jo,PATEL,Example Party,EX,2",
+                ],
+            )));
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn a_senate_count_sums_each_group_and_marks_the_order_elected() {
+        let server = TestServer::start(|req| {
+            senate_file(&req.path).unwrap_or_else(|| {
+                panic!("a Senate-only event fetches no House file: {}", req.path)
+            })
+        });
+        let store = new_store("senate-only");
+        sync_aec(&store, "17875", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        assert!(
+            store.list("canonical/elections/").await.unwrap().is_empty(),
+            "no House results for a Senate-only event"
+        );
+        let senate: SenateResult = store
+            .get_json("canonical/senate/17875/tas.json")
+            .await
+            .unwrap()
+            .expect("senate count stored");
+        assert_eq!(senate.event_name, "2014 WA Senate election");
+        assert_eq!(
+            senate.formal_votes, 100_000,
+            "every row of the state, summed"
+        );
+        let tickets: Vec<&str> = senate.groups.iter().map(|g| g.ticket.as_str()).collect();
+        assert_eq!(tickets, ["A", "B", "UG"], "ranked by first preferences");
+        let a = &senate.groups[0];
+        assert_eq!(a.votes, 66_000, "above the line plus each candidate's own");
+        assert_eq!(a.pct, JsNum(66.0));
+        assert_eq!(a.party, "Example Party");
+        // Middle names on the ballot still find the winner; the short form
+        // is kept for matching.
+        assert_eq!(a.candidates[0].name, "Morgan Lee Rossi");
+        assert_eq!(a.candidates[0].short_name.as_deref(), Some("Morgan Rossi"));
+        assert_eq!(a.candidates[0].elected_order, Some(1));
+        assert_eq!(a.candidates[1].elected_order, Some(2));
+        assert!(a.candidates[1].short_name.is_none(), "nothing to shorten");
+        // A namesake in another group is not taken for the winner.
+        assert_eq!(senate.groups[1].candidates[0].elected_order, None);
+        // An ungrouped candidate stands alone, and a blank party reads Independent.
+        assert_eq!(senate.groups[2].votes, 9500);
+        assert_eq!(senate.groups[2].party, "Independent");
+    }
+
+    #[tokio::test]
+    async fn the_2004_files_live_elsewhere_and_name_their_winners_separately() {
+        let server = TestServer::start(|req| {
+            assert!(
+                req.path
+                    .starts_with("/aec-results/12246/results/Downloads/"),
+                "2004 predates the Website layout: {}",
+                req.path
+            );
+            if req.path.contains("HouseMembersElectedDownload") {
+                return Response::text(csv(
+                    "DivisionID,DivisionNm,StateAb,CandidateID,GivenNm,Surname,PartyNm,PartyAb",
+                    &["1,Sampleford,VIC,102,Jordan,NGUYEN,Placeholder Alliance,PA"],
+                ));
+            }
+            if req
+                .path
+                .contains("HouseFirstPrefsByCandidateByVoteTypeDownload")
+                || req.path.contains("HouseTcpByCandidateByVoteTypeDownload")
+            {
+                return Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm,SittingMemberFl,PartyNm,PartyAb,TotalVotes,Swing",
+                    &[
+                        "VIC,Sampleford,101,PATERSON,ALEXANDRA,#,Example Party,EX,45000,2.5",
+                        "VIC,Sampleford,102,NGUYEN,JORDAN,,Placeholder Alliance,PA,48000,-1.5",
+                    ],
+                ));
+            }
+            senate_file(&req.path).unwrap_or_else(|| Response::status(404, "unexpected file"))
+        });
+        let store = new_store("2004");
+        sync_aec(&store, "12246", &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        let result: pollywiki_schema::ElectorateResult = store
+            .get_json("canonical/elections/12246/sampleford.json")
+            .await
+            .unwrap()
+            .expect("result stored");
+        let winners: Vec<&str> = result
+            .first_prefs
+            .iter()
+            .filter(|c| c.elected)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(winners, ["Jordan Nguyen"]);
+        assert!(result
+            .tcp
+            .iter()
+            .any(|c| c.elected && c.name == "Jordan Nguyen"));
+        assert!(store
+            .get_json::<SenateResult>("canonical/senate/12246/tas.json")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_senate_file_with_no_candidate_rows_fails_the_event() {
+        let server = TestServer::start(|req| {
+            if req.path.contains("Senate") {
+                return Response::text(csv("StateAb,Surname", &["TAS,NOBODY"]));
+            }
+            Response::status(404, "unexpected file")
+        });
+        let store = new_store("senate-empty");
+        let err = sync_aec(&store, "17875", &Endpoints::at(&server.base))
+            .await
+            .expect_err("an unreadable Senate file is a failed sync");
+        assert!(
+            err.to_string().contains("no Senate first preferences"),
+            "got {err}"
+        );
     }
 
     #[tokio::test]
     async fn a_historical_event_adds_results_without_redefining_the_seat_map() {
-        let server = TestServer::start(|_| {
-            Response::text(csv(
-                "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,TotalVotes,Swing",
-                &["VIC,Sampleford,101,PATERSON,ALEXANDRA,Example Party,EX,40000,0"],
-            ))
+        let server = TestServer::start(|req| {
+            senate_file(&req.path).unwrap_or_else(|| {
+                Response::text(csv(
+                    "StateAb,DivisionNm,CandidateID,Surname,GivenNm,PartyNm,PartyAb,TotalVotes,Swing",
+                    &["VIC,Sampleford,101,PATERSON,ALEXANDRA,Example Party,EX,40000,0"],
+                ))
+            })
         });
         let store = new_store("historical");
 
