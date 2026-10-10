@@ -6,6 +6,7 @@ mod manifest;
 mod sources;
 mod store;
 mod summarise;
+mod telemetry;
 #[cfg(test)]
 mod test_http;
 

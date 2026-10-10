@@ -68,11 +68,22 @@ GitHub Actions assume scoped IAM roles via OIDC (no stored keys):
 - `ingest.yml`: nightly sync → bundles to S3 → dispatches deploy when data changed
 - Repo variables: `SITE_BUCKET`, `DATA_BUCKET`, `CLOUDFRONT_DISTRIBUTION_ID`, `SITE_URL`
 - Repo secrets: `AWS_DEPLOY_ROLE_ARN`, `AWS_INGEST_ROLE_ARN`, `TVFY_API_KEY`,
-  `CODECOV_TOKEN`
+  `CODECOV_TOKEN`; optional `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`
+  (and variable `LANGFUSE_BASE_URL` outside the EU cloud) for tracing
 
 Infra lives in `infra/` (Terraform, state in S3). The CloudFront distribution
 serves `pollywiki.au` and `www.pollywiki.au`; add further aliases to `domains`
 once their ACM validation records are in place.
+
+## Observability
+
+With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` set, every Gemini call
+in `summarise` is traced to Langfuse as one generation: prompt, reply, tokens,
+timing and failures. Traces are named by the job (`pollywiki.bill-notes`,
+`pollywiki.division-context`, `pollywiki.member-note`) and grouped into one
+session per workflow run. Spans go to Langfuse's v4 OpenTelemetry endpoint as
+OTLP/HTTP JSON; without the keys nothing is sent. `LANGFUSE_RECORD_CONTENT=off`
+keeps only the shape of each call.
 
 ## Data licences
 

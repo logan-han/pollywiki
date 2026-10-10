@@ -109,6 +109,11 @@ jobs:
         env:
           POLLYWIKI_DATA_BUCKET: ${{ vars.DATA_BUCKET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Tracing stays off until both Langfuse keys are set.
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+          LANGFUSE_TRACING_ENVIRONMENT: production
         run: |
           cargo run --release -p pollywiki-ingest -- all \
             --store s3 \

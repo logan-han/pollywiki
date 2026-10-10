@@ -1,12 +1,14 @@
 use crate::http::{polite_fetch, FetchOpts};
 use crate::sources::tvfy::key_for;
 use crate::store::Store;
+use crate::telemetry::{Langfuse, ModelCall, Usage};
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use pollywiki_schema::{Bill, Division, House, Person, Vote};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::time::SystemTime;
 
 const DEFAULT_MODEL: &str = "gemini-3.1-flash-lite";
 const BATCH_SIZE: usize = 8;
@@ -33,6 +35,8 @@ pub struct Gemini {
     /// Calls per run, so a backfill spans several nights instead of tripping
     /// the daily quota in one.
     pub request_cap: u32,
+    /// Langfuse tracing of every call, when its keys are set.
+    pub telemetry: Option<Langfuse>,
 }
 
 impl Gemini {
@@ -44,15 +48,51 @@ impl Gemini {
             model: std::env::var("GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
             min_interval_ms: 6500,
             request_cap: request_cap(),
+            telemetry: Langfuse::from_env().inspect(|_| {
+                println!("summarise: Langfuse tracing on");
+            }),
         })
+    }
+
+    /// One call to the model, traced to Langfuse under `name` when tracing is
+    /// on, whether it answered or failed.
+    async fn generate(
+        &self,
+        name: &str,
+        prompt: &str,
+        metadata: &[(&str, String)],
+    ) -> Result<String> {
+        let parameters =
+            serde_json::json!({ "responseMimeType": "application/json", "temperature": 0.2 });
+        let started = SystemTime::now();
+        let result = self.call(prompt, &parameters).await;
+        if let Some(telemetry) = &self.telemetry {
+            telemetry
+                .record(&ModelCall {
+                    name,
+                    model: &self.model,
+                    parameters: &parameters,
+                    prompt,
+                    outcome: match &result {
+                        Ok((text, _)) => Ok(text.as_str()),
+                        Err(err) => Err(err.to_string()),
+                    },
+                    usage: result.as_ref().ok().and_then(|(_, usage)| *usage),
+                    started,
+                    ended: SystemTime::now(),
+                    metadata,
+                })
+                .await;
+        }
+        result.map(|(text, _)| text)
     }
 
     /// politeFetch paces requests per host and retries 429/5xx with backoff,
     /// which keeps the run inside the free-tier per-minute limits.
-    async fn generate(&self, prompt: &str) -> Result<String> {
+    async fn call(&self, prompt: &str, parameters: &Value) -> Result<(String, Option<Usage>)> {
         let body = serde_json::json!({
             "contents": [{ "parts": [{ "text": prompt }] }],
-            "generationConfig": { "responseMimeType": "application/json", "temperature": 0.2 },
+            "generationConfig": parameters,
         });
         let mut opts = FetchOpts::min_interval(self.min_interval_ms)
             .with_header("x-goog-api-key", &self.api_key);
@@ -67,11 +107,13 @@ impl Gemini {
         )
         .await?;
         let data: Value = res.json().await?;
-        data.pointer("/candidates/0/content/parts/0/text")
+        let text = data
+            .pointer("/candidates/0/content/parts/0/text")
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| anyhow!("gemini: empty response"))
+            .ok_or_else(|| anyhow!("gemini: empty response"))?;
+        Ok((text, Usage::from_gemini(&data)))
     }
 }
 
@@ -244,7 +286,21 @@ Return JSON: an array of {{"id": "<bill id>", "summary": "<text or empty string>
 {items}"#
     );
 
-    let text = gemini.generate(&prompt).await?;
+    let ids = batch
+        .iter()
+        .map(|b| b.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let text = gemini
+        .generate(
+            "pollywiki.bill-notes",
+            &prompt,
+            &[
+                ("bills", ids),
+                ("prompt_version", BILL_NOTE_PROMPT_VERSION.to_string()),
+            ],
+        )
+        .await?;
     let mut out = IndexMap::new();
     let valid_ids: HashSet<&str> = batch.iter().map(|b| b.id.as_str()).collect();
     let rows: Vec<Value> = serde_json::from_str(&text)?;
@@ -517,7 +573,16 @@ Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal
         lines = lines,
     );
 
-    let text = gemini.generate(&prompt).await?;
+    let text = gemini
+        .generate(
+            "pollywiki.member-note",
+            &prompt,
+            &[
+                ("person", person.slug.clone()),
+                ("prompt_version", NOTE_PROMPT_VERSION.to_string()),
+            ],
+        )
+        .await?;
     let parsed: Value = serde_json::from_str(&text)?;
     let note = parsed
         .get("note")
@@ -597,7 +662,21 @@ Return JSON: an array of {{"id": "<division id>", "summary": "<text>"}} covering
 {items}"#
     );
 
-    let text = gemini.generate(&prompt).await?;
+    let ids = batch
+        .iter()
+        .map(|d| d.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let text = gemini
+        .generate(
+            "pollywiki.division-context",
+            &prompt,
+            &[
+                ("divisions", ids),
+                ("prompt_version", SUMMARY_PROMPT_VERSION.to_string()),
+            ],
+        )
+        .await?;
     let mut out = IndexMap::new();
     let valid_ids: HashSet<&str> = batch.iter().map(|d| d.id.as_str()).collect();
     let rows: Vec<Value> = serde_json::from_str(&text)?;
@@ -653,7 +732,81 @@ mod tests {
             model: "test-model".to_string(),
             min_interval_ms: 1,
             request_cap: 80,
+            telemetry: None,
         }
+    }
+
+    #[tokio::test]
+    async fn each_call_is_traced_to_langfuse_and_a_failed_export_changes_nothing() {
+        let server = TestServer::start(|req| {
+            if req.path.contains(":generateContent") {
+                return Response::json(
+                    serde_json::json!({
+                        "candidates": [{ "content": { "parts": [{ "text": "{\"note\":\"n\"}" }] } }],
+                        "usageMetadata": { "promptTokenCount": 120, "candidatesTokenCount": 30 }
+                    })
+                    .to_string(),
+                );
+            }
+            if req.path == "/langfuse/api/public/otel/v1/traces" {
+                // The first export is refused, as an outage would be.
+                if req.body.contains("pollywiki.first") {
+                    return Response::status(400, "rejected");
+                }
+                return Response::json("{}");
+            }
+            Response::status(404, "unexpected path")
+        });
+        let mut traced = gemini(&server);
+        traced.telemetry = Some(crate::telemetry::Langfuse::at(&format!(
+            "{}/langfuse",
+            server.base
+        )));
+
+        let refused = traced
+            .generate("pollywiki.first", "prompt one", &[])
+            .await
+            .expect("an export failure never fails the call");
+        assert_eq!(refused, "{\"note\":\"n\"}");
+        traced
+            .generate(
+                "pollywiki.member-note",
+                "prompt two",
+                &[("person", "alex".to_string())],
+            )
+            .await
+            .expect("call");
+
+        let exports: Vec<_> = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.path.contains("/otel/"))
+            .collect();
+        assert_eq!(exports.len(), 2, "one span per call");
+        let export = &exports[1];
+        assert_eq!(export.method, "POST");
+        assert!(export
+            .header("authorization")
+            .is_some_and(|a| a.starts_with("Basic ")));
+        assert_eq!(export.header("x-langfuse-ingestion-version"), Some("4"));
+        let body: Value = serde_json::from_str(&export.body).expect("OTLP JSON");
+        let span = &body["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        assert_eq!(span["name"], "pollywiki.member-note");
+        let attrs = span["attributes"].to_string();
+        assert!(attrs.contains("prompt two"));
+        assert!(
+            attrs.contains(r#"{\"input\":120,\"output\":30}"#),
+            "usage: {attrs}"
+        );
+        assert!(attrs.contains("langfuse.observation.metadata.person"));
+
+        // Without keys nothing is sent anywhere.
+        let before = server.hits();
+        gemini(&server)
+            .generate("pollywiki.member-note", "prompt three", &[])
+            .await
+            .expect("call");
+        assert_eq!(server.hits(), before + 1, "only the model call");
     }
 
     /// The envelope the real API returns: the model's JSON arrives as text
@@ -1098,7 +1251,7 @@ mod tests {
         let empty = TestServer::start(|_| Response::json("{\"candidates\":[]}"));
         let g = gemini(&empty);
         assert!(
-            g.generate("prompt").await.is_err(),
+            g.generate("pollywiki.test", "prompt", &[]).await.is_err(),
             "no candidate is an error"
         );
 
@@ -1140,7 +1293,9 @@ mod tests {
     async fn the_request_carries_the_key_the_model_and_the_prompt() {
         let server = TestServer::start(|_| Response::json(candidate("[]")));
         let g = gemini(&server);
-        g.generate("the prompt text").await.expect("generate");
+        g.generate("pollywiki.test", "the prompt text", &[])
+            .await
+            .expect("generate");
 
         let sent = server.requests();
         assert_eq!(sent.len(), 1);
