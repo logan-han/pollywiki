@@ -13,7 +13,8 @@ no opinions. Official records plus arithmetic, always linked to the source.
 ## Architecture
 
 ```
-Wikidata   TVFY API   APH bills   AEC CSVs
+Wikidata  TVFY API  APH bills + Handbook  AEC results + disclosures
+Legislation Register  IPEA expenses  ABS boundaries
     └──────────┴──────────┴──────────┘
                   ▼
    [GitHub Actions: ingest, nightly]
@@ -29,7 +30,7 @@ Everything is Rust, one Cargo workspace:
 - `crates/schema`: entity types, the single source of truth
 - `crates/ingest`: source syncs, normalisation, derived bundles
 - `crates/site`: static site generator; reads bundles, never computes
-- `data/reference`: hand-curated party colours and parliament dates
+- `data/reference`: hand-curated party colours, AEC party names and parliament dates
 - `data/sample`: fictional bundles so the site builds without credentials
 - `infra`: Terraform for S3, CloudFront and the GitHub OIDC deploy roles
 - `tools`: one-off asset generators (the default social card)
@@ -88,6 +89,9 @@ keeps only the shape of each call.
 ## Data licences
 
 - Voting data © [They Vote For You](https://theyvoteforyou.org.au), ODbL 1.0
-- Election data © Commonwealth of Australia (AEC), CC BY 4.0
+- Election data and funding disclosures © Commonwealth of Australia (AEC), CC BY 4.0
+- Acts sourced from the [Federal Register of Legislation](https://www.legislation.gov.au), CC BY 4.0
+- Parliamentary expenses © Independent Parliamentary Expenses Authority, CC BY 3.0 AU
+- Electorate boundaries © Commonwealth of Australia (ABS), CC BY 4.0
 - Parliamentary material reproduced fairly and accurately with acknowledgement
 - People data from Wikidata (CC0); photos from Wikimedia Commons, credited per page
