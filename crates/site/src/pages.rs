@@ -941,9 +941,14 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             body.push_str(&table_scroll("Election returns"));
             body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th><th class=\"num\" scope=\"col\">Expenditure</th></tr></thead><tbody>");
             for e in &funding.elections {
+                // A Senate candidate's return names the state as its electorate.
+                let senate = pollywiki_schema::STATES
+                    .iter()
+                    .any(|code| state_name(code) == Some(e.electorate.as_str()));
                 body.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td>{}</tr>",
+                    "<tr><td>{}</td><td>{}{}</td>{}</tr>",
                     esc(&e.event),
+                    if senate { "Senate, " } else { "" },
                     esc(&e.electorate),
                     if e.nil {
                         "<td class=\"num zero\" colspan=\"3\">Nil return</td>".to_string()

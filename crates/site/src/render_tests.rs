@@ -3216,6 +3216,11 @@ fn a_member_s_funding_returns_read_by_election_and_year() {
     ));
     assert!(html.contains(", AEC disclosures (CC BY 4.0)"));
 
+    // A Senate candidate's return names the state; it reads as the Senate.
+    let senator = data.person_by_slug("morgan-rossi").expect("sample senator");
+    let html = render(&data, &pages::person_page(&data, senator));
+    assert!(html.contains("<tr><td>2025 Federal Election</td><td>Senate, Tasmania</td>"));
+
     // A nil return says so rather than showing three zeros.
     let former = data.person_by_slug("casey-obrien").expect("sample member");
     let html = render(&data, &pages::person_page(&data, former));
