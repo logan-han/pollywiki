@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use pollywiki_schema::{
     js_compare, slugify, title_from_slug, AiText, Bill, Division, ElectionContest, Electorate,
     ElectorateResult, House, Meta, Party, PartyFacts, PartySeats, Person, PersonStats,
-    QuickSearchEntry, SeatResult, SenateResult, SenateSeat, SummaryKind, BUNDLE_BILLS,
+    QuickSearchEntry, SeatResult, SenateResult, SenateSeat, StateCode, SummaryKind, BUNDLE_BILLS,
     BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
 };
 use serde::Serialize;
@@ -145,14 +145,10 @@ pub async fn derive(store: &Store) -> Result<()> {
     for result in &elections {
         let formal = result.formal_votes() as f64;
         for candidate in result.first_prefs.iter().filter(|c| !c.is_informal()) {
-            let Some(&i) = slug_to_index.get(&slugify(&candidate.name)) else {
+            let Some(i) = find_candidate(&people, &slug_to_index, &[&candidate.name], result.state)
+            else {
                 continue;
             };
-            // Twenty years of candidates hold namesakes; one who stood in
-            // another state is someone else.
-            if people[i].state.is_some_and(|s| s != result.state) {
-                continue;
-            }
             let person = &mut people[i];
             person
                 .elections
@@ -176,11 +172,12 @@ pub async fn derive(store: &Store) -> Result<()> {
     for result in &senate {
         for group in &result.groups {
             for candidate in &group.candidates {
-                let Some(&i) = [Some(&candidate.name), candidate.short_name.as_ref()]
+                let names: Vec<&str> = [Some(&candidate.name), candidate.short_name.as_ref()]
                     .into_iter()
                     .flatten()
-                    .find_map(|name| slug_to_index.get(&slugify(name)))
-                else {
+                    .map(String::as_str)
+                    .collect();
+                let Some(i) = find_candidate(&people, &slug_to_index, &names, result.state) else {
                     continue;
                 };
                 if people[i].state != Some(result.state) {
@@ -372,6 +369,48 @@ pub async fn derive(store: &Store) -> Result<()> {
         current_elections.len()
     );
     Ok(())
+}
+
+/// The member a ballot name belongs to. Twenty years of candidates hold
+/// namesakes, so a match must sit in the contest's state. Failing the exact
+/// name, one member with the same surname whose first name is the other's
+/// short form ("Raff" on the roll as "Raffaele") is taken, and only one.
+fn find_candidate(
+    people: &[Person],
+    slug_to_index: &HashMap<String, usize>,
+    names: &[&str],
+    state: StateCode,
+) -> Option<usize> {
+    let in_state = |i: usize| people[i].state.is_none_or(|s| s == state);
+    if let Some(&i) = names
+        .iter()
+        .find_map(|name| slug_to_index.get(&slugify(name)))
+    {
+        return in_state(i).then_some(i);
+    }
+    let split = |slug: String| -> Option<(String, String)> {
+        let (first, rest) = slug.split_once('-')?;
+        Some((first.to_string(), rest.to_string()))
+    };
+    let (first, rest) = split(slugify(names.first()?))?;
+    let close: Vec<usize> = people
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            in_state(*i)
+                && p.state.is_some()
+                && split(p.slug.clone()).is_some_and(|(pf, pr)| {
+                    pr == rest
+                        && pf.len().min(first.len()) >= 3
+                        && (pf.starts_with(&first) || first.starts_with(&pf))
+                })
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match close.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
 }
 
 /// Who took the seat at one event, with their two-candidate-preferred share
@@ -917,6 +956,20 @@ mod tests {
                 {"name":"Alex Paterson","party":"Example Party","votes":3}]}]}"#,
         )
         .await;
+        // The roll's long form of a member's first name, and a different
+        // first name on the same surname.
+        put(
+            &store,
+            "canonical/senate/24310/tas.json",
+            r#"{
+            "eventId":"24310","eventName":"2019 federal election","state":"TAS",
+            "vacancies":6,"formalVotes":1000,
+            "groups":[{"ticket":"B","party":"Example Party","votes":300,"pct":30,
+              "candidates":[
+                {"name":"Morgana Rossi","party":"Example Party","votes":20,"electedOrder":3},
+                {"name":"Mo Rossi","party":"Example Party","votes":5}]}]}"#,
+        )
+        .await;
         // A namesake who stood for a House seat in another state.
         put(
             &store,
@@ -986,7 +1039,15 @@ mod tests {
         );
 
         let rossi = people.iter().find(|p| p.slug == "morgan-rossi").unwrap();
-        let contest = &rossi.elections.as_ref().expect("senate contest")[0];
+        let contests = rossi.elections.as_ref().expect("senate contests");
+        // "Mo" is too short a form to stand for anyone.
+        assert_eq!(contests.len(), 2);
+        assert_eq!(
+            contests[1].senate.as_ref().and_then(|s| s.elected_order),
+            Some(3),
+            "the long form of the first name is the same member"
+        );
+        let contest = &contests[0];
         let seat = contest.senate.as_ref().expect("a Senate row");
         assert_eq!((seat.vacancies, seat.elected_order), (6, Some(2)));
         assert!(contest.elected);
