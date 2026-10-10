@@ -2462,31 +2462,34 @@ fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
         "sample meta should carry sources"
     );
     let html = render(&data, &pages::home(&data));
+    let start = html
+        .find("<div class=\"freshness\">")
+        .expect("freshness line");
+    let line = &html[start..start + html[start..].find("</div>").expect("end")];
 
-    // Each source id is rendered under its human label.
-    for label in [
-        "Wikidata",
-        "AEC",
-        "APH bills",
-        "They Vote For You",
-        "Parliamentary Handbook",
-        "AEC profiles",
-    ] {
-        assert!(
-            html.contains(label),
-            "{label} missing from the freshness line"
-        );
-    }
+    // The day most sources synced is one count, linked to the details.
+    assert!(line.contains(
+        "<span class=\"ok\"><a href=\"/about/data-sources/\">8 sources</a> synced 14 Aug 2026</span>"
+    ));
+    // A source that synced on another day is named with its own date.
+    assert!(line.contains("<span class=\"ok\">AEC · 13 Aug 2026</span>"));
+    assert!(!line.contains("Wikidata"), "the common day names nobody");
     // A failed sync is marked stale rather than quietly shown as current, and
     // says so in words, not by the colour of its mark alone.
-    assert!(html.contains("class=\"stale\">AEC profiles · 1 Aug 2026 · sync failed</span>"));
-    assert!(html.contains("class=\"ok\""));
-    assert_eq!(html.matches("sync failed").count(), 1);
-    assert!(html.contains("built "));
+    assert!(line.contains("class=\"stale\">AEC profiles · 1 Aug 2026 · sync failed</span>"));
+    assert_eq!(line.matches("sync failed").count(), 1);
+    assert!(line.contains("built "));
 
-    // The data-sources page reports the same syncs.
+    // The data-sources page names every source with its own sync time.
     let sources_page = render(&data, &pages::data_sources(&data));
-    assert!(sources_page.contains("Wikidata"));
+    for name in [
+        "Wikidata",
+        "They Vote For You",
+        "Parliamentary Handbook",
+        "Federal Register of Legislation",
+    ] {
+        assert!(sources_page.contains(name), "{name}");
+    }
 }
 
 #[test]
@@ -3215,6 +3218,10 @@ fn a_member_s_funding_returns_read_by_election_and_year() {
         "<tr><td>2024-25</td><td class=\"num\">$4,484</td><td class=\"num\">6</td></tr>"
     ));
     assert!(html.contains(", AEC disclosures (CC BY 4.0)"));
+    assert!(
+        !html.contains("A nil return records"),
+        "no nil return, no explanation"
+    );
 
     // A Senate candidate's return names the state; it reads as the Senate.
     let senator = data.person_by_slug("morgan-rossi").expect("sample senator");
@@ -3224,7 +3231,8 @@ fn a_member_s_funding_returns_read_by_election_and_year() {
     // A nil return says so rather than showing three zeros.
     let former = data.person_by_slug("casey-obrien").expect("sample member");
     let html = render(&data, &pages::person_page(&data, former));
-    assert!(html.contains("<td class=\"num zero\" colspan=\"3\">Nil return</td>"));
+    assert!(html.contains("<td class=\"nil\" colspan=\"3\">Nil return</td>"));
+    assert!(html.contains("the party discloses it in its own returns"));
     assert!(
         !html.contains("aria-label=\"Annual returns\""),
         "no annual returns, no table"

@@ -533,7 +533,7 @@ fn attach_person_funding(
             .get_or_insert_with(Default::default)
             .elections
             .push(CandidateFunding {
-                event: r.event.clone(),
+                event: tidy_event(&r.event),
                 electorate: r.electorate.clone(),
                 nil: r.nil,
                 gifts: r.gifts,
@@ -545,6 +545,15 @@ fn attach_person_funding(
         if let Some(funding) = &mut person.funding {
             funding.annual.sort_by(|a, b| b.year.cmp(&a.year));
         }
+    }
+}
+
+/// The register writes "2022 Federal election" and "2025 Federal Election";
+/// both read as the results do, "2025 federal election".
+fn tidy_event(event: &str) -> String {
+    match event.to_lowercase().find("federal election") {
+        Some(at) => format!("{}federal election", &event[..at]),
+        None => event.to_string(),
     }
 }
 
@@ -1518,8 +1527,17 @@ mod tests {
             "the NSW namesake is someone else"
         );
         assert_eq!(funding.elections[0].expenditure, 5100);
+        assert_eq!(
+            funding.elections[0].event, "2025 federal election",
+            "one spelling"
+        );
         let rossi = people.iter().find(|p| p.slug == "morgan-rossi").unwrap();
         assert!(rossi.funding.as_ref().expect("funding").elections[0].nil);
+        assert_eq!(
+            tidy_event("Eden-Monaro by-election"),
+            "Eden-Monaro by-election"
+        );
+        assert_eq!(tidy_event("2022 Federal election"), "2022 federal election");
     }
 
     #[tokio::test]

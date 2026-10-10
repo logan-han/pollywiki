@@ -69,6 +69,47 @@ fn source_label(name: &str) -> &str {
     }
 }
 
+/// How current the data is, in as few words as the syncs allow: the date
+/// most sources last synced as one count, then by name only the sources that
+/// synced on another day. A failed run is always named and says so in words
+/// as well as in its hollow mark, so the state never rests on colour alone.
+fn freshness(data: &SiteData) -> String {
+    let day = |iso: &str| iso.chars().take(10).collect::<String>();
+    let mut days: Vec<(String, Vec<&str>)> = Vec::new();
+    for (name, status) in data.meta.sources.iter().filter(|(_, s)| s.ok) {
+        let date = day(&status.last_sync);
+        match days.iter_mut().find(|(d, _)| *d == date) {
+            Some((_, names)) => names.push(source_label(name)),
+            None => days.push((date, vec![source_label(name)])),
+        }
+    }
+    // The commonest day leads; a tie goes to the newer.
+    days.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| b.0.cmp(&a.0)));
+    let mut out = String::new();
+    for (i, (date, names)) in days.iter().enumerate() {
+        let when = esc(&format_date(date));
+        if i == 0 && names.len() > 1 {
+            out.push_str(&format!(
+                "<span class=\"ok\"><a href=\"/about/data-sources/\">{} sources</a> synced {when}</span>",
+                names.len()
+            ));
+        } else {
+            out.push_str(&format!(
+                "<span class=\"ok\">{} · {when}</span>",
+                esc(&names.join(", "))
+            ));
+        }
+    }
+    for (name, status) in data.meta.sources.iter().filter(|(_, s)| !s.ok) {
+        out.push_str(&format!(
+            "<span class=\"stale\">{} · {} · sync failed</span>",
+            esc(source_label(name)),
+            esc(&format_date(&day(&status.last_sync)))
+        ));
+    }
+    out
+}
+
 pub struct Page {
     pub title: String,
     pub description: Option<String>,
@@ -211,19 +252,7 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
         out.push_str(note);
     }
     out.push_str("<p class=\"disclaimer\">This service does not evaluate politicians or laws. Every page reproduces official records, linked to their source; machine-written summaries are labelled \u{201C}AI-generated\u{201D} and are never part of the record.</p><div class=\"freshness\">");
-    // The date is when the sync last ran. A failed run says so in words as
-    // well as in its hollow mark, so the state never rests on colour alone.
-    for (name, status) in &data.meta.sources {
-        out.push_str(&format!(
-            "<span class=\"{}\">{} · {}{}</span>",
-            if status.ok { "ok" } else { "stale" },
-            esc(source_label(name)),
-            esc(&format_date(
-                &status.last_sync.chars().take(10).collect::<String>()
-            )),
-            if status.ok { "" } else { " · sync failed" },
-        ));
-    }
+    out.push_str(&freshness(data));
     out.push_str(&format!(
         "<span>built {}</span>",
         esc(&format_date(

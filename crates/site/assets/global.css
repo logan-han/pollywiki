@@ -1840,6 +1840,38 @@ th[scope='rowgroup'] {
   color: var(--ink);
 }
 
+/* Phones: a profile's contents run as one swipeable row to both screen
+   edges, as the site nav does, rather than wrapping into a block. */
+@media (max-width: 40rem) {
+  .on-page {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 0.3rem 1.5rem;
+    margin: 1rem -1.5rem 0;
+    scroll-padding-inline: 1.5rem 2.5rem;
+  }
+
+  .on-page::-webkit-scrollbar {
+    display: none;
+  }
+
+  .on-page .label {
+    white-space: nowrap;
+  }
+}
+
+@supports (animation-timeline: scroll()) {
+  @media (max-width: 40rem) {
+    .on-page {
+      mask-image: linear-gradient(to right, #000 calc(100% - var(--nav-fade)), transparent);
+      animation: nav-fade linear both;
+      animation-timeline: scroll(self inline);
+    }
+  }
+}
+
 /* A section a link lands on keeps a little air above its heading. */
 main h2[id] {
   scroll-margin-top: 1rem;
@@ -2491,6 +2523,11 @@ td .sub {
   display: block;
   color: var(--faint);
   font-size: 0.78125rem;
+}
+
+/* A nil funding return reads across the figures it stands in for. */
+td.nil {
+  color: var(--faint);
 }
 
 /* A party's itemised donations sit folded under their totals. */

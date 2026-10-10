@@ -647,15 +647,17 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         .funding
         .as_ref()
         .filter(|f| !f.elections.is_empty() || !f.annual.is_empty());
+    // One word each, so a full profile's contents still sit on one line;
+    // the headings they point at carry the full names.
     let sections: Vec<(&str, &str)> = [
         ("background", "Background", person.background.is_some()),
-        ("positions", "Positions held", positions.is_some()),
-        ("committees", "Committee service", committees.is_some()),
-        ("elections", "Election history", elections.is_some()),
+        ("positions", "Positions", positions.is_some()),
+        ("committees", "Committees", committees.is_some()),
+        ("elections", "Elections", elections.is_some()),
         ("expenses", "Expenses", expenses.is_some()),
         ("funding", "Funding", funding.is_some()),
-        ("bills-raised", "Bills raised", !raised.is_empty()),
-        ("voting-record", "Voting record", true),
+        ("bills-raised", "Bills", !raised.is_empty()),
+        ("voting-record", "Votes", true),
     ]
     .into_iter()
     .filter(|(_, _, present)| *present)
@@ -951,7 +953,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
                     if senate { "Senate, " } else { "" },
                     esc(&e.electorate),
                     if e.nil {
-                        "<td class=\"num zero\" colspan=\"3\">Nil return</td>".to_string()
+                        "<td class=\"nil\" colspan=\"3\">Nil return</td>".to_string()
                     } else {
                         format!(
                             "<td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
@@ -977,7 +979,13 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             }
             body.push_str("</tbody></table></div>");
         }
-        body.push_str("<p class=\"note\">Returns as lodged with the AEC: a candidate's return covers the gifts received and electoral expenditure for that election, a member's annual return the gifts received in the financial year. <a href=\"https://transparency.aec.gov.au\">AEC Transparency Register.</a></p>");
+        body.push_str("<p class=\"note\">Returns as lodged with the AEC: a candidate's return covers the gifts received and electoral expenditure for that election, a member's annual return the gifts received in the financial year.");
+        if funding.elections.iter().any(|e| e.nil) {
+            body.push_str(" A nil return records no gifts or spending of the candidate's own. A party-endorsed candidate lodges one when the party or its campaign committee handled the campaign's money, and the party discloses it in its own returns.");
+        }
+        body.push_str(
+            " <a href=\"https://transparency.aec.gov.au\">AEC Transparency Register.</a></p>",
+        );
     }
 
     if !raised.is_empty() {
