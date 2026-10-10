@@ -2485,3 +2485,10 @@ img.avatar.large {
     display: table-row-group;
   }
 }
+
+/* A second line under a cell's main text, such as a committee's type. */
+td .sub {
+  display: block;
+  color: var(--faint);
+  font-size: 0.78125rem;
+}

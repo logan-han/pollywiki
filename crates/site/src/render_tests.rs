@@ -2934,6 +2934,7 @@ fn a_profile_links_its_record_and_its_sections() {
         [
             "background",
             "positions",
+            "committees",
             "elections",
             "bills-raised",
             "voting-record"
@@ -3025,4 +3026,55 @@ fn tempdir() -> PathBuf {
     let dir = base.join(unique);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
+}
+
+#[test]
+fn committee_service_reads_current_first_with_each_role_and_its_dates() {
+    let data = sample_data();
+    let person = data
+        .people
+        .iter()
+        .find(|p| p.slug == "alex-paterson")
+        .expect("sample member");
+    let html = render(&data, &pages::person_page(&data, person));
+    let start = html
+        .find("<h2 id=\"committees\">Committee service</h2>")
+        .expect("committee section");
+    let section = &html[start..start + html[start..].find("</table>").expect("table end")];
+
+    // The committee's type sits under its name, a space apart for excerpts.
+    assert!(section.contains(
+        "<td>Example Affairs <span class=\"sub\">Joint Standing</span></td><td>Chair from 4 Aug 2025</td><td class=\"num\">28 Jul 2025</td><td class=\"num\">current</td>"
+    ));
+    // Plain membership reads as such; a role with its own end date gives both.
+    assert!(section.contains("<td>Member</td>"));
+    assert!(section.contains("<td>Participating member from 1 Aug 2022 to 15 Aug 2022</td>"));
+    // A role that spans the membership carries no dates of its own.
+    assert!(section.contains("<td>Deputy Chair</td>"));
+    assert!(
+        section.find("Public Accounts and Audit").expect("current")
+            < section.find("Sample Inquiry").expect("past"),
+        "current memberships come first"
+    );
+    assert!(html.contains("current means no end date is recorded"));
+}
+
+#[test]
+fn an_electorate_page_dates_the_division_from_the_handbook() {
+    let data = sample_data();
+    let electorate = data
+        .electorate_by_slug("sampleford")
+        .expect("sample electorate");
+    let html = render(&data, &pages::electorate_page(&data, electorate));
+    assert!(html.contains(
+        "<tr><th class=\"label\" scope=\"row\">Established</th><td>8 Oct 1900</td></tr>"
+    ));
+    assert!(html.contains("Date established from the Parliamentary Handbook."));
+
+    let bare = data
+        .electorate_by_slug("placeholder-bay")
+        .expect("sample electorate");
+    let html = render(&data, &pages::electorate_page(&data, bare));
+    assert!(!html.contains(">Established</th>"));
+    assert!(!html.contains("Date established from the Parliamentary Handbook."));
 }

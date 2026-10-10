@@ -67,6 +67,7 @@ pub async fn sync_aec(store: &Store, event_id: &str, endpoints: &Endpoints) -> R
                 member_slug: None,
                 profile: None,
                 enrolment: None,
+                established: None,
             };
             store
                 .put_json(

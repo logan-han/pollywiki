@@ -137,6 +137,27 @@ pub struct PositionRecord {
     pub to: Option<String>,
 }
 
+/// One committee membership from the Handbook's records of service.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitteeService {
+    pub name: String,
+    /// The Handbook's committee type, e.g. "Joint Standing" or "Senate Select".
+    pub kind: String,
+    /// Chair, Deputy Chair, Substitute member and the like; plain membership has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// When the role ran on dates of its own within the membership.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_to: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Background {
@@ -241,6 +262,9 @@ pub struct Person {
     /// Dated ministry, shadow ministry and parliamentary positions (Handbook).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub positions: Option<Vec<PositionRecord>>,
+    /// Committee memberships, current ones first (Handbook).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committees: Option<Vec<CommitteeService>>,
     /// Contests this person stood in, from AEC results (House events).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elections: Option<Vec<ElectionContest>>,
@@ -342,6 +366,9 @@ pub struct Electorate {
     pub profile: Option<ElectorateProfileFacts>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enrolment: Option<i64>,
+    /// Date the division was proclaimed, from the Parliamentary Handbook.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub established: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

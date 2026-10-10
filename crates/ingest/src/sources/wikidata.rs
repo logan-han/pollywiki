@@ -306,6 +306,7 @@ pub fn people_from_members(
             ai_note: None,
             background: None,
             positions: None,
+            committees: None,
             elections: None,
             stats: None,
         });

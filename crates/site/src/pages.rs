@@ -640,10 +640,12 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     // so the voting record is one step away however much biography sits above
     // it. It follows the figures' caveat rather than splitting the two.
     let positions = person.positions.as_deref().filter(|p| !p.is_empty());
+    let committees = person.committees.as_deref().filter(|c| !c.is_empty());
     let elections = person.elections.as_deref().filter(|e| !e.is_empty());
     let sections: Vec<(&str, &str)> = [
         ("background", "Background", person.background.is_some()),
         ("positions", "Positions held", positions.is_some()),
+        ("committees", "Committee service", committees.is_some()),
         ("elections", "Election history", elections.is_some()),
         ("bills-raised", "Bills raised", !raised.is_empty()),
         ("voting-record", "Voting record", true),
@@ -799,6 +801,41 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             ));
         }
         body.push_str("</tbody></table></div>");
+    }
+
+    if let Some(committees) = committees {
+        body.push_str("<h2 id=\"committees\">Committee service</h2>");
+        body.push_str(&table_scroll("Committee service"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Committee</th><th scope=\"col\">Role</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
+        let date = |d: Option<&str>| d.map(format_date).map(|d| esc(&d));
+        for c in committees {
+            // A role held on dates of its own within the membership says so.
+            let role = match (&c.role, &c.role_from) {
+                (Some(role), Some(from)) => format!(
+                    "{} from {}{}",
+                    esc(role),
+                    esc(&format_date(from)),
+                    date(c.role_to.as_deref())
+                        .map(|to| format!(" to {to}"))
+                        .unwrap_or_default()
+                ),
+                (Some(role), None) => esc(role),
+                (None, _) => "Member".to_string(),
+            };
+            body.push_str(&format!(
+                "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+                esc(&c.name),
+                if c.kind.is_empty() {
+                    String::new()
+                } else {
+                    format!(" <span class=\"sub\">{}</span>", esc(&c.kind))
+                },
+                role,
+                date(c.from.as_deref()).unwrap_or_default(),
+                date(c.to.as_deref()).unwrap_or_else(|| "current".to_string()),
+            ));
+        }
+        body.push_str("</tbody></table></div><p class=\"note\">Memberships as the Parliamentary Handbook records them; current means no end date is recorded.</p>");
     }
 
     if let Some(elections) = elections {
@@ -1745,7 +1782,7 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
             esc(location)
         ));
     }
-    if profile.is_some() || electorate.enrolment.is_some() {
+    if profile.is_some() || electorate.enrolment.is_some() || electorate.established.is_some() {
         body.push_str(&table_scroll("Electorate profile"));
         body.push_str("<table class=\"facts\"><tbody>");
         if let Some(enrolment) = electorate.enrolment {
@@ -1764,6 +1801,12 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
             body.push_str(&format!(
                 "<tr><th class=\"label\" scope=\"row\">Demographic rating</th><td>{}</td></tr>",
                 esc(demographic)
+            ));
+        }
+        if let Some(established) = &electorate.established {
+            body.push_str(&format!(
+                "<tr><th class=\"label\" scope=\"row\">Established</th><td>{}</td></tr>",
+                esc(&format_date(established))
             ));
         }
         if let Some(first) = profile.and_then(|p| p.first_contested.as_deref()) {
@@ -1829,7 +1872,14 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
         }
     }
 
-    body.push_str("<p class=\"attribution\">Election figures and profile © Commonwealth of Australia (AEC), CC BY 4.0. ✓ marks the elected candidate.</p>");
+    body.push_str(&format!(
+        "<p class=\"attribution\">Election figures and profile © Commonwealth of Australia (AEC), CC BY 4.0.{} ✓ marks the elected candidate.</p>",
+        if electorate.established.is_some() {
+            " Date established from the Parliamentary Handbook."
+        } else {
+            ""
+        }
+    ));
     body.push_str("</article>");
 
     let title = format!("{} ({})", electorate.name, electorate.state);
@@ -2139,7 +2189,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         Source {
             key: "handbook",
             name: "Parliamentary Handbook",
-            what: "Careers before parliament, qualifications, ministries, shadow ministries and positions held.",
+            what: "Careers before parliament, qualifications, ministries, shadow ministries, positions held, committee service and when each division was established.",
             licence: "Commonwealth of Australia; reproduced fairly and accurately with acknowledgement",
             link: "https://handbook.aph.gov.au",
         },

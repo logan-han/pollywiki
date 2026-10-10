@@ -1,7 +1,7 @@
 use crate::manifest::read_manifest;
 use crate::sources::aec::pct_of;
 use crate::sources::aec_profiles::ElectorateProfile;
-use crate::sources::handbook::HandbookProfile;
+use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
 use crate::store::Store;
 use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonNote, AiSummary};
 use anyhow::Result;
@@ -89,6 +89,7 @@ pub async fn derive(store: &Store) -> Result<()> {
             if !profile.positions.is_empty() {
                 person.positions = Some(profile.positions);
             }
+            person.committees = profile.committees.filter(|c| !c.is_empty());
         }
     }
 
@@ -169,6 +170,11 @@ pub async fn derive(store: &Store) -> Result<()> {
         }
     }
 
+    let handbook_electorates = store
+        .get_json::<HandbookElectorates>(ELECTORATES_KEY)
+        .await?
+        .map(|h| h.electorates)
+        .unwrap_or_default();
     for electorate in &mut electorates {
         if let Some(profile) = store
             .get_json::<ElectorateProfile>(&format!(
@@ -180,6 +186,16 @@ pub async fn derive(store: &Store) -> Result<()> {
             electorate.profile = Some(profile.profile);
             electorate.enrolment = profile.enrolment;
         }
+        // A name can be reused after a division is abolished, so only the
+        // sitting division of that name in that state counts.
+        electorate.established = handbook_electorates
+            .iter()
+            .find(|h| {
+                h.ceased.is_none()
+                    && h.state == electorate.state.as_str()
+                    && slugify(&h.name) == electorate.slug
+            })
+            .and_then(|h| h.established.clone());
     }
 
     compute_vote_stats(&mut people, &divisions);

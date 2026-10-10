@@ -4,7 +4,9 @@ use crate::js_url::encode_uri_component;
 use crate::store::Store;
 use anyhow::Result;
 use indexmap::IndexMap;
-use pollywiki_schema::{slugify, Background, Person, PositionKind, PositionRecord};
+use pollywiki_schema::{
+    js_compare, slugify, Background, CommitteeService, Person, PositionKind, PositionRecord,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,14 +14,69 @@ use serde_json::Value;
 const REFRESH_DAYS: f64 = 7.0;
 /// The API uses this sentinel for "still serving".
 const OPEN_END: &str = "1900-01-01";
+/// Records-of-service type the API files committee memberships under.
+const COMMITTEE_SERVICE: i64 = 2;
+pub const ELECTORATES_KEY: &str = "canonical/handbook-electorates.json";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandbookProfile {
     pub phid: String,
     pub stored_at: String,
     pub background: Background,
     pub positions: Vec<PositionRecord>,
+    /// None on profiles stored before committee service was collected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committees: Option<Vec<CommitteeService>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ServiceRecord {
+    #[serde(rename = "Value1")]
+    value1: Option<String>,
+    #[serde(rename = "Value2")]
+    value2: Option<String>,
+    #[serde(rename = "Value3")]
+    value3: Option<String>,
+    #[serde(rename = "DateStart1")]
+    date_start1: Option<String>,
+    #[serde(rename = "DateEnd1")]
+    date_end1: Option<String>,
+    #[serde(rename = "DateStart2")]
+    date_start2: Option<String>,
+    #[serde(rename = "DateEnd2")]
+    date_end2: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ElectorateRecord {
+    #[serde(rename = "Electorate")]
+    electorate: Option<String>,
+    #[serde(rename = "StateAbbrev")]
+    state_abbrev: Option<String>,
+    #[serde(rename = "Established")]
+    established: Option<String>,
+    #[serde(rename = "Ceased")]
+    ceased: Option<String>,
+}
+
+/// Every division the Handbook knows, current and abolished.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandbookElectorates {
+    pub stored_at: String,
+    pub electorates: Vec<HandbookElectorate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandbookElectorate {
+    pub name: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub established: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ceased: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -127,6 +184,7 @@ pub async fn sync_handbook(
             &serde_json::json!({ "value": raw_values }),
         )
         .await?;
+    sync_electorates(store, endpoints).await?;
 
     let by_slug = match_people(&individuals, people);
     let mut fetched = 0;
@@ -139,7 +197,16 @@ pub async fn sync_handbook(
         let existing: Option<HandbookProfile> = store.get_json(&key).await?;
         if let Some(existing) = &existing {
             if existing.phid == phid && age_days(&existing.stored_at) < REFRESH_DAYS {
-                skipped += 1;
+                if existing.committees.is_none() {
+                    // A profile from before committees were collected gains
+                    // them now rather than after its refresh window.
+                    let mut updated = existing.clone();
+                    updated.committees = Some(fetch_committees(endpoints, phid).await?);
+                    store.put_json(&key, &updated).await?;
+                    fetched += 1;
+                } else {
+                    skipped += 1;
+                }
                 continue;
             }
         }
@@ -228,6 +295,7 @@ pub async fn sync_handbook(
                     .unwrap_or_default(),
             },
             positions,
+            committees: Some(fetch_committees(endpoints, phid).await?),
         };
         store.put_json(&key, &profile).await?;
         fetched += 1;
@@ -259,18 +327,29 @@ async fn fetch_odata<T: serde::de::DeserializeOwned>(
     filter: &str,
     extra: &str,
 ) -> Result<T> {
-    let encoded = format!(
-        "{endpoint}?%24filter={}{}",
-        encode_uri_component(filter),
-        extra.replace('$', "%24")
-    );
+    // With no filter the query is just the paging options.
+    let (encoded, literal) = if filter.is_empty() {
+        let extra = extra.trim_start_matches('&');
+        (
+            format!("{endpoint}?{}", extra.replace('$', "%24")),
+            format!("{endpoint}?{extra}"),
+        )
+    } else {
+        (
+            format!(
+                "{endpoint}?%24filter={}{}",
+                encode_uri_component(filter),
+                extra.replace('$', "%24")
+            ),
+            format!(
+                "{endpoint}?$filter={}{extra}",
+                filter.replace(' ', "%20").replace('\'', "%27")
+            ),
+        )
+    };
     match fetch_json(&encoded, &endpoints.opts(400)).await {
         Ok(value) => Ok(value),
         Err(err) if err.to_string().contains(" 400 ") => {
-            let literal = format!(
-                "{endpoint}?$filter={}{extra}",
-                filter.replace(' ', "%20").replace('\'', "%27")
-            );
             fetch_json(&literal, &endpoints.opts(400)).await
         }
         Err(err) => Err(err),
@@ -285,6 +364,126 @@ async fn fetch_roles(
     // The API caps $top at 100; no individual approaches that many records.
     let data: ODataPage<RoleRecord> = fetch_odata(endpoints, endpoint, filter, "&$top=100").await?;
     Ok(data.value)
+}
+
+/// Every committee membership on record for one parliamentarian, current
+/// ones first and then newest first. A long career can pass 100 records,
+/// the API's page cap.
+async fn fetch_committees(endpoints: &Endpoints, phid: &str) -> Result<Vec<CommitteeService>> {
+    let mut records: Vec<ServiceRecord> = Vec::new();
+    let mut skip = 0;
+    loop {
+        let page: ODataPage<ServiceRecord> = fetch_odata(
+            endpoints,
+            &format!("{}/recordsofservice", endpoints.handbook),
+            &format!("PHID eq '{phid}' and ROSTypeID eq {COMMITTEE_SERVICE}"),
+            &format!("&$top=100&$skip={skip}"),
+        )
+        .await?;
+        let count = page.value.len();
+        records.extend(page.value);
+        if count < 100 {
+            break;
+        }
+        skip += 100;
+    }
+    let mut committees: Vec<CommitteeService> = records.iter().filter_map(to_committee).collect();
+    committees.sort_by(|a, b| {
+        a.to.is_some()
+            .cmp(&b.to.is_some())
+            .then_with(|| {
+                js_compare(
+                    b.from.as_deref().unwrap_or(""),
+                    a.from.as_deref().unwrap_or(""),
+                )
+            })
+            .then_with(|| js_compare(&a.name, &b.name))
+    });
+    Ok(committees)
+}
+
+fn to_committee(r: &ServiceRecord) -> Option<CommitteeService> {
+    let text = |v: &Option<String>| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let name = text(&r.value2)?;
+    let from = clean_date(r.date_start1.as_deref());
+    let to = clean_date(r.date_end1.as_deref());
+    let role = text(&r.value3);
+    // A role's own dates only say something when they differ from the
+    // membership's, as a chair elected some days after the committee met.
+    let (role_from, role_to) = match role {
+        Some(_) => {
+            let role_from = clean_date(r.date_start2.as_deref());
+            let role_to = clean_date(r.date_end2.as_deref());
+            if role_from.is_some() && (role_from != from || role_to != to) {
+                (role_from, role_to)
+            } else {
+                (None, None)
+            }
+        }
+        None => (None, None),
+    };
+    Some(CommitteeService {
+        name,
+        kind: text(&r.value1).unwrap_or_default(),
+        role,
+        from,
+        to,
+        role_from,
+        role_to,
+    })
+}
+
+/// The Handbook's list of divisions, refreshed weekly like the profiles.
+async fn sync_electorates(store: &Store, endpoints: &Endpoints) -> Result<()> {
+    if let Some(existing) = store
+        .get_json::<HandbookElectorates>(ELECTORATES_KEY)
+        .await?
+    {
+        if age_days(&existing.stored_at) < REFRESH_DAYS {
+            return Ok(());
+        }
+    }
+    let mut electorates: Vec<HandbookElectorate> = Vec::new();
+    let mut skip = 0;
+    loop {
+        let page: ODataPage<ElectorateRecord> = fetch_odata(
+            endpoints,
+            &format!("{}/electorates", endpoints.handbook),
+            "",
+            &format!("&$top=100&$skip={skip}"),
+        )
+        .await?;
+        let count = page.value.len();
+        for r in page.value {
+            let Some(name) = r.electorate.filter(|n| !n.trim().is_empty()) else {
+                continue;
+            };
+            electorates.push(HandbookElectorate {
+                name: name.trim().to_string(),
+                state: r.state_abbrev.unwrap_or_default().to_uppercase(),
+                established: clean_date(r.established.as_deref()),
+                ceased: clean_date(r.ceased.as_deref()),
+            });
+        }
+        if count < 100 {
+            break;
+        }
+        skip += 100;
+    }
+    store
+        .put_json(
+            ELECTORATES_KEY,
+            &HandbookElectorates {
+                stored_at: crate::now_iso(),
+                electorates,
+            },
+        )
+        .await
 }
 
 fn to_position(r: &RoleRecord, kind: PositionKind) -> PositionRecord {
@@ -584,8 +783,152 @@ mod tests {
                     .to_string(),
                 );
             }
+            if req.path.contains("/recordsofservice") {
+                return Response::json(service_records());
+            }
+            if req.path.contains("/electorates") {
+                if req.path.contains("skip=100") {
+                    return Response::json(r#"{"value":[]}"#);
+                }
+                return Response::json(
+                    serde_json::json!({ "value": [
+                        { "Electorate": "Sampleford", "StateAbbrev": "Vic",
+                          "Established": "1900-10-08", "Ceased": "" },
+                        { "Electorate": "Oldbridge", "StateAbbrev": "Vic",
+                          "Established": "1949-03-11", "Ceased": "2024-07-01" },
+                        { "Electorate": "", "StateAbbrev": "Vic" }
+                    ] })
+                    .to_string(),
+                );
+            }
             Response::status(404, "unexpected path")
         })
+    }
+
+    /// Committee records as the API files them: a chair elected after the
+    /// committee first met, a substitute whose role spans the membership, a
+    /// current deputy chair and a plain current membership.
+    fn service_records() -> String {
+        serde_json::json!({ "value": [
+            { "Value1": "Senate Select", "Value2": "Job Security", "Value3": "Chair",
+              "DateStart1": "2020-12-10", "DateEnd1": "2022-03-30",
+              "DateStart2": "2020-12-17", "DateEnd2": "2022-03-30" },
+            { "Value1": "Senate Legislative and General Purpose Standing",
+              "Value2": "Economics: Legislation", "Value3": "Substitute member",
+              "DateStart1": "2020-02-27", "DateEnd1": "2020-03-24",
+              "DateStart2": "2020-02-27", "DateEnd2": "2020-03-24" },
+            { "Value1": "Joint Statutory", "Value2": "Public Accounts and Audit",
+              "Value3": "Deputy Chair", "DateStart1": "2022-07-28", "DateEnd1": "1900-01-01",
+              "DateStart2": "2022-07-28", "DateEnd2": "1900-01-01" },
+            { "Value1": "Joint Standing", "Value2": "Foreign Affairs, Defence and Trade",
+              "Value3": "", "DateStart1": "2019-07-22", "DateEnd1": "1900-01-01",
+              "DateStart2": "1900-01-01", "DateEnd2": "1900-01-01" },
+            { "Value1": "Joint Select", "Value2": "  ", "DateStart1": "2019-07-22" }
+        ] })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn committee_service_lists_current_memberships_first_with_their_roles() {
+        let server = handbook_server();
+        let store = new_store("committees");
+        let mut people = vec![person("alex-paterson", "Alex Paterson")];
+        sync_handbook(&store, &mut people, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+        let profile: HandbookProfile = store
+            .get_json("canonical/handbook/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("profile stored");
+        let committees = profile.committees.expect("committees collected");
+        let names: Vec<&str> = committees.iter().map(|c| c.name.as_str()).collect();
+        // Open memberships first, newest first; a record with no name is dropped.
+        assert_eq!(
+            names,
+            vec![
+                "Public Accounts and Audit",
+                "Foreign Affairs, Defence and Trade",
+                "Job Security",
+                "Economics: Legislation"
+            ]
+        );
+        assert_eq!(committees[0].role.as_deref(), Some("Deputy Chair"));
+        assert!(committees[0].to.is_none(), "the sentinel reads as open");
+        assert!(
+            committees[0].role_from.is_none(),
+            "a role spanning the membership carries no dates of its own"
+        );
+        assert!(committees[1].role.is_none(), "plain membership has no role");
+        assert_eq!(committees[2].role.as_deref(), Some("Chair"));
+        assert_eq!(committees[2].role_from.as_deref(), Some("2020-12-17"));
+        assert_eq!(committees[2].role_to.as_deref(), Some("2022-03-30"));
+        assert_eq!(
+            committees[3].kind,
+            "Senate Legislative and General Purpose Standing"
+        );
+        assert!(committees[3].role_from.is_none());
+
+        let electorates: HandbookElectorates = store
+            .get_json(ELECTORATES_KEY)
+            .await
+            .unwrap()
+            .expect("electorates stored");
+        assert_eq!(
+            electorates.electorates.len(),
+            2,
+            "a nameless row is skipped"
+        );
+        assert_eq!(electorates.electorates[0].state, "VIC");
+        assert_eq!(
+            electorates.electorates[0].established.as_deref(),
+            Some("1900-10-08")
+        );
+        assert!(electorates.electorates[0].ceased.is_none());
+        assert_eq!(
+            electorates.electorates[1].ceased.as_deref(),
+            Some("2024-07-01")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_profile_from_before_committees_gains_them_without_a_full_refetch() {
+        let server = handbook_server();
+        let endpoints = Endpoints::at(&server.base);
+        let store = new_store("committees-backfill");
+        let mut people = vec![person("alex-paterson", "Alex Paterson")];
+        sync_handbook(&store, &mut people, &endpoints)
+            .await
+            .expect("first");
+        let mut profile: HandbookProfile = store
+            .get_json("canonical/handbook/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("profile");
+        profile.committees = None;
+        profile.positions.clear();
+        store
+            .put_json("canonical/handbook/alex-paterson.json", &profile)
+            .await
+            .unwrap();
+
+        let before = server.hits();
+        sync_handbook(&store, &mut people, &endpoints)
+            .await
+            .expect("second");
+        // The listing, then the committee records alone: the electorates are
+        // still fresh and the role records are not asked for again.
+        assert_eq!(server.hits(), before + 2);
+        let profile: HandbookProfile = store
+            .get_json("canonical/handbook/alex-paterson.json")
+            .await
+            .unwrap()
+            .expect("profile");
+        assert_eq!(profile.committees.map(|c| c.len()), Some(4));
+        assert!(
+            profile.positions.is_empty(),
+            "the rest of the profile is kept"
+        );
     }
 
     #[tokio::test]
@@ -694,11 +1037,11 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
         let server = TestServer::start(move |req| {
-            if req.path.contains("%24filter") {
+            if req.path.contains("%24") {
                 counter.fetch_add(1, Ordering::SeqCst);
                 return Response::status(400, "encoded form refused");
             }
-            assert!(req.path.contains("$filter"), "expected the literal form");
+            assert!(req.path.contains("$top="), "expected the literal form");
             Response::json(r#"{"value":[]}"#)
         });
 
@@ -725,7 +1068,7 @@ mod tests {
                     .to_string(),
                 );
             }
-            if req.path.contains("/individuals") {
+            if req.path.contains("/individuals") || req.path.contains("/electorates") {
                 return Response::json(r#"{"value":[]}"#);
             }
             panic!("no role records should be fetched: {}", req.path);
