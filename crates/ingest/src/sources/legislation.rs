@@ -34,7 +34,7 @@ struct Title {
 }
 
 static BILL_ID: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)billhome(?:%2F|/)(r\d+)").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)billhome(?:%2F|/)([rs]\d+)").unwrap());
 
 /// Every Act made from `first_year` to now that names its bill.
 pub async fn sync_legislation(store: &Store, first_year: i32, endpoints: &Endpoints) -> Result<()> {
@@ -144,6 +144,8 @@ mod tests {
                     title(101, Some("https://parlinfo.aph.gov.au/billhome/R7999")),
                     title(102, None),
                     title(103, Some("https://example.org/no-bill-here")),
+                    // A bill introduced in the Senate carries an s id.
+                    title(104, Some("query=Id%3A\"legislation%2Fbillhome%2Fs1484\"")),
                 ]
             };
             Response::json(serde_json::json!({ "value": titles }).to_string())
@@ -156,7 +158,7 @@ mod tests {
         assert_eq!(server.hits(), 2 + (this_year - 2025) as usize);
 
         let acts: IndexMap<String, Act> = store.get_json(ACTS_KEY).await.unwrap().expect("stored");
-        assert_eq!(acts.len(), 101, "titles naming no bill are left out");
+        assert_eq!(acts.len(), 102, "titles naming no bill are left out");
         let act = &acts["r7015"];
         assert_eq!(act.id, "C2025A00015");
         assert_eq!(act.number, Some(15));
