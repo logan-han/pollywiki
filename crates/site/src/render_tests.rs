@@ -3129,3 +3129,32 @@ fn an_electorate_lists_who_won_it_at_each_election() {
     let html = render(&data, &pages::electorate_page(&data, bare));
     assert!(!html.contains("past-results"));
 }
+
+#[test]
+fn a_bill_that_became_law_names_its_act_as_the_register_asks() {
+    let data = sample_data();
+    let bill = data.bill_by_id("sample-4").expect("sample act");
+    let html = render(&data, &pages::bill_page(&data, bill));
+    assert!(html.contains("<h2 id=\"act\">Became law</h2>"));
+    assert!(html.contains(
+        "<td><a href=\"https://www.legislation.gov.au/C2024A00042/asmade/text\">Sample Consolidation Act 2024</a></td>"
+    ));
+    assert!(html.contains("<td>No. 42, 2024</td>"));
+    assert!(html.contains("<td>28 Nov 2024</td>"));
+    assert!(html.contains("<td>In force</td>"));
+    assert!(!html.contains("An amending Act is spent"));
+    assert!(html.contains(
+        "Sourced from the Federal Register of Legislation at 14 Aug 2026. For the latest information on Australian Government law please go to <a href=\"https://www.legislation.gov.au\">https://www.legislation.gov.au</a>."
+    ));
+
+    // A status other than in force is explained, not left to alarm.
+    let spent = data.bill_by_id("sample-6").expect("sample act");
+    let html = render(&data, &pages::bill_page(&data, spent));
+    assert!(html.contains("<td>Repealed</td>"));
+    assert!(html.contains("An amending Act is spent"));
+
+    let open = data.bill_by_id("sample-1").expect("open bill");
+    let html = render(&data, &pages::bill_page(&data, open));
+    assert!(!html.contains("Became law"));
+    assert!(!html.contains("Federal Register of Legislation at"));
+}

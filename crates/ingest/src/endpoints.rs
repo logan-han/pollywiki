@@ -23,6 +23,8 @@ pub struct Endpoints {
     pub aec_results: String,
     /// AEC website root serving the electorate profile pages.
     pub aec_profiles: String,
+    /// Federal Register of Legislation API root.
+    pub legislation: String,
     /// Replaces every source's own per-host spacing when set. Only tests set
     /// it; the real intervals are what keeps these APIs willing to answer.
     pub min_interval_ms: Option<u64>,
@@ -41,6 +43,7 @@ impl Default for Endpoints {
             commons_files: "https://commons.wikimedia.org".to_string(),
             aec_results: "https://results.aec.gov.au".to_string(),
             aec_profiles: "https://www.aec.gov.au".to_string(),
+            legislation: "https://api.prod.legislation.gov.au/v1".to_string(),
             min_interval_ms: None,
             backoff_ms: None,
         }
@@ -70,6 +73,7 @@ impl Endpoints {
             commons_files: format!("{base}/commons-files"),
             aec_results: format!("{base}/aec-results"),
             aec_profiles: format!("{base}/aec"),
+            legislation: format!("{base}/legislation"),
             min_interval_ms: Some(1),
             backoff_ms: Some(1),
         }

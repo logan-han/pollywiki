@@ -2,12 +2,13 @@ use crate::manifest::read_manifest;
 use crate::sources::aec::pct_of;
 use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
+use crate::sources::legislation::ACTS_KEY;
 use crate::store::Store;
 use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonNote, AiSummary};
 use anyhow::Result;
 use indexmap::IndexMap;
 use pollywiki_schema::{
-    js_compare, slugify, title_from_slug, AiText, Bill, Division, ElectionContest, Electorate,
+    js_compare, slugify, title_from_slug, Act, AiText, Bill, Division, ElectionContest, Electorate,
     ElectorateResult, House, Meta, Party, PartyFacts, PartySeats, Person, PersonStats,
     QuickSearchEntry, SeatResult, SenateResult, SenateSeat, StateCode, SummaryKind, BUNDLE_BILLS,
     BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
@@ -104,7 +105,9 @@ pub async fn derive(store: &Store) -> Result<()> {
                 .map(|phid| (phid.to_lowercase(), p.slug.clone()))
         })
         .collect();
+    let acts: IndexMap<String, Act> = store.get_json(ACTS_KEY).await?.unwrap_or_default();
     for bill in &mut bills {
+        bill.act = acts.get(&bill.id.to_lowercase()).cloned();
         // Empty text records the model's judgement that the official summary
         // is already plain enough; no box renders for those.
         if let Some(note) = store

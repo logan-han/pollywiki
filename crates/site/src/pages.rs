@@ -1596,6 +1596,51 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         ));
     }
 
+    if let Some(act) = &bill.act {
+        body.push_str("<h2 id=\"act\">Became law</h2>");
+        body.push_str(&table_scroll("Became law"));
+        body.push_str("<table class=\"facts\"><tbody>");
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Act</th><td><a href=\"https://www.legislation.gov.au/{}/asmade/text\">{}</a></td></tr>",
+            esc_attr(&act.id),
+            esc(&act.name)
+        ));
+        if let (Some(number), Some(year)) = (act.number, act.year) {
+            body.push_str(&format!(
+                "<tr><th class=\"label\" scope=\"row\">Number</th><td>No. {number}, {year}</td></tr>"
+            ));
+        }
+        if let Some(assent) = &act.assent {
+            body.push_str(&format!(
+                "<tr><th class=\"label\" scope=\"row\">Assent</th><td>{}</td></tr>",
+                esc(&format_date(assent))
+            ));
+        }
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Status</th><td>{}</td></tr>",
+            esc(&register_status(&act.status))
+        ));
+        body.push_str("</tbody></table></div>");
+        if act.status != "InForce" {
+            body.push_str("<p class=\"note\">The status is the Register's own. An amending Act is spent once its amendments take effect; the changes live on in the Acts it amended.</p>");
+        }
+        // The Register's licence asks for this wording, dated by the sync.
+        let synced = data
+            .meta
+            .sources
+            .get("legislation")
+            .map(|s| {
+                format!(
+                    " at {}",
+                    format_date(&s.last_sync.chars().take(10).collect::<String>())
+                )
+            })
+            .unwrap_or_default();
+        body.push_str(&format!(
+            "<p class=\"attribution\">Sourced from the Federal Register of Legislation{synced}. For the latest information on Australian Government law please go to <a href=\"https://www.legislation.gov.au\">https://www.legislation.gov.au</a>.</p>"
+        ));
+    }
+
     if !bill.timeline.is_empty() {
         body.push_str("<h2>Progress</h2>");
         body.push_str(&table_scroll("Progress"));
@@ -1738,6 +1783,20 @@ pub fn electorates_index(data: &SiteData) -> Page {
 /// of columns, so the deciding count and the first preferences under it
 /// read down the same grid.
 const RESULT_HEAD: &str = "<colgroup><col class=\"cand\"><col class=\"party\"><col class=\"votes\"><col class=\"pct\"><col class=\"swing\"></colgroup><thead data-pagefind-ignore><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead>";
+
+/// The Register's status words, "InForce" or "NotYetInForce", as a phrase.
+fn register_status(status: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in status.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push(' ');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
 
 /// Votes as a percentage of a total, or nothing of nothing.
 fn share(votes: i64, total: i64) -> f64 {
@@ -2196,7 +2255,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         licence: &'static str,
         link: &'static str,
     }
-    const SOURCES: [Source; 5] = [
+    const SOURCES: [Source; 6] = [
         Source {
             key: "wikidata",
             name: "Wikidata & Wikimedia Commons",
@@ -2217,6 +2276,13 @@ pub fn data_sources(data: &SiteData) -> Page {
             what: "Bills before parliament and their progress.",
             licence: "Commonwealth of Australia; reproduced fairly and accurately with acknowledgement",
             link: "https://www.aph.gov.au",
+        },
+        Source {
+            key: "legislation",
+            name: "Federal Register of Legislation",
+            what: "The Act each passed bill became: its number, assent date and status.",
+            licence: "CC BY 4.0, sourced from the Federal Register of Legislation",
+            link: "https://www.legislation.gov.au",
         },
         Source {
             key: "aec",

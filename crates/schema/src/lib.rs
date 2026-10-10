@@ -538,6 +538,24 @@ pub struct BillLinks {
     pub parlinfo: Option<String>,
 }
 
+/// The Act a bill became, from the Federal Register of Legislation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Act {
+    /// The Register's id, e.g. "C2025A00015".
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<i64>,
+    /// Date of assent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assent: Option<String>,
+    /// The Register's own status word, e.g. "InForce" or "Repealed".
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BillRaiser {
@@ -581,6 +599,8 @@ pub struct Bill {
     pub movers: Vec<BillRaiser>,
     #[serde(default)]
     pub division_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub act: Option<Act>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

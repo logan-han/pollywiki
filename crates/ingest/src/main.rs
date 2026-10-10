@@ -18,7 +18,8 @@ use store::{LocalStore, S3Store, Store};
 
 const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [options]
   --store local|s3       default local (.store/); s3 needs POLLYWIKI_DATA_BUCKET
-  --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec
+  --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec,
+                         legislation
   --event <ids>          AEC event id(s), comma-separated, or all (default 31496)
   --rebuild              tvfy only: re-normalise from cached raw, no API calls
 summarise needs GEMINI_API_KEY; 'all' runs it between sync and derive when set.
@@ -208,6 +209,17 @@ async fn sync(
         run_source!(
             "handbook",
             sources::handbook::sync_handbook(store, &mut people, endpoints)
+        );
+    }
+    if has("legislation") {
+        // Acts from the year the newest parliament opened, as its bills are.
+        let first_year = records_begin()
+            .get(..4)
+            .and_then(|y| y.parse().ok())
+            .unwrap_or(2025);
+        run_source!(
+            "legislation",
+            sources::legislation::sync_legislation(store, first_year, endpoints)
         );
     }
     if has("aec-profiles") {

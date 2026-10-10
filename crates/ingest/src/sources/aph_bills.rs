@@ -239,6 +239,7 @@ fn to_bill(item: &ParlWorkBill, parliament: i64) -> Bill {
         sponsors: Vec::new(),
         movers: Vec::new(),
         division_ids: Vec::new(),
+        act: None,
     }
 }
 

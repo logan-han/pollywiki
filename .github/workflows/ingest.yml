@@ -81,7 +81,7 @@ jobs:
           chmod +x ./pollywiki-ingest
           ./pollywiki-ingest sync \
             --store s3 \
-            --sources tvfy,handbook,aph
+            --sources tvfy,handbook,aph,legislation
 
   ingest:
     needs: au-sources

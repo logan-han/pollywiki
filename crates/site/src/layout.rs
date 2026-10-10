@@ -61,6 +61,7 @@ fn source_label(name: &str) -> &str {
         "tvfy" => "They Vote For You",
         "aph-bills" => "APH bills",
         "handbook" => "Parliamentary Handbook",
+        "legislation" => "Legislation Register",
         other => other,
     }
 }
