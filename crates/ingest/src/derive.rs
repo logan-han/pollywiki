@@ -2,6 +2,7 @@ use crate::manifest::read_manifest;
 use crate::sources::aec::pct_of;
 use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
+use crate::sources::ipea::{IpeaParliamentarian, IpeaQuarter};
 use crate::sources::legislation::ACTS_KEY;
 use crate::store::Store;
 use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonNote, AiSummary};
@@ -9,9 +10,10 @@ use anyhow::Result;
 use indexmap::IndexMap;
 use pollywiki_schema::{
     js_compare, slugify, title_from_slug, Act, AiText, Bill, Division, ElectionContest, Electorate,
-    ElectorateResult, House, Meta, Party, PartyFacts, PartySeats, Person, PersonStats,
-    QuickSearchEntry, SeatResult, SenateResult, SenateSeat, StateCode, SummaryKind, BUNDLE_BILLS,
-    BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
+    ElectorateResult, ExpenseLine, ExpenseQuarter, House, JsNum, Meta, Party, PartyFacts,
+    PartySeats, Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult, SenateSeat,
+    StateCode, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES,
+    BUNDLE_PARTIES, BUNDLE_PEOPLE,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -248,6 +250,7 @@ pub async fn derive(store: &Store) -> Result<()> {
             .and_then(|h| h.established.clone());
     }
 
+    attach_expenses(store, &mut people).await?;
     compute_vote_stats(&mut people, &divisions);
     link_bills(&mut bills, &divisions);
     let mut parties = build_parties(&people);
@@ -372,6 +375,74 @@ pub async fn derive(store: &Store) -> Result<()> {
         current_elections.len()
     );
     Ok(())
+}
+
+/// Each member's latest quarters of IPEA expenses, newest first. IPEA names
+/// members as they are styled, so the match is on first name and surname,
+/// then on surname and electorate for a member, or surname and state for a
+/// senator, and only where one member fits.
+async fn attach_expenses(store: &Store, people: &mut [Person]) -> Result<()> {
+    let mut quarters = load_all::<IpeaQuarter>(store, crate::sources::ipea::PREFIX).await?;
+    quarters.sort_by(|a, b| b.period.cmp(&a.period));
+    for quarter in &quarters {
+        for record in &quarter.parliamentarians {
+            let Some(i) = expense_owner(people, record) else {
+                continue;
+            };
+            let to_dollars = |cents: i64| JsNum(cents as f64 / 100.0);
+            people[i]
+                .expenses
+                .get_or_insert_with(Vec::new)
+                .push(ExpenseQuarter {
+                    period: quarter.period.clone(),
+                    label: quarter.label.clone(),
+                    total: to_dollars(record.categories.iter().map(|(_, c)| c).sum()),
+                    categories: record
+                        .categories
+                        .iter()
+                        .map(|(category, cents)| ExpenseLine {
+                            category: category.clone(),
+                            amount: to_dollars(*cents),
+                        })
+                        .collect(),
+                });
+        }
+    }
+    Ok(())
+}
+
+fn expense_owner(people: &[Person], record: &IpeaParliamentarian) -> Option<usize> {
+    let state = StateCode::parse(&record.state.to_uppercase());
+    let in_state = |p: &Person| state.is_none() || p.state.is_none() || p.state == state;
+    let surname = slugify(&record.surname);
+    let exact = slugify(&format!("{} {}", record.first_name, record.surname));
+    let only = |hits: Vec<usize>| match hits.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    };
+    let by = |keep: &dyn Fn(&Person) -> bool| -> Vec<usize> {
+        people
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| keep(p))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let ends_with_surname = |p: &Person| p.slug.ends_with(&format!("-{surname}"));
+    if let Some(i) = only(by(&|p: &Person| p.slug == exact && in_state(p))) {
+        return Some(i);
+    }
+    if let Some(electorate) = &record.electorate {
+        let electorate = slugify(electorate);
+        if let Some(i) = only(by(&|p: &Person| {
+            p.electorate.as_deref() == Some(electorate.as_str()) && ends_with_surname(p)
+        })) {
+            return Some(i);
+        }
+    }
+    only(by(&|p: &Person| {
+        p.house == House::Senate && state.is_some() && p.state == state && ends_with_surname(p)
+    }))
 }
 
 /// The member a ballot name belongs to. Twenty years of candidates hold
@@ -1101,6 +1172,74 @@ mod tests {
             .unwrap()
             .history
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn expenses_attach_by_name_then_seat_and_never_to_a_guess() {
+        let store = seeded("expenses").await;
+        let quarter = |period: &str, label: &str, rows: &str| {
+            format!(
+                r#"{{"period":"{period}","label":"{label}","sourceUrl":"u","lastModified":"m",
+                    "parliamentarians":[{rows}]}}"#
+            )
+        };
+        // Alex under a formal first name but the right seat; Rossi under
+        // initials in the right state; a namesake senator in another state.
+        let rows = r#"
+            {"officeCode":"PATA","name":"Alexander PATERSON MP","firstName":"Alexander",
+             "surname":"PATERSON","electorate":"SAMPLEFORD","state":"VIC",
+             "categories":[["Office Facilities",1000050],["Travel Allowance",-50]]},
+            {"officeCode":"ROSM","name":"Senator M ROSSI","firstName":"M","surname":"ROSSI",
+             "state":"TAS","categories":[["Office Administration",2500]]},
+            {"officeCode":"ROSS","name":"Senator Sam ROSSI","firstName":"Sam","surname":"ROSSI",
+             "state":"NSW","categories":[["Office Administration",9900]]}"#;
+        put(
+            &store,
+            "canonical/ipea/2026Q01.json",
+            &quarter("2026Q01", "Jan-Mar 2026", rows),
+        )
+        .await;
+        put(
+            &store,
+            "canonical/ipea/2026Q02.json",
+            &quarter("2026Q02", "Apr-Jun 2026", rows),
+        )
+        .await;
+        derive(&store).await.expect("derive");
+
+        let people: Vec<Person> = lines(
+            &store
+                .get_raw("bundles/people.jsonl")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let alex = people.iter().find(|p| p.slug == "alex-paterson").unwrap();
+        let expenses = alex.expenses.as_ref().expect("matched on seat");
+        assert_eq!(
+            expenses
+                .iter()
+                .map(|q| q.period.as_str())
+                .collect::<Vec<_>>(),
+            ["2026Q02", "2026Q01"],
+            "newest first"
+        );
+        assert_eq!(
+            expenses[0].total.0, 10000.0,
+            "cents summed, then to dollars"
+        );
+        assert_eq!(expenses[0].categories[0].amount.0, 10000.5);
+        assert_eq!(expenses[0].categories[1].amount.0, -0.5);
+
+        let rossi = people.iter().find(|p| p.slug == "morgan-rossi").unwrap();
+        let expenses = rossi
+            .expenses
+            .as_ref()
+            .expect("matched on surname and state");
+        assert_eq!(
+            expenses[0].total.0, 25.0,
+            "the NSW namesake is not added in"
+        );
     }
 
     #[tokio::test]

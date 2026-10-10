@@ -642,11 +642,13 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     let positions = person.positions.as_deref().filter(|p| !p.is_empty());
     let committees = person.committees.as_deref().filter(|c| !c.is_empty());
     let elections = person.elections.as_deref().filter(|e| !e.is_empty());
+    let expenses = person.expenses.as_deref().filter(|e| !e.is_empty());
     let sections: Vec<(&str, &str)> = [
         ("background", "Background", person.background.is_some()),
         ("positions", "Positions held", positions.is_some()),
         ("committees", "Committee service", committees.is_some()),
         ("elections", "Election history", elections.is_some()),
+        ("expenses", "Expenses", expenses.is_some()),
         ("bills-raised", "Bills raised", !raised.is_empty()),
         ("voting-record", "Voting record", true),
     ]
@@ -885,6 +887,49 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         body.push_str("</p>");
     }
 
+    if let Some(expenses) = expenses {
+        // Rows are IPEA's own categories, the biggest over the quarters shown
+        // first; columns are quarters, newest first.
+        let quarters = &expenses[..expenses.len().min(4)];
+        let mut categories: Vec<(&str, f64)> = Vec::new();
+        for line in quarters.iter().flat_map(|q| &q.categories) {
+            match categories.iter_mut().find(|(c, _)| *c == line.category) {
+                Some((_, total)) => *total += line.amount.0,
+                None => categories.push((&line.category, line.amount.0)),
+            }
+        }
+        categories.sort_by(|a, b| b.1.total_cmp(&a.1));
+        body.push_str("<h2 id=\"expenses\">Parliamentary expenses</h2>");
+        body.push_str(&table_scroll("Parliamentary expenses"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Category</th>");
+        for q in quarters {
+            body.push_str(&format!(
+                "<th class=\"num\" scope=\"col\">{}</th>",
+                esc(&q.label)
+            ));
+        }
+        body.push_str("</tr></thead><tbody>");
+        for (category, _) in &categories {
+            body.push_str(&format!("<tr><td>{}</td>", esc(category)));
+            for q in quarters {
+                match q.categories.iter().find(|l| l.category == *category) {
+                    Some(line) => body.push_str(&format!(
+                        "<td class=\"num\">{}</td>",
+                        dollars(line.amount.0)
+                    )),
+                    None => body.push_str("<td class=\"num zero\">$0</td>"),
+                }
+            }
+            body.push_str("</tr>");
+        }
+        body.push_str("</tbody><tfoot><tr><td>Total</td>");
+        for q in quarters {
+            body.push_str(&format!("<td class=\"num\">{}</td>", dollars(q.total.0)));
+        }
+        body.push_str("</tr></tfoot></table></div>");
+        body.push_str("<p class=\"note\">Expenditure as the Independent Parliamentary Expenses Authority publishes it each quarter, in its own categories, rounded to the dollar. Travel distances, office locations and roles differ, so totals do not compare between members. <a href=\"https://www.ipea.gov.au/reporting\">IPEA's reports and notes.</a></p>");
+    }
+
     if !raised.is_empty() {
         body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
         body.push_str(&table_scroll("Bills raised"));
@@ -958,7 +1003,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         ));
     }
     body.push_str(&format!(
-        "<p class=\"attribution\">Sources: Wikidata{}{}{}. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
+        "<p class=\"attribution\">Sources: Wikidata{}{}{}{}. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
         if person.background.is_some() {
             ", Parliamentary Handbook"
         } else {
@@ -966,6 +1011,11 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         },
         if person.elections.as_deref().is_some_and(|e| !e.is_empty()) {
             ", AEC (CC BY 4.0)"
+        } else {
+            ""
+        },
+        if expenses.is_some() {
+            ", IPEA (CC BY 3.0 AU)"
         } else {
             ""
         },
@@ -1784,6 +1834,16 @@ pub fn electorates_index(data: &SiteData) -> Page {
 /// read down the same grid.
 const RESULT_HEAD: &str = "<colgroup><col class=\"cand\"><col class=\"party\"><col class=\"votes\"><col class=\"pct\"><col class=\"swing\"></colgroup><thead data-pagefind-ignore><tr><th scope=\"col\">Candidate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">Votes</th><th class=\"num\" scope=\"col\">%</th><th class=\"num\" scope=\"col\">Swing</th></tr></thead>";
 
+/// A dollar figure rounded to the dollar, "-$12" for a credit.
+fn dollars(amount: f64) -> String {
+    let whole = amount.round() as i64;
+    if whole < 0 {
+        format!("-${}", locale_int(-whole))
+    } else {
+        format!("${}", locale_int(whole))
+    }
+}
+
 /// The Register's status words, "InForce" or "NotYetInForce", as a phrase.
 fn register_status(status: &str) -> String {
     let mut out = String::new();
@@ -2255,7 +2315,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         licence: &'static str,
         link: &'static str,
     }
-    const SOURCES: [Source; 6] = [
+    const SOURCES: [Source; 7] = [
         Source {
             key: "wikidata",
             name: "Wikidata & Wikimedia Commons",
@@ -2276,6 +2336,13 @@ pub fn data_sources(data: &SiteData) -> Page {
             what: "Bills before parliament and their progress.",
             licence: "Commonwealth of Australia; reproduced fairly and accurately with acknowledgement",
             link: "https://www.aph.gov.au",
+        },
+        Source {
+            key: "ipea",
+            name: "Independent Parliamentary Expenses Authority",
+            what: "Each parliamentarian's expenses for the latest four quarters, by IPEA category.",
+            licence: "CC BY 3.0 AU, via data.gov.au",
+            link: "https://www.ipea.gov.au",
         },
         Source {
             key: "legislation",

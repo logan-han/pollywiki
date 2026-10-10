@@ -298,6 +298,26 @@ pub struct PersonStats {
     pub against_group_majority: i64,
 }
 
+/// One quarter of a parliamentarian's expenses as IPEA reports them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpenseQuarter {
+    /// IPEA's reporting period id, e.g. "2026Q02".
+    pub period: String,
+    /// IPEA's label, e.g. "Apr-Jun 2026".
+    pub label: String,
+    pub total: JsNum,
+    /// By IPEA's high-level category, largest first.
+    pub categories: Vec<ExpenseLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpenseLine {
+    pub category: String,
+    pub amount: JsNum,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
@@ -340,6 +360,9 @@ pub struct Person {
     pub elections: Option<Vec<ElectionContest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<PersonStats>,
+    /// The latest quarters of parliamentary expenses, newest first (IPEA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expenses: Option<Vec<ExpenseQuarter>>,
 }
 
 impl Person {

@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       sources:
-        description: Comma-separated sources for the main job (wikidata,aec-profiles,aec)
-        default: wikidata,aec-profiles
+        description: Comma-separated sources for the main job (wikidata,aec-profiles,ipea,aec)
+        default: wikidata,aec-profiles,ipea
       event:
         description: AEC event id(s), comma-separated, or all (aec source only)
         default: '31496'
@@ -117,7 +117,7 @@ jobs:
         run: |
           cargo run --release -p pollywiki-ingest -- all \
             --store s3 \
-            --sources "${{ inputs.sources || 'wikidata,aec-profiles' }}" \
+            --sources "${{ inputs.sources || 'wikidata,aec-profiles,ipea' }}" \
             --event "${{ inputs.event || '31496' }}"
 
       # The stamp commit keeps the scheduled workflow from being auto-disabled

@@ -309,6 +309,7 @@ pub fn people_from_members(
             committees: None,
             elections: None,
             stats: None,
+            expenses: None,
         });
     }
     people

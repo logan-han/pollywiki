@@ -2936,6 +2936,7 @@ fn a_profile_links_its_record_and_its_sections() {
             "positions",
             "committees",
             "elections",
+            "expenses",
             "bills-raised",
             "voting-record"
         ]
@@ -3157,4 +3158,45 @@ fn a_bill_that_became_law_names_its_act_as_the_register_asks() {
     let html = render(&data, &pages::bill_page(&data, open));
     assert!(!html.contains("Became law"));
     assert!(!html.contains("Federal Register of Legislation at"));
+}
+
+#[test]
+fn expenses_read_by_category_and_quarter_with_their_caveat() {
+    let data = sample_data();
+    let person = data.person_by_slug("alex-paterson").expect("sample member");
+    let html = render(&data, &pages::person_page(&data, person));
+    let start = html
+        .find("<h2 id=\"expenses\">Parliamentary expenses</h2>")
+        .expect("expenses section");
+    let table = &html[start..start + html[start..].find("</table>").expect("table end")];
+    // Quarters newest first; categories biggest first over both quarters.
+    assert!(table.contains(
+        "<th class=\"num\" scope=\"col\">Apr-Jun 2026</th><th class=\"num\" scope=\"col\">Jan-Mar 2026</th>"
+    ));
+    let order: Vec<usize> = [
+        "Office Facilities",
+        "Scheduled Commercial Transport",
+        "Travel Allowance",
+        "Office Administration",
+    ]
+    .iter()
+    .map(|c| table.find(&format!("<td>{c}</td>")).expect(c))
+    .collect();
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "biggest first: {order:?}"
+    );
+    assert!(table.contains("<td>Scheduled Commercial Transport</td><td class=\"num\">$21,245</td><td class=\"num\">$12,000</td>"));
+    // A quarter without the category says nothing was spent; a credit keeps its sign.
+    assert!(table.contains(
+        "<td>Travel Allowance</td><td class=\"num zero\">$0</td><td class=\"num\">$3,500</td>"
+    ));
+    assert!(table.contains("<td class=\"num\">-$10</td>"));
+    assert!(table.contains("<tfoot><tr><td>Total</td><td class=\"num\">$61,235</td><td class=\"num\">$15,500</td></tr></tfoot>"));
+    assert!(html.contains("totals do not compare between members"));
+    assert!(html.contains(", IPEA (CC BY 3.0 AU)"));
+
+    let other = data.person_by_slug("jordan-nguyen").expect("sample member");
+    let html = render(&data, &pages::person_page(&data, other));
+    assert!(!html.contains("Parliamentary expenses"));
 }
