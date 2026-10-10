@@ -7,7 +7,7 @@ use crate::http::fetch_json;
 use crate::store::Store;
 use anyhow::{bail, Result};
 use indexmap::IndexMap;
-use pollywiki_schema::Act;
+use pollywiki_schema::{Act, Bill};
 use regex::Regex;
 use serde::Deserialize;
 use std::sync::LazyLock;
@@ -36,8 +36,17 @@ struct Title {
 static BILL_ID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)billhome(?:%2F|/)([rs]\d+)").unwrap());
 
-/// Every Act made from `first_year` to now that names its bill.
-pub async fn sync_legislation(store: &Store, first_year: i32, endpoints: &Endpoints) -> Result<()> {
+/// Every Act that names its bill, from the earliest year a stored bill was
+/// passed in: an Act is numbered by its year of assent.
+pub async fn sync_legislation(store: &Store, endpoints: &Endpoints) -> Result<()> {
+    let bills = store.list("canonical/bills/").await?;
+    if bills.is_empty() {
+        bail!("legislation: no bills stored to join Acts to");
+    }
+    let Some(first_year) = first_assent_year(store, &bills).await? else {
+        println!("legislation: no stored bill has passed yet");
+        return Ok(());
+    };
     let this_year = chrono::Datelike::year(&chrono::Utc::now());
     let mut acts: IndexMap<String, Act> = IndexMap::new();
     for year in first_year..=this_year {
@@ -67,6 +76,29 @@ pub async fn sync_legislation(store: &Store, first_year: i32, endpoints: &Endpoi
     }
     println!("legislation: {} Acts joined to their bills", acts.len());
     store.put_json(ACTS_KEY, &acts).await
+}
+
+/// A passed bill's last step is its assent. Bills still before a chamber,
+/// some of them restored from parliaments years back, have no Act to find.
+async fn first_assent_year(store: &Store, keys: &[String]) -> Result<Option<i32>> {
+    let mut first: Option<i32> = None;
+    for key in keys {
+        let Some(bill) = store.get_json::<Bill>(key).await? else {
+            continue;
+        };
+        if bill.status != "Act" && bill.status != "Assent" {
+            continue;
+        }
+        let year = bill
+            .timeline
+            .iter()
+            .filter_map(|step| step.date.get(..4)?.parse::<i32>().ok())
+            .max();
+        if let Some(year) = year {
+            first = Some(first.map_or(year, |f| f.min(year)));
+        }
+    }
+    Ok(first)
 }
 
 fn to_act(title: Title) -> Option<(String, Act)> {
@@ -105,6 +137,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         Store::Local(LocalStore::new(dir))
+    }
+
+    /// A bill passed in 2025, so the Acts are read from 2025 on.
+    async fn with_bill(name: &str) -> Store {
+        let store = new_store(name);
+        let bill: Bill = serde_json::from_str(
+            r#"{"id":"r7015","title":"Example Bill 2025","parliament":48,"chamber":"representatives",
+                "status":"Act","links":{},
+                "timeline":[{"date":"2024-03-04","event":"Introduced"},{"date":"2025-02-20","event":"Assent"}]}"#,
+        )
+        .expect("bill fixture");
+        store
+            .put_json("canonical/bills/r7015.json", &bill)
+            .await
+            .expect("seed");
+        store
     }
 
     fn title(number: i64, uri: Option<&str>) -> serde_json::Value {
@@ -150,8 +198,8 @@ mod tests {
             };
             Response::json(serde_json::json!({ "value": titles }).to_string())
         });
-        let store = new_store("acts");
-        sync_legislation(&store, 2025, &Endpoints::at(&server.base))
+        let store = with_bill("acts").await;
+        sync_legislation(&store, &Endpoints::at(&server.base))
             .await
             .expect("sync");
         // Two pages for 2025, one for each later year.
@@ -173,11 +221,41 @@ mod tests {
     #[tokio::test]
     async fn a_register_with_nothing_to_join_fails_the_sync() {
         let server = TestServer::start(|_| Response::json(r#"{"value":[]}"#));
-        let store = new_store("empty");
-        let err = sync_legislation(&store, 2025, &Endpoints::at(&server.base))
+        let store = with_bill("empty").await;
+        let err = sync_legislation(&store, &Endpoints::at(&server.base))
             .await
             .expect_err("nothing joined is a failed sync");
         assert!(err.to_string().contains("no Acts"), "got {err}");
         assert!(store.get_raw(ACTS_KEY).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn bills_still_before_a_chamber_have_no_act_to_find() {
+        let server = TestServer::start(|_| panic!("the Register is not asked"));
+        let store = new_store("unpassed");
+        let bill: Bill = serde_json::from_str(
+            r#"{"id":"s996","title":"Old Private Bill 2015","parliament":48,"chamber":"senate",
+                "status":"Before Senate","links":{},
+                "timeline":[{"date":"2015-09-14","event":"Introduced"}]}"#,
+        )
+        .expect("bill fixture");
+        store
+            .put_json("canonical/bills/s996.json", &bill)
+            .await
+            .expect("seed");
+        sync_legislation(&store, &Endpoints::at(&server.base))
+            .await
+            .expect("nothing to do is not a failure");
+        assert!(store.get_raw(ACTS_KEY).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn with_no_bills_stored_there_is_nothing_to_ask_the_register_for() {
+        let server = TestServer::start(|_| panic!("the Register is not asked"));
+        let store = new_store("no-bills");
+        let err = sync_legislation(&store, &Endpoints::at(&server.base))
+            .await
+            .expect_err("no bills");
+        assert!(err.to_string().contains("no bills stored"), "got {err}");
     }
 }

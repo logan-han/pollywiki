@@ -212,14 +212,9 @@ async fn sync(
         );
     }
     if has("legislation") {
-        // Acts from the year the newest parliament opened, as its bills are.
-        let first_year = records_begin()
-            .get(..4)
-            .and_then(|y| y.parse().ok())
-            .unwrap_or(2025);
         run_source!(
             "legislation",
-            sources::legislation::sync_legislation(store, first_year, endpoints)
+            sources::legislation::sync_legislation(store, endpoints)
         );
     }
     if has("aec-disclosures") {
