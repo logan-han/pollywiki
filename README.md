@@ -85,7 +85,11 @@ timing and failures. Traces are named by the job (`pollywiki.bill-notes`,
 prompt (`v4`) and grouped into one session per workflow run. The reply is
 parsed inside the trace: a reply the job could not use is an ERROR generation
 carrying the text, and a batch reply that left items out is a WARNING naming
-them. Gemini's finish reason and model version land in the metadata. Spans go
+them. Gemini's finish reason and model version land in the metadata. The
+three prompt templates are mirrored into Langfuse prompt management at the
+start of each run and every generation links to the version whose text it
+ran: code is the source of truth, a template changed here becomes a new
+version there, and an edit made there is superseded the same way. Spans go
 to Langfuse's v4 OpenTelemetry endpoint as OTLP/HTTP JSON; without the keys
 nothing is sent. `LANGFUSE_RECORD_CONTENT=off` keeps only the shape of each
 call. When `summarise` gives up for the night inside `all`, the job still

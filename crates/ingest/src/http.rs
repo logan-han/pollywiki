@@ -32,6 +32,10 @@ pub struct FetchOpts {
     /// Backoff base, multiplied by the attempt number. Defaults to 20s for a
     /// 429 (a per-minute quota needs real time to clear) and 2s otherwise.
     pub backoff_ms: Option<u64>,
+    /// Statuses besides 2xx that are answers rather than failures and are
+    /// returned to the caller as they are: a 404 from a lookup that may
+    /// legitimately find nothing.
+    pub accept_statuses: Vec<u16>,
 }
 
 impl FetchOpts {
@@ -97,7 +101,7 @@ pub async fn polite_fetch(url: &str, opts: &FetchOpts) -> Result<reqwest::Respon
 
         let res = req.send().await?;
         let status = res.status();
-        if status.is_success() {
+        if status.is_success() || opts.accept_statuses.contains(&status.as_u16()) {
             return Ok(res);
         }
         let retryable = status.as_u16() == 429 || status.as_u16() >= 500;
@@ -219,6 +223,18 @@ mod tests {
             .expect_err("exhausted");
         assert!(err.to_string().contains("503"), "got {err}");
         assert_eq!(server.hits(), 2, "the attempt cap is honoured");
+    }
+
+    #[tokio::test]
+    async fn a_status_the_caller_accepts_comes_back_as_an_answer() {
+        let server = TestServer::start(|_| Response::status(404, "no such prompt"));
+        let mut opts = fast();
+        opts.accept_statuses = vec![404];
+        let res = polite_fetch(&format!("{}/x", server.base), &opts)
+            .await
+            .expect("a 404 the caller expects is not an error");
+        assert_eq!(res.status().as_u16(), 404);
+        assert_eq!(server.hits(), 1, "and it is not retried either");
     }
 
     #[tokio::test]

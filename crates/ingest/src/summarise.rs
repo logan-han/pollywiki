@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use pollywiki_schema::{Bill, Division, House, Person};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
 const DEFAULT_MODEL: &str = "gemini-3.1-flash-lite";
@@ -29,6 +29,28 @@ fn request_cap() -> u32 {
         .unwrap_or(80)
 }
 
+/// A prompt as the code holds it: the template with its `{{variables}}`,
+/// the name it is traced and mirrored under, and the version that decides
+/// when text written with it is regenerated. Langfuse prompt management
+/// keeps a copy of every template that has run (see
+/// `Gemini::with_prompts_registered`), so each generation there links to
+/// the exact text that produced it.
+pub struct Prompt {
+    pub name: &'static str,
+    /// Bump to regenerate everything written with this prompt.
+    pub version: i64,
+    pub template: &'static str,
+}
+
+impl Prompt {
+    fn fill(&self, vars: &[(&str, &str)]) -> String {
+        vars.iter()
+            .fold(self.template.to_string(), |text, (name, value)| {
+                text.replace(&format!("{{{{{name}}}}}"), value)
+            })
+    }
+}
+
 /// Where the model lives and how hard this run may lean on it. A value rather
 /// than a set of constants so the whole summarise flow can be pointed at a
 /// local server under test.
@@ -44,6 +66,9 @@ pub struct Gemini {
     pub request_cap: u32,
     /// Langfuse tracing of every call, when its keys are set.
     pub telemetry: Option<Langfuse>,
+    /// The Langfuse prompt-management version of each prompt's template, by
+    /// prompt name, once registered; a generation links to it.
+    pub prompt_versions: HashMap<&'static str, i64>,
 }
 
 /// What a parser made of the model's text, plus anything it had to leave
@@ -85,26 +110,67 @@ impl Gemini {
             telemetry: Langfuse::from_env().inspect(|_| {
                 println!("summarise: Langfuse tracing on");
             }),
+            prompt_versions: HashMap::new(),
         })
     }
 
-    /// One call to the model, parsed and traced as a unit under `name`. The
-    /// parse runs inside the trace so that a reply the job could not use is
-    /// an error on the generation in Langfuse, with the text that was
-    /// unusable, and a reply that left items out is a warning there, rather
-    /// than either being a success with a line in the workflow log.
+    /// Mirrors each prompt's template into Langfuse prompt management and
+    /// remembers the version there whose text it is, so every generation
+    /// links to the exact text that produced it. Code stays the source of
+    /// truth: a template changed here becomes a new version there on the
+    /// next run, and an edit made there is superseded the same way. Without
+    /// tracing, or when Langfuse cannot be reached, calls simply go unlinked.
+    pub async fn with_prompts_registered(&self) -> Gemini {
+        let mut gemini = self.clone();
+        let Some(telemetry) = &self.telemetry else {
+            return gemini;
+        };
+        for prompt in PROMPTS {
+            match telemetry
+                .register_prompt(prompt.name, prompt.template)
+                .await
+            {
+                Ok(version) => {
+                    gemini.prompt_versions.insert(prompt.name, version);
+                }
+                Err(err) => eprintln!(
+                    "telemetry: {} not registered in Langfuse prompt management: {err}",
+                    prompt.name
+                ),
+            }
+        }
+        if !gemini.prompt_versions.is_empty() {
+            let listed = PROMPTS
+                .iter()
+                .filter_map(|p| {
+                    gemini
+                        .prompt_versions
+                        .get(p.name)
+                        .map(|v| format!("{} {v}", p.name))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("summarise: prompts registered in Langfuse ({listed})");
+        }
+        gemini
+    }
+
+    /// One call to the model, parsed and traced as a unit under the prompt's
+    /// name. The parse runs inside the trace so that a reply the job could
+    /// not use is an error on the generation in Langfuse, with the text that
+    /// was unusable, and a reply that left items out is a warning there,
+    /// rather than either being a success with a line in the workflow log.
     async fn generate<T>(
         &self,
-        name: &str,
-        version: i64,
-        prompt: &str,
+        prompt: &Prompt,
+        text: &str,
         metadata: &[(&str, String)],
         parse: impl FnOnce(&str) -> Result<Parsed<T>>,
     ) -> Result<T> {
         let parameters =
             serde_json::json!({ "responseMimeType": "application/json", "temperature": 0.2 });
         let started = SystemTime::now();
-        let (reply, result) = match self.call(prompt, &parameters).await {
+        let (reply, result) = match self.call(text, &parameters).await {
             Ok(reply) => {
                 let result = parse(&reply.text);
                 (Some(reply), result)
@@ -131,14 +197,15 @@ impl Gemini {
                 (Some(_), Err(err)) => CallStatus::Error(format!("unusable reply: {err}")),
                 (None, Err(err)) => CallStatus::Error(err.to_string()),
             };
-            let version = format!("v{version}");
+            let version = format!("v{}", prompt.version);
             telemetry
                 .record(&ModelCall {
-                    name,
+                    name: prompt.name,
                     version: &version,
+                    prompt_version: self.prompt_versions.get(prompt.name).copied(),
                     model: &self.model,
                     parameters: &parameters,
-                    prompt,
+                    prompt: text,
                     output: reply.as_ref().map(|r| r.text.as_str()),
                     status,
                     usage: reply.as_ref().and_then(|r| r.usage),
@@ -219,12 +286,81 @@ pub struct AiPersonNote {
     pub model: String,
     pub generated_at: String,
     pub votes_considered: i64,
+    /// Votes against the member's grouping when the note was written; one
+    /// more is a reason to rewrite at once.
+    #[serde(default)]
+    pub crossed_considered: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_version: Option<i64>,
 }
 
 /// Bump to regenerate every division summary after a prompt change.
 const SUMMARY_PROMPT_VERSION: i64 = 3;
+
+/// Bump to regenerate every bill note after a prompt change.
+const BILL_NOTE_PROMPT_VERSION: i64 = 3;
+
+/// Bump to regenerate every note after a prompt change.
+const NOTE_PROMPT_VERSION: i64 = 4;
+
+/// Plain-English context per bill. Unlike division summaries, general
+/// knowledge of Australian parliamentary practice is allowed to explain the
+/// MECHANISM (what an appropriation bill is); anything specific to this bill
+/// must come from the official summary alone.
+const BILL_NOTES: Prompt = Prompt {
+    name: "pollywiki.bill-notes",
+    version: BILL_NOTE_PROMPT_VERSION,
+    template: r#"You explain bills before the Australian federal parliament to ordinary readers.
+For EACH bill below, decide whether an explanation adds anything, then write accordingly:
+- Return an EMPTY string ONLY when the official summary is short AND every term in it would be understood by an ordinary reader with no knowledge of parliament or law. A note that merely rephrases such a summary is worse than none.
+- If the summary is short but contains ANY technical, legal or institutional language — terms like "Consolidated Revenue Fund", "standing appropriations", "delegated legislation", "consequential amendments", or the mechanics of a named act — write ONE sentence that translates the jargon and mechanism into plain terms. Do not restate what is already plain. When unsure, write the sentence.
+- If the summary is long or dense, write two to three sentences of plain-English context: what this KIND of bill does in the Australian system where that helps (for example, appropriation bills are the routine budget bills that authorise the government to spend money on its ordinary operations) — general knowledge of parliamentary practice is allowed for the mechanism — and what THIS bill specifically changes, using ONLY the official summary provided; never invent specifics.
+Never evaluate the bill or any politician; no opinions; do not restate the bill's status. Plain Australian English.
+Return JSON: an array of {"id": "<bill id>", "summary": "<text or empty string>"} covering every bill.
+
+{{items}}"#,
+};
+
+/// Neutral context for a division whose only They Vote For You context is a
+/// Hansard transcript.
+const DIVISION_CONTEXT: Prompt = Prompt {
+    name: "pollywiki.division-context",
+    version: SUMMARY_PROMPT_VERSION,
+    template: r#"You write neutral context notes for recorded votes (divisions) in the Australian federal parliament.
+For EACH division below, write one to two sentences of CONTEXT: what the bill, amendment or motion is about in substance, and what question was actually being decided (for example, a second reading decides whether to agree with a bill in principle; a rearrangement motion changes the order of business).
+For procedural motions (rearrangement, suspension of standing orders, closure, adjournment), use the same-day division list to say what business the motion concerned when it is evident, for example which bill was brought on for debate or voted on soon after. Copy bill titles exactly as given.
+The page already shows the result and the vote counts, so NEVER say whether it passed or failed, never mention the numbers, and do not describe the outcome at all.
+Rules: use ONLY the provided material; no opinions, no speculation about motives; plain Australian English; do not evaluate any politician or law.
+Return JSON: an array of {"id": "<division id>", "summary": "<text>"} covering every division.
+
+{{items}}"#,
+};
+
+/// A member's voting record in brief, phrased from sums the code has already
+/// done (see `tally`). The model never sees the vote list, so it cannot
+/// round a mixed record into "consistently" or "all".
+const MEMBER_NOTE: Prompt = Prompt {
+    name: "pollywiki.member-note",
+    version: NOTE_PROMPT_VERSION,
+    template: r#"You describe voting records in the Australian federal parliament, strictly descriptively.
+
+{{record}}
+Every count above was computed from the record: "aye 3, no 11" means three aye votes and eleven no votes among those divisions.
+
+The page already displays the two counts in the first line, so NEVER restate them, never say they always voted with their party, and never say they did not cross. Write two to three sentences that add what a reader cannot see by scanning a long table:
+- the subjects that recur, and WHICH WAY they voted on each, with the numbers: write "no in eleven of the fourteen consideration in detail divisions on <bill>", never "consistently no";
+- if they crossed, name the specific division(s) and how they voted;
+- any other countable pattern, such as every division on one bill voted the same way.
+
+Use ONLY the counts above and copy them exactly: never add, estimate or round a number, and never describe a vote the counts do not show. Use "all", "every", "always", "never" or "consistently" ONLY where the count shows zero votes the other way, and give the number even then ("aye in all six divisions on ...").
+
+Describe motions by their formal type (second reading, consideration in detail amendment, suspension of standing orders, censure motion, order for the production of documents) and subject. NEVER characterise a motion by political direction or origin: "critical of the government", "opposition-led" and "government-supported" are banned, because every member of a governing party opposes censure motions and every opposition member supports them, so such phrases carry no information. Copy bill titles EXACTLY as they appear in the data, letter for letter.
+
+Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal, rebellious, strong, poor, impressive); no motives, ideology or character; nothing not present in the data. Australian English spelling (favour, criticise, labour). Return JSON {"note": "..."}"#,
+};
+
+/// Every prompt, in the order the jobs run.
+const PROMPTS: [&Prompt; 3] = [&DIVISION_CONTEXT, &BILL_NOTES, &MEMBER_NOTE];
 
 /// TVFY's context field is a written summary for most bill votes but a raw
 /// Hansard excerpt for procedural motions. A transcript quotes speakers, so a
@@ -246,6 +382,7 @@ pub async fn summarise(store: &Store, people: &[Person]) -> Result<()> {
 
 /// The flow itself, against a given model endpoint.
 pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -> Result<()> {
+    let gemini = gemini.with_prompts_registered().await;
     let names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
 
     let mut divisions: Vec<Division> = Vec::new();
@@ -261,10 +398,10 @@ pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -
         }
     }
 
-    division_summaries(store, gemini, &divisions, &names, &bills).await?;
+    division_summaries(store, &gemini, &divisions, &names, &bills).await?;
     let bill_list: Vec<&Bill> = bills.values().collect();
-    bill_notes(store, gemini, &bill_list).await?;
-    person_notes(store, gemini, people, &divisions).await?;
+    bill_notes(store, &gemini, &bill_list).await?;
+    person_notes(store, &gemini, people, &divisions).await?;
     Ok(())
 }
 
@@ -312,24 +449,37 @@ fn parse_batch(
     })
 }
 
-/// Bump to regenerate every bill note after a prompt change.
-const BILL_NOTE_PROMPT_VERSION: i64 = 3;
-
 pub fn bill_note_key(id: &str) -> String {
     format!("derived/ai-bill-notes/{id}.json")
 }
 
-/// Plain-English context per bill. Unlike division summaries, general
-/// knowledge of Australian parliamentary practice is allowed to explain the
-/// MECHANISM (what an appropriation bill is); anything specific to this bill
-/// must come from the official summary alone.
 async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<()> {
     let mut pending: Vec<&Bill> = Vec::new();
+    let mut unsummarised = 0;
     for bill in bills {
         let existing: Option<AiSummary> = store.get_json(&bill_note_key(&bill.id)).await?;
+        // A bill with no official summary gets no note: with only a title to
+        // go on, the model could but paraphrase it. The bill is looked at
+        // again once APH publishes a summary, and a note written from a
+        // title alone before this rule is removed.
+        if bill
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+        {
+            unsummarised += 1;
+            if existing.is_some() {
+                store.delete(&bill_note_key(&bill.id)).await?;
+            }
+            continue;
+        }
         if existing.map(|e| e.prompt_version) != Some(Some(BILL_NOTE_PROMPT_VERSION)) {
             pending.push(bill);
         }
+    }
+    if unsummarised > 0 {
+        println!("summarise: {unsummarised} bills have no official summary yet, so no note");
     }
     if pending.is_empty() {
         println!("summarise: no bill notes pending");
@@ -402,30 +552,16 @@ async fn generate_bill_batch(gemini: &Gemini, batch: &[&Bill]) -> Result<IndexMa
                 "<bill id=\"{}\">\nTitle: {}\nOfficial summary: {}\n</bill>",
                 b.id,
                 b.title,
-                b.summary.as_deref().unwrap_or("none provided")
+                b.summary.as_deref().unwrap_or_default()
             )
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-
-    let prompt = format!(
-        r#"You explain bills before the Australian federal parliament to ordinary readers.
-For EACH bill below, decide whether an explanation adds anything, then write accordingly:
-- Return an EMPTY string ONLY when the official summary is short AND every term in it would be understood by an ordinary reader with no knowledge of parliament or law. A note that merely rephrases such a summary is worse than none.
-- If the summary is short but contains ANY technical, legal or institutional language — terms like "Consolidated Revenue Fund", "standing appropriations", "delegated legislation", "consequential amendments", or the mechanics of a named act — write ONE sentence that translates the jargon and mechanism into plain terms. Do not restate what is already plain. When unsure, write the sentence.
-- If the summary is long or dense, write two to three sentences of plain-English context: what this KIND of bill does in the Australian system where that helps (for example, appropriation bills are the routine budget bills that authorise the government to spend money on its ordinary operations) — general knowledge of parliamentary practice is allowed for the mechanism — and what THIS bill specifically changes, using ONLY the official summary provided; never invent specifics. If the summary is missing, say only what the title supports.
-Never evaluate the bill or any politician; no opinions; do not restate the bill's status. Plain Australian English.
-Return JSON: an array of {{"id": "<bill id>", "summary": "<text or empty string>"}} covering every bill.
-
-{items}"#
-    );
-
     let ids: Vec<&str> = batch.iter().map(|b| b.id.as_str()).collect();
     gemini
         .generate(
-            "pollywiki.bill-notes",
-            BILL_NOTE_PROMPT_VERSION,
-            &prompt,
+            &BILL_NOTES,
+            &BILL_NOTES.fill(&[("items", &items)]),
             &[
                 ("bills", ids.join(",")),
                 ("prompt_version", BILL_NOTE_PROMPT_VERSION.to_string()),
@@ -534,14 +670,26 @@ pub fn ai_key(division_id: &str) -> String {
     format!("derived/ai-summaries/{}.json", key_for(division_id))
 }
 
-/// Bump to regenerate every note after a prompt change.
-const NOTE_PROMPT_VERSION: i64 = 4;
-
 pub fn note_key(slug: &str) -> String {
     format!("derived/ai-person-notes/{slug}.json")
 }
 
 const MIN_VOTES_FOR_NOTE: usize = 10;
+
+/// New divisions a member must have voted in before their note is rewritten.
+/// Rewriting after every sitting day churned the text of every note for
+/// three nights at a time; ten divisions is about a sitting week.
+const REWRITE_AFTER_VOTES: i64 = 10;
+
+/// Whether a stored note still describes the record: written with the
+/// current prompt, with the same crossings (one more is news), and before
+/// the record grew by `REWRITE_AFTER_VOTES` divisions or shrank at all.
+fn note_is_current(existing: &AiPersonNote, votes: usize, crossed: usize) -> bool {
+    let grown = votes as i64 - existing.votes_considered;
+    existing.prompt_version == Some(NOTE_PROMPT_VERSION)
+        && existing.crossed_considered == crossed as i64
+        && (0..REWRITE_AFTER_VOTES).contains(&grown)
+}
 
 async fn person_notes(
     store: &Store,
@@ -585,16 +733,12 @@ async fn person_notes(
         if votes.len() < MIN_VOTES_FOR_NOTE {
             continue;
         }
+        let crossed = votes.iter().filter(|v| v.crossed).count();
         let existing: Option<AiPersonNote> = store.get_json(&note_key(&person.slug)).await?;
-        // Regenerate when the record has moved or the prompt has changed.
-        // A different model alone is not a reason: it would churn every note
-        // whenever a quota fallback model runs.
-        if let Some(existing) = &existing {
-            if existing.votes_considered == votes.len() as i64
-                && existing.prompt_version == Some(NOTE_PROMPT_VERSION)
-            {
-                continue;
-            }
+        // A different model alone is not a reason to rewrite: it would churn
+        // every note whenever a quota fallback model runs.
+        if existing.is_some_and(|e| note_is_current(&e, votes.len(), crossed)) {
+            continue;
         }
         requests += 1;
         if requests > cap {
@@ -616,6 +760,7 @@ async fn person_notes(
                             model: gemini.model.clone(),
                             generated_at: crate::now_iso(),
                             votes_considered: votes.len() as i64,
+                            crossed_considered: crossed as i64,
                             prompt_version: Some(NOTE_PROMPT_VERSION),
                         },
                     )
@@ -653,9 +798,8 @@ fn unrecorded_number(note: &str, record: &str) -> Option<u64> {
 
 /// The note is phrased from sums the code has already done (see `tally`):
 /// per bill and stage, per kind of motion, plus the divisions where the
-/// member voted against their grouping. The model never sees the vote list,
-/// so it cannot round a mixed record into "consistently" or "all"; and a
-/// note is only kept if every number in it appears in those sums.
+/// member voted against their grouping. A note is only kept if every number
+/// in it appears in those sums.
 async fn generate_person_note(
     gemini: &Gemini,
     person: &Person,
@@ -681,29 +825,10 @@ async fn generate_person_note(
         tally = Tally::of(votes).render(),
     );
 
-    let prompt = format!(
-        r#"You describe voting records in the Australian federal parliament, strictly descriptively.
-
-{record}
-Every count above was computed from the record: "aye 3, no 11" means three aye votes and eleven no votes among those divisions.
-
-The page already displays the two counts in the first line, so NEVER restate them, never say they always voted with their party, and never say they did not cross. Write two to three sentences that add what a reader cannot see by scanning a long table:
-- the subjects that recur, and WHICH WAY they voted on each, with the numbers: write "no in eleven of the fourteen consideration in detail divisions on <bill>", never "consistently no";
-- if they crossed, name the specific division(s) and how they voted;
-- any other countable pattern, such as every division on one bill voted the same way.
-
-Use ONLY the counts above and copy them exactly: never add, estimate or round a number, and never describe a vote the counts do not show. Use "all", "every", "always", "never" or "consistently" ONLY where the count shows zero votes the other way, and give the number even then ("aye in all six divisions on ...").
-
-Describe motions by their formal type (second reading, consideration in detail amendment, suspension of standing orders, censure motion, order for the production of documents) and subject. NEVER characterise a motion by political direction or origin: "critical of the government", "opposition-led" and "government-supported" are banned, because every member of a governing party opposes censure motions and every opposition member supports them, so such phrases carry no information. Copy bill titles EXACTLY as they appear in the data, letter for letter.
-
-Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal, rebellious, strong, poor, impressive); no motives, ideology or character; nothing not present in the data. Australian English spelling (favour, criticise, labour). Return JSON {{"note": "..."}}"#
-    );
-
     gemini
         .generate(
-            "pollywiki.member-note",
-            NOTE_PROMPT_VERSION,
-            &prompt,
+            &MEMBER_NOTE,
+            &MEMBER_NOTE.fill(&[("record", &record)]),
             &[
                 ("person", person.slug.clone()),
                 ("prompt_version", NOTE_PROMPT_VERSION.to_string()),
@@ -782,24 +907,11 @@ async fn generate_batch(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-
-    let prompt = format!(
-        r#"You write neutral context notes for recorded votes (divisions) in the Australian federal parliament.
-For EACH division below, write one to two sentences of CONTEXT: what the bill, amendment or motion is about in substance, and what question was actually being decided (for example, a second reading decides whether to agree with a bill in principle; a rearrangement motion changes the order of business).
-For procedural motions (rearrangement, suspension of standing orders, closure, adjournment), use the same-day division list to say what business the motion concerned when it is evident, for example which bill was brought on for debate or voted on soon after. Copy bill titles exactly as given.
-The page already shows the result and the vote counts, so NEVER say whether it passed or failed, never mention the numbers, and do not describe the outcome at all.
-Rules: use ONLY the provided material; no opinions, no speculation about motives; plain Australian English; do not evaluate any politician or law.
-Return JSON: an array of {{"id": "<division id>", "summary": "<text>"}} covering every division.
-
-{items}"#
-    );
-
     let ids: Vec<&str> = batch.iter().map(|d| d.id.as_str()).collect();
     gemini
         .generate(
-            "pollywiki.division-context",
-            SUMMARY_PROMPT_VERSION,
-            &prompt,
+            &DIVISION_CONTEXT,
+            &DIVISION_CONTEXT.fill(&[("items", &items)]),
             &[
                 ("divisions", ids.join(",")),
                 ("prompt_version", SUMMARY_PROMPT_VERSION.to_string()),
@@ -849,6 +961,7 @@ mod tests {
             min_interval_ms: 1,
             request_cap: 80,
             telemetry: None,
+            prompt_versions: HashMap::new(),
         }
     }
 
@@ -856,6 +969,17 @@ mod tests {
     fn text(t: &str) -> Result<Parsed<String>> {
         Ok(Parsed::clean(t.to_string()))
     }
+
+    const FIRST: Prompt = Prompt {
+        name: "pollywiki.first",
+        version: 1,
+        template: "{{text}}",
+    };
+    const TEST: Prompt = Prompt {
+        name: "pollywiki.test",
+        version: 1,
+        template: "{{text}}",
+    };
 
     #[tokio::test]
     async fn each_call_is_traced_to_langfuse_and_a_failed_export_changes_nothing() {
@@ -883,16 +1007,16 @@ mod tests {
             "{}/langfuse",
             server.base
         )));
+        traced.prompt_versions.insert(MEMBER_NOTE.name, 6);
 
         let refused = traced
-            .generate("pollywiki.first", 1, "prompt one", &[], text)
+            .generate(&FIRST, "prompt one", &[], text)
             .await
             .expect("an export failure never fails the call");
         assert_eq!(refused, "{\"note\":\"n\"}");
         traced
             .generate(
-                "pollywiki.member-note",
-                4,
+                &MEMBER_NOTE,
                 "prompt two",
                 &[("person", "alex".to_string())],
                 text,
@@ -926,11 +1050,17 @@ mod tests {
             attrs.contains(r#""key":"langfuse.version","value":{"stringValue":"v4"}"#),
             "the prompt version is the span's version: {attrs}"
         );
+        assert!(
+            attrs.contains(
+                r#""key":"langfuse.observation.prompt.version","value":{"intValue":"6"}"#
+            ),
+            "the generation links to the registered prompt: {attrs}"
+        );
 
         // Without keys nothing is sent anywhere.
         let before = server.hits();
         gemini(&server)
-            .generate("pollywiki.member-note", 4, "prompt three", &[], text)
+            .generate(&MEMBER_NOTE, "prompt three", &[], text)
             .await
             .expect("call");
         assert_eq!(server.hits(), before + 1, "only the model call");
@@ -1343,18 +1473,197 @@ mod tests {
             "an unchanged record is left alone"
         );
 
-        // One more vote and the note is rewritten.
+        // One more vote is not yet worth rewriting the note for: rewriting
+        // after every sitting day churned every note's text.
         let mut eleventh = division("representatives/2026-08-12/11", 11, "Third reading", None);
         eleventh.votes = vec![vote("alex-paterson", false)];
         divisions.push(eleventh);
-        person_notes(&store, &gemini(&server), &[member], &divisions)
-            .await
-            .expect("regen");
+        person_notes(
+            &store,
+            &gemini(&server),
+            std::slice::from_ref(&member),
+            &divisions,
+        )
+        .await
+        .expect("one more vote");
+        assert_eq!(server.hits(), after_first, "a note is kept for small moves");
+
+        // Ten more since the note was written, and it is rewritten.
+        for n in 12..=20 {
+            let mut d = division(
+                &format!("representatives/2026-08-12/{n}"),
+                n,
+                "Second reading",
+                None,
+            );
+            d.votes = vec![vote("alex-paterson", false)];
+            divisions.push(d);
+        }
+        person_notes(
+            &store,
+            &gemini(&server),
+            std::slice::from_ref(&member),
+            &divisions,
+        )
+        .await
+        .expect("regen");
         assert_eq!(
             server.hits(),
             after_first + 1,
-            "a moved record is rewritten"
+            "a record that grew by ten divisions is rewritten"
         );
+        let note: AiPersonNote = store
+            .get_json(&note_key("alex-paterson"))
+            .await
+            .unwrap()
+            .expect("note stored");
+        assert_eq!((note.votes_considered, note.crossed_considered), (20, 1));
+
+        // A vote against the grouping is news: rewritten at once.
+        let mut crossed = division("representatives/2026-08-12/21", 21, "Censure motion", None);
+        crossed.votes = vec![vote("alex-paterson", true)];
+        divisions.push(crossed);
+        person_notes(&store, &gemini(&server), &[member], &divisions)
+            .await
+            .expect("regen on crossing");
+        assert_eq!(
+            server.hits(),
+            after_first + 2,
+            "one more crossing rewrites the note"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bill_with_no_official_summary_gets_no_note_and_loses_an_old_one() {
+        let server = TestServer::start(|req| {
+            assert!(
+                !req.body.contains("r3") && !req.body.contains("Untitled"),
+                "a bill without a summary is never sent: {}",
+                req.body
+            );
+            Response::json(candidate(
+                &serde_json::json!([{ "id": "r2", "summary": "Note." }]).to_string(),
+            ))
+        });
+        let store = new_store("nosummary");
+        let dense = bill("r2", "Dense Bill 2026", Some("Standing appropriations."));
+        let bare = bill("r3", "Untitled Summary Bill 2026", None);
+        let blank = bill("r4", "Blank Summary Bill 2026", Some("   "));
+        // A note written from the title alone, before the rule.
+        store
+            .put_json(
+                &bill_note_key("r3"),
+                &AiSummary {
+                    text: "This bill proposes changes to untitled summaries.".to_string(),
+                    model: "old-model".to_string(),
+                    generated_at: "2026-10-01T00:00:00.000Z".to_string(),
+                    prompt_version: Some(BILL_NOTE_PROMPT_VERSION),
+                },
+            )
+            .await
+            .unwrap();
+
+        bill_notes(&store, &gemini(&server), &[&dense, &bare, &blank])
+            .await
+            .expect("bill notes");
+        assert_eq!(server.hits(), 1);
+        assert!(
+            store
+                .get_json::<AiSummary>(&bill_note_key("r3"))
+                .await
+                .unwrap()
+                .is_none(),
+            "the title-only note is removed"
+        );
+        assert!(store
+            .get_json::<AiSummary>(&bill_note_key("r4"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_json::<AiSummary>(&bill_note_key("r2"))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn prompts_are_mirrored_into_langfuse_and_generations_link_to_their_version() {
+        let server = TestServer::start(|req| {
+            if req.method == "POST" && req.path == "/api/public/v2/prompts" {
+                let body: Value = serde_json::from_str(&req.body).expect("json");
+                return Response::json(
+                    serde_json::json!({ "name": body["name"], "version": 9 }).to_string(),
+                );
+            }
+            if req.path.starts_with("/api/public/v2/prompts/") {
+                return if req.path.contains(BILL_NOTES.name) {
+                    // Already mirrored, text unchanged.
+                    Response::json(
+                        serde_json::json!({ "version": 3, "prompt": BILL_NOTES.template })
+                            .to_string(),
+                    )
+                } else if req.path.contains(DIVISION_CONTEXT.name) {
+                    // Mirrored once, but the template has changed since.
+                    Response::json(
+                        serde_json::json!({ "version": 1, "prompt": "an older template" })
+                            .to_string(),
+                    )
+                } else {
+                    Response::status(404, "{}")
+                };
+            }
+            if req.path.contains(":generateContent") {
+                return Response::json(candidate("[]"));
+            }
+            Response::json("{}")
+        });
+        let mut traced = gemini(&server);
+        traced.telemetry = Some(crate::telemetry::Langfuse::at(&server.base));
+
+        let registered = traced.with_prompts_registered().await;
+        assert_eq!(
+            registered.prompt_versions,
+            HashMap::from([
+                (BILL_NOTES.name, 3),
+                (DIVISION_CONTEXT.name, 9),
+                (MEMBER_NOTE.name, 9),
+            ])
+        );
+        let posted: Vec<_> = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.method == "POST" && r.path == "/api/public/v2/prompts")
+            .collect();
+        assert_eq!(posted.len(), 2, "only the changed and the new are written");
+        assert!(posted[0].body.contains(DIVISION_CONTEXT.name));
+        assert!(posted[1].body.contains(MEMBER_NOTE.name));
+
+        // Without tracing nothing is registered, and the flow runs unlinked.
+        assert!(gemini(&server)
+            .with_prompts_registered()
+            .await
+            .prompt_versions
+            .is_empty());
+
+        let first = bill("r1", "First Bill 2026", Some("Dense."));
+        generate_bill_batch(&registered, &[&first])
+            .await
+            .expect("call");
+        let export = server
+            .requests()
+            .into_iter()
+            .rev()
+            .find(|r| r.path.contains("/otel/"))
+            .expect("the call was traced");
+        assert!(
+            export.body.contains(
+                r#""key":"langfuse.observation.prompt.version","value":{"intValue":"3"}"#
+            ),
+            "{}",
+            export.body
+        );
+        assert!(export.body.contains(r#""key":"langfuse.observation.prompt.name","value":{"stringValue":"pollywiki.bill-notes"}"#));
     }
 
     #[tokio::test]
@@ -1378,9 +1687,7 @@ mod tests {
         let empty = TestServer::start(|_| Response::json("{\"candidates\":[]}"));
         let g = gemini(&empty);
         assert!(
-            g.generate("pollywiki.test", 1, "prompt", &[], text)
-                .await
-                .is_err(),
+            g.generate(&TEST, "prompt", &[], text).await.is_err(),
             "no candidate is an error"
         );
 
@@ -1394,7 +1701,7 @@ mod tests {
             )
         });
         let err = gemini(&cut_off)
-            .generate("pollywiki.test", 1, "prompt", &[], text)
+            .generate(&TEST, "prompt", &[], text)
             .await
             .expect_err("no text is an error");
         assert_eq!(err.to_string(), "gemini: empty response (MAX_TOKENS)");
@@ -1437,7 +1744,7 @@ mod tests {
     async fn the_request_carries_the_key_the_model_and_the_prompt() {
         let server = TestServer::start(|_| Response::json(candidate("[]")));
         let g = gemini(&server);
-        g.generate("pollywiki.test", 1, "the prompt text", &[], text)
+        g.generate(&TEST, "the prompt text", &[], text)
             .await
             .expect("generate");
 
@@ -1701,7 +2008,7 @@ mod tests {
         traced.telemetry = Some(crate::telemetry::Langfuse::at(&server.base));
 
         let err = traced
-            .generate("pollywiki.member-note", 4, "prompt", &[], |t| {
+            .generate(&MEMBER_NOTE, "prompt", &[], |t| {
                 let _: Value = serde_json::from_str(t)?;
                 Ok(Parsed::clean(()))
             })
