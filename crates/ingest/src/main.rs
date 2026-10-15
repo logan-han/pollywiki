@@ -6,6 +6,7 @@ mod manifest;
 mod sources;
 mod store;
 mod summarise;
+mod tally;
 mod telemetry;
 #[cfg(test)]
 mod test_http;
@@ -126,6 +127,10 @@ async fn run_on(
         let people = load_people(store).await?;
         if let Err(err) = summarise::summarise(store, &people).await {
             eprintln!("summarise: FAILED - {err}");
+            // Inside `all` the job still goes green (below), so on a runner the
+            // failure would be one line in a long log. A workflow command
+            // puts it in the run's summary instead.
+            github_warning("summarise", &err.to_string());
             // The AI layer is an enhancement: inside `all` its failure must never
             // block record updates from deploying. Pending items resume next run.
             if command == "summarise" {
@@ -140,6 +145,20 @@ async fn run_on(
         anyhow::bail!("{failures} source(s) failed");
     }
     Ok(())
+}
+
+/// A GitHub Actions warning annotation, printed only on a runner, which
+/// reads workflow commands off stdout. The message is escaped the way the
+/// command syntax needs.
+fn github_warning(title: &str, message: &str) {
+    if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        return;
+    }
+    let message = message
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A");
+    println!("::warning title={title}::{message}");
 }
 
 async fn sync(

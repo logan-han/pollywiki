@@ -58,14 +58,31 @@ impl Usage {
     }
 }
 
+/// How a call ended, as Langfuse should show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallStatus {
+    Ok,
+    /// The model answered and the answer was used, but with something left
+    /// out, such as items of a batch it did not return.
+    Warning(String),
+    /// No usable answer: the request failed, or the reply could not be used.
+    Error(String),
+}
+
 /// One model call as it happened.
 pub struct ModelCall<'a> {
     /// What the call was for, e.g. "pollywiki.bill-notes"; names the trace.
     pub name: &'a str,
+    /// The prompt's version, e.g. "v4". Langfuse groups metrics by it, so a
+    /// prompt change can be compared with what came before.
+    pub version: &'a str,
     pub model: &'a str,
     pub parameters: &'a Value,
     pub prompt: &'a str,
-    pub outcome: Result<&'a str, String>,
+    /// The model's text whenever it answered, usable or not: an unusable
+    /// reply is the one most worth reading.
+    pub output: Option<&'a str>,
+    pub status: CallStatus,
     pub usage: Option<Usage>,
     pub started: SystemTime,
     pub ended: SystemTime,
@@ -138,6 +155,7 @@ impl Langfuse {
         put("langfuse.trace.name", call.name);
         put("langfuse.observation.type", "generation");
         put("langfuse.environment", &self.environment);
+        put("langfuse.version", call.version);
         if let Some(release) = &self.release {
             put("langfuse.release", release);
         }
@@ -151,7 +169,7 @@ impl Langfuse {
         );
         if self.record_content {
             put("langfuse.observation.input", call.prompt);
-            if let Ok(output) = call.outcome {
+            if let Some(output) = call.output {
                 put("langfuse.observation.output", output);
             }
         }
@@ -165,9 +183,14 @@ impl Langfuse {
             put(&format!("langfuse.trace.metadata.{key}"), value);
             put(&format!("langfuse.observation.metadata.{key}"), value);
         }
-        let status = match &call.outcome {
-            Ok(_) => json!({ "code": 1 }),
-            Err(message) => {
+        let status = match &call.status {
+            CallStatus::Ok => json!({ "code": 1 }),
+            CallStatus::Warning(message) => {
+                put("langfuse.observation.level", "WARNING");
+                put("langfuse.observation.status_message", message);
+                json!({ "code": 1 })
+            }
+            CallStatus::Error(message) => {
                 put("langfuse.observation.level", "ERROR");
                 put("langfuse.observation.status_message", message);
                 json!({ "code": 2, "message": message })
@@ -232,7 +255,8 @@ mod tests {
     }
 
     fn call<'a>(
-        outcome: Result<&'a str, String>,
+        output: Option<&'a str>,
+        status: CallStatus,
         metadata: &'a [(&'a str, String)],
     ) -> ModelCall<'a> {
         static PARAMETERS: std::sync::LazyLock<Value> =
@@ -240,10 +264,12 @@ mod tests {
         let started = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         ModelCall {
             name: "pollywiki.bill-notes",
+            version: "v3",
             model: "test-model",
             parameters: &PARAMETERS,
             prompt: "Explain these bills",
-            outcome,
+            output,
+            status,
             usage: Some(Usage {
                 input: 90,
                 input_cached: 10,
@@ -254,6 +280,10 @@ mod tests {
             ended: started + Duration::from_millis(1500),
             metadata,
         }
+    }
+
+    fn first_span(payload: &Value) -> &Value {
+        &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     }
 
     #[test]
@@ -305,8 +335,8 @@ mod tests {
         ])
         .expect("on");
         let metadata = [("bills", "r1,r2".to_string())];
-        let payload = on.payload(&call(Ok("[]"), &metadata));
-        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        let payload = on.payload(&call(Some("[]"), CallStatus::Ok, &metadata));
+        let span = first_span(&payload);
 
         assert_eq!(span["name"], "pollywiki.bill-notes");
         assert_eq!(span["traceId"].as_str().map(str::len), Some(32));
@@ -322,6 +352,7 @@ mod tests {
             attribute(span, "langfuse.observation.type"),
             Some("generation")
         );
+        assert_eq!(attribute(span, "langfuse.version"), Some("v3"));
         assert_eq!(attribute(span, "langfuse.session.id"), Some("ingest-7"));
         assert_eq!(
             attribute(span, "langfuse.observation.model.name"),
@@ -353,6 +384,7 @@ mod tests {
             Some("r1,r2")
         );
         assert!(attribute(span, "langfuse.observation.level").is_none());
+        assert!(attribute(span, "langfuse.observation.status_message").is_none());
     }
 
     #[test]
@@ -363,8 +395,12 @@ mod tests {
             ("LANGFUSE_RECORD_CONTENT", "off"),
         ])
         .expect("on");
-        let payload = on.payload(&call(Err("gemini: empty response".to_string()), &[]));
-        let span = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        let payload = on.payload(&call(
+            None,
+            CallStatus::Error("gemini: empty response".to_string()),
+            &[],
+        ));
+        let span = first_span(&payload);
         assert_eq!(span["status"]["code"], 2);
         assert_eq!(span["status"]["message"], "gemini: empty response");
         assert_eq!(attribute(span, "langfuse.observation.level"), Some("ERROR"));
@@ -376,6 +412,41 @@ mod tests {
         assert!(attribute(span, "langfuse.observation.output").is_none());
         // The shape of the call still lands.
         assert!(attribute(span, "langfuse.observation.usage_details").is_some());
+    }
+
+    #[test]
+    fn an_unusable_reply_is_an_error_that_keeps_the_text_and_a_short_one_a_warning() {
+        let on = vars(&[("LANGFUSE_PUBLIC_KEY", "pk"), ("LANGFUSE_SECRET_KEY", "sk")]).expect("on");
+
+        let payload = on.payload(&call(
+            Some("Sorry, I cannot help."),
+            CallStatus::Error("unusable reply: expected value at line 1".to_string()),
+            &[],
+        ));
+        let span = first_span(&payload);
+        assert_eq!(span["status"]["code"], 2);
+        assert_eq!(attribute(span, "langfuse.observation.level"), Some("ERROR"));
+        assert_eq!(
+            attribute(span, "langfuse.observation.output"),
+            Some("Sorry, I cannot help."),
+            "the text that could not be used is the one worth reading"
+        );
+
+        let payload = on.payload(&call(
+            Some("[]"),
+            CallStatus::Warning("2 of 8 bills missing from the reply: r1,r2".to_string()),
+            &[],
+        ));
+        let span = first_span(&payload);
+        assert_eq!(span["status"]["code"], 1, "a warning is not a failed span");
+        assert_eq!(
+            attribute(span, "langfuse.observation.level"),
+            Some("WARNING")
+        );
+        assert_eq!(
+            attribute(span, "langfuse.observation.status_message"),
+            Some("2 of 8 bills missing from the reply: r1,r2")
+        );
     }
 
     #[test]

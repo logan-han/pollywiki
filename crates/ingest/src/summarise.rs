@@ -1,10 +1,11 @@
 use crate::http::{polite_fetch, FetchOpts};
 use crate::sources::tvfy::key_for;
 use crate::store::Store;
-use crate::telemetry::{Langfuse, ModelCall, Usage};
+use crate::tally::{self, Tally, VoteRow};
+use crate::telemetry::{CallStatus, Langfuse, ModelCall, Usage};
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use pollywiki_schema::{Bill, Division, House, Person, Vote};
+use pollywiki_schema::{Bill, Division, House, Person};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -13,6 +14,12 @@ use std::time::SystemTime;
 const DEFAULT_MODEL: &str = "gemini-3.1-flash-lite";
 const BATCH_SIZE: usize = 8;
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+
+/// Failures in a row before a job gives up for the night. In a row, not in
+/// total: an overloaded model answers 503 to every third call for a few
+/// minutes and then recovers, and the night that happened five scattered
+/// failures among eight successes stopped the person notes at the letter A.
+const MAX_FAILURES_IN_A_ROW: usize = 5;
 
 /// Free-tier headroom: nightly needs a handful; the backfill spans a few runs.
 fn request_cap() -> u32 {
@@ -39,6 +46,33 @@ pub struct Gemini {
     pub telemetry: Option<Langfuse>,
 }
 
+/// What a parser made of the model's text, plus anything it had to leave
+/// out, which the trace records as a warning.
+pub struct Parsed<T> {
+    pub value: T,
+    pub warning: Option<String>,
+}
+
+impl<T> Parsed<T> {
+    fn clean(value: T) -> Self {
+        Parsed {
+            value,
+            warning: None,
+        }
+    }
+}
+
+/// A reply the API gave: the text, what it cost and why it stopped.
+struct Reply {
+    text: String,
+    usage: Option<Usage>,
+    /// Gemini's finishReason: STOP for a complete answer, otherwise why the
+    /// text ends where it does (MAX_TOKENS, SAFETY, ...).
+    finish_reason: Option<String>,
+    /// The concrete model version that served the call, when reported.
+    model_version: Option<String>,
+}
+
 impl Gemini {
     pub fn from_env() -> Result<Self> {
         Ok(Gemini {
@@ -54,42 +88,72 @@ impl Gemini {
         })
     }
 
-    /// One call to the model, traced to Langfuse under `name` when tracing is
-    /// on, whether it answered or failed.
-    async fn generate(
+    /// One call to the model, parsed and traced as a unit under `name`. The
+    /// parse runs inside the trace so that a reply the job could not use is
+    /// an error on the generation in Langfuse, with the text that was
+    /// unusable, and a reply that left items out is a warning there, rather
+    /// than either being a success with a line in the workflow log.
+    async fn generate<T>(
         &self,
         name: &str,
+        version: i64,
         prompt: &str,
         metadata: &[(&str, String)],
-    ) -> Result<String> {
+        parse: impl FnOnce(&str) -> Result<Parsed<T>>,
+    ) -> Result<T> {
         let parameters =
             serde_json::json!({ "responseMimeType": "application/json", "temperature": 0.2 });
         let started = SystemTime::now();
-        let result = self.call(prompt, &parameters).await;
+        let (reply, result) = match self.call(prompt, &parameters).await {
+            Ok(reply) => {
+                let result = parse(&reply.text);
+                (Some(reply), result)
+            }
+            Err(err) => (None, Err(err)),
+        };
         if let Some(telemetry) = &self.telemetry {
+            let mut metadata: Vec<(&str, String)> = metadata.to_vec();
+            if let Some(reason) = reply.as_ref().and_then(|r| r.finish_reason.clone()) {
+                metadata.push(("finish_reason", reason));
+            }
+            if let Some(model_version) = reply.as_ref().and_then(|r| r.model_version.clone()) {
+                metadata.push(("model_version", model_version));
+            }
+            let status = match (&reply, &result) {
+                (
+                    _,
+                    Ok(Parsed {
+                        warning: Some(warning),
+                        ..
+                    }),
+                ) => CallStatus::Warning(warning.clone()),
+                (_, Ok(_)) => CallStatus::Ok,
+                (Some(_), Err(err)) => CallStatus::Error(format!("unusable reply: {err}")),
+                (None, Err(err)) => CallStatus::Error(err.to_string()),
+            };
+            let version = format!("v{version}");
             telemetry
                 .record(&ModelCall {
                     name,
+                    version: &version,
                     model: &self.model,
                     parameters: &parameters,
                     prompt,
-                    outcome: match &result {
-                        Ok((text, _)) => Ok(text.as_str()),
-                        Err(err) => Err(err.to_string()),
-                    },
-                    usage: result.as_ref().ok().and_then(|(_, usage)| *usage),
+                    output: reply.as_ref().map(|r| r.text.as_str()),
+                    status,
+                    usage: reply.as_ref().and_then(|r| r.usage),
                     started,
                     ended: SystemTime::now(),
-                    metadata,
+                    metadata: &metadata,
                 })
                 .await;
         }
-        result.map(|(text, _)| text)
+        result.map(|parsed| parsed.value)
     }
 
     /// politeFetch paces requests per host and retries 429/5xx with backoff,
     /// which keeps the run inside the free-tier per-minute limits.
-    async fn call(&self, prompt: &str, parameters: &Value) -> Result<(String, Option<Usage>)> {
+    async fn call(&self, prompt: &str, parameters: &Value) -> Result<Reply> {
         let body = serde_json::json!({
             "contents": [{ "parts": [{ "text": prompt }] }],
             "generationConfig": parameters,
@@ -97,6 +161,10 @@ impl Gemini {
         let mut opts = FetchOpts::min_interval(self.min_interval_ms)
             .with_header("x-goog-api-key", &self.api_key);
         opts.post_json = Some(serde_json::to_string(&body)?);
+        // An overloaded model answers 503 for minutes at a time, and the
+        // default two-second steps burn every attempt before it clears.
+        // Twenty-second steps (20, 40, then 60 seconds) ride out most windows.
+        opts.backoff_ms = Some(20_000);
         let res = polite_fetch(
             &format!(
                 "{}/models/{}:generateContent",
@@ -107,13 +175,30 @@ impl Gemini {
         )
         .await?;
         let data: Value = res.json().await?;
-        let text = data
-            .pointer("/candidates/0/content/parts/0/text")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("gemini: empty response"))?;
-        Ok((text, Usage::from_gemini(&data)))
+        let text_at = |pointer: &str| {
+            data.pointer(pointer)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let finish_reason = text_at("/candidates/0/finishReason");
+        let model_version = text_at("/modelVersion");
+        let Some(text) = text_at("/candidates/0/content/parts/0/text").filter(|t| !t.is_empty())
+        else {
+            // Why there is no text is the useful part: a reply cut off at the
+            // token limit and one blocked for safety call for different fixes.
+            let why = finish_reason
+                .clone()
+                .or_else(|| text_at("/promptFeedback/blockReason"))
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default();
+            return Err(anyhow!("gemini: empty response{why}"));
+        };
+        Ok(Reply {
+            text,
+            usage: Usage::from_gemini(&data),
+            finish_reason,
+            model_version,
+        })
     }
 }
 
@@ -183,6 +268,50 @@ pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -
     Ok(())
 }
 
+/// The rows a batch prompt asked for, keyed by id and limited to the ids it
+/// asked about. Ids the model left out (or, when an empty text is not an
+/// answer, answered with nothing) are reported for the trace; those items
+/// stay pending and are asked again next run.
+fn parse_batch(
+    text: &str,
+    expected: &[&str],
+    what: &str,
+    empty_is_an_answer: bool,
+) -> Result<Parsed<IndexMap<String, String>>> {
+    let rows: Vec<Value> = serde_json::from_str(text)?;
+    let valid: HashSet<&str> = expected.iter().copied().collect();
+    let mut out = IndexMap::new();
+    for row in rows {
+        let (Some(id), Some(summary)) = (
+            row.get("id").and_then(Value::as_str),
+            row.get("summary").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let summary = summary.trim();
+        if valid.contains(id) && (empty_is_an_answer || !summary.is_empty()) {
+            out.insert(id.to_string(), summary.to_string());
+        }
+    }
+    let missing: Vec<&str> = expected
+        .iter()
+        .copied()
+        .filter(|id| !out.contains_key(*id))
+        .collect();
+    let warning = (!missing.is_empty()).then(|| {
+        format!(
+            "{} of {} {what} missing from the reply: {}",
+            missing.len(),
+            expected.len(),
+            missing.join(",")
+        )
+    });
+    Ok(Parsed {
+        value: out,
+        warning,
+    })
+}
+
 /// Bump to regenerate every bill note after a prompt change.
 const BILL_NOTE_PROMPT_VERSION: i64 = 3;
 
@@ -211,6 +340,7 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
     let mut requests = 0;
     let mut written = 0;
     let mut failed = 0;
+    let mut in_a_row = 0;
     for (i, batch) in pending.chunks(BATCH_SIZE).enumerate() {
         requests += 1;
         if requests > cap {
@@ -222,6 +352,7 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
         }
         match generate_bill_batch(gemini, batch).await {
             Ok(results) => {
+                in_a_row = 0;
                 for bill in batch {
                     let Some(text) = results.get(&bill.id) else {
                         continue;
@@ -246,9 +377,12 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
             }
             Err(err) => {
                 failed += 1;
+                in_a_row += 1;
                 eprintln!("summarise: bill batch at {} failed - {err}", i * BATCH_SIZE);
-                if failed >= 5 {
-                    return Err(anyhow!("summarise: too many failed bill batches, aborting"));
+                if in_a_row >= MAX_FAILURES_IN_A_ROW {
+                    return Err(anyhow!(
+                        "summarise: too many failed bill batches in a row, aborting"
+                    ));
                 }
             }
         }
@@ -286,36 +420,19 @@ Return JSON: an array of {{"id": "<bill id>", "summary": "<text or empty string>
 {items}"#
     );
 
-    let ids = batch
-        .iter()
-        .map(|b| b.id.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
-    let text = gemini
+    let ids: Vec<&str> = batch.iter().map(|b| b.id.as_str()).collect();
+    gemini
         .generate(
             "pollywiki.bill-notes",
+            BILL_NOTE_PROMPT_VERSION,
             &prompt,
             &[
-                ("bills", ids),
+                ("bills", ids.join(",")),
                 ("prompt_version", BILL_NOTE_PROMPT_VERSION.to_string()),
             ],
+            |text| parse_batch(text, &ids, "bills", true),
         )
-        .await?;
-    let mut out = IndexMap::new();
-    let valid_ids: HashSet<&str> = batch.iter().map(|b| b.id.as_str()).collect();
-    let rows: Vec<Value> = serde_json::from_str(&text)?;
-    for row in rows {
-        let (Some(id), Some(summary)) = (
-            row.get("id").and_then(Value::as_str),
-            row.get("summary").and_then(Value::as_str),
-        ) else {
-            continue;
-        };
-        if valid_ids.contains(id) {
-            out.insert(id.to_string(), summary.trim().to_string());
-        }
-    }
-    Ok(out)
+        .await
 }
 
 async fn division_summaries(
@@ -360,6 +477,7 @@ async fn division_summaries(
     let mut requests = 0;
     let mut written = 0;
     let mut failed_batches = 0;
+    let mut in_a_row = 0;
     for (i, batch) in pending.chunks(BATCH_SIZE).enumerate() {
         requests += 1;
         if requests > cap {
@@ -373,8 +491,9 @@ async fn division_summaries(
         // are retried on the next run.
         match generate_batch(gemini, batch, bills, &by_day).await {
             Ok(results) => {
+                in_a_row = 0;
                 for division in batch {
-                    let Some(text) = results.get(&division.id).filter(|t| !t.is_empty()) else {
+                    let Some(text) = results.get(&division.id) else {
                         continue;
                     };
                     store
@@ -393,9 +512,12 @@ async fn division_summaries(
             }
             Err(err) => {
                 failed_batches += 1;
+                in_a_row += 1;
                 eprintln!("summarise: batch at {} failed - {err}", i * BATCH_SIZE);
-                if failed_batches >= 5 {
-                    return Err(anyhow!("summarise: too many failed batches, aborting run"));
+                if in_a_row >= MAX_FAILURES_IN_A_ROW {
+                    return Err(anyhow!(
+                        "summarise: too many failed batches in a row, aborting run"
+                    ));
                 }
             }
         }
@@ -413,7 +535,7 @@ pub fn ai_key(division_id: &str) -> String {
 }
 
 /// Bump to regenerate every note after a prompt change.
-const NOTE_PROMPT_VERSION: i64 = 3;
+const NOTE_PROMPT_VERSION: i64 = 4;
 
 pub fn note_key(slug: &str) -> String {
     format!("derived/ai-person-notes/{slug}.json")
@@ -421,25 +543,19 @@ pub fn note_key(slug: &str) -> String {
 
 const MIN_VOTES_FOR_NOTE: usize = 10;
 
-struct PersonVoteRow<'a> {
-    division: &'a Division,
-    vote: Vote,
-    crossed: bool,
-}
-
 async fn person_notes(
     store: &Store,
     gemini: &Gemini,
     people: &[Person],
     divisions: &[Division],
 ) -> Result<()> {
-    let mut votes_by_slug: IndexMap<&str, Vec<PersonVoteRow>> = IndexMap::new();
+    let mut votes_by_slug: IndexMap<&str, Vec<VoteRow>> = IndexMap::new();
     for division in divisions {
         for vote in &division.votes {
             votes_by_slug
                 .entry(vote.person_slug.as_str())
                 .or_default()
-                .push(PersonVoteRow {
+                .push(VoteRow {
                     division,
                     vote: vote.vote,
                     crossed: vote.against_group_majority == Some(true),
@@ -462,6 +578,7 @@ async fn person_notes(
     let mut requests = 0;
     let mut written = 0;
     let mut failed = 0;
+    let mut in_a_row = 0;
     for person in people {
         let empty = Vec::new();
         let votes = votes_by_slug.get(person.slug.as_str()).unwrap_or(&empty);
@@ -490,6 +607,7 @@ async fn person_notes(
         };
         match generate_person_note(gemini, person, votes, chamber_divisions).await {
             Ok(text) => {
+                in_a_row = 0;
                 store
                     .put_json(
                         &note_key(&person.slug),
@@ -506,9 +624,12 @@ async fn person_notes(
             }
             Err(err) => {
                 failed += 1;
+                in_a_row += 1;
                 eprintln!("summarise: note for {} failed - {err}", person.slug);
-                if failed >= 5 {
-                    return Err(anyhow!("summarise: too many failed person notes, aborting"));
+                if in_a_row >= MAX_FAILURES_IN_A_ROW {
+                    return Err(anyhow!(
+                        "summarise: too many failed person notes in a row, aborting"
+                    ));
                 }
             }
         }
@@ -520,46 +641,33 @@ async fn person_notes(
     Ok(())
 }
 
+/// A number in the note that the record it was written from does not
+/// contain. The model is told to copy counts exactly; a figure it made up,
+/// or a vote count it worked out for itself, is the failure this catches.
+fn unrecorded_number(note: &str, record: &str) -> Option<u64> {
+    let recorded = tally::numbers_in(record);
+    tally::numbers_in(note)
+        .into_iter()
+        .find(|n| !recorded.contains(n))
+}
+
+/// The note is phrased from sums the code has already done (see `tally`):
+/// per bill and stage, per kind of motion, plus the divisions where the
+/// member voted against their grouping. The model never sees the vote list,
+/// so it cannot round a mixed record into "consistently" or "all"; and a
+/// note is only kept if every number in it appears in those sums.
 async fn generate_person_note(
     gemini: &Gemini,
     person: &Person,
-    votes: &[PersonVoteRow<'_>],
+    votes: &[VoteRow<'_>],
     chamber_divisions: usize,
 ) -> Result<String> {
     let crossed = votes.iter().filter(|v| v.crossed).count();
-    let lines = votes
-        .iter()
-        .map(|v| {
-            format!(
-                "{} | {} | voted {}{}",
-                v.division.date,
-                v.division.name,
-                match v.vote {
-                    Vote::Aye => "aye",
-                    Vote::No => "no",
-                },
-                if v.crossed { " | crossed" } else { "" }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let prompt = format!(
-        r#"You describe voting records in the Australian federal parliament, strictly descriptively.
-
-Data for {name} ({group}), {house}:
-- Voted in {voted} of {total} recorded divisions; {crossed} vote{plural} against their party grouping's majority ("crossed" below).
-- Every recorded vote (date | division | their vote):
-{lines}
-
-The page already displays the two counts above, so NEVER restate them, never say they always voted with their party, and never say they did not cross. Write two to three sentences that add what a reader cannot see by scanning a long table:
-- the subject areas that recur among the divisions they voted in, and WHICH WAY they voted on each of those subjects (aye or no);
-- if they ever crossed, name the specific division(s) and how they voted;
-- any other specific, countable pattern in the titles and votes (for example, several related bills all voted the same way).
-
-Describe motions by their formal type (second reading, consideration in detail amendment, suspension of standing orders, censure motion, order for the production of documents) and subject. NEVER characterise a motion by political direction or origin: "critical of the government", "opposition-led" and "government-supported" are banned, because every member of a governing party opposes censure motions and every opposition member supports them, so such phrases carry no information. Copy bill titles EXACTLY as they appear in the data, letter for letter.
-
-Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal, rebellious, strong, poor, impressive); no motives, ideology or character; nothing not present in the data. Australian English spelling (favour, criticise, labour). Return JSON {{"note": "..."}}"#,
+    let record = format!(
+        "Data for {name} ({group}), {house}:\n\
+         - Voted in {voted} of {total} recorded divisions; {crossed} vote{plural} against their party grouping's majority.\n\
+         \n\
+         {tally}",
         name = person.name,
         group = person.group,
         house = match person.house {
@@ -570,27 +678,51 @@ Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal
         total = chamber_divisions,
         crossed = crossed,
         plural = if crossed == 1 { "" } else { "s" },
-        lines = lines,
+        tally = Tally::of(votes).render(),
     );
 
-    let text = gemini
+    let prompt = format!(
+        r#"You describe voting records in the Australian federal parliament, strictly descriptively.
+
+{record}
+Every count above was computed from the record: "aye 3, no 11" means three aye votes and eleven no votes among those divisions.
+
+The page already displays the two counts in the first line, so NEVER restate them, never say they always voted with their party, and never say they did not cross. Write two to three sentences that add what a reader cannot see by scanning a long table:
+- the subjects that recur, and WHICH WAY they voted on each, with the numbers: write "no in eleven of the fourteen consideration in detail divisions on <bill>", never "consistently no";
+- if they crossed, name the specific division(s) and how they voted;
+- any other countable pattern, such as every division on one bill voted the same way.
+
+Use ONLY the counts above and copy them exactly: never add, estimate or round a number, and never describe a vote the counts do not show. Use "all", "every", "always", "never" or "consistently" ONLY where the count shows zero votes the other way, and give the number even then ("aye in all six divisions on ...").
+
+Describe motions by their formal type (second reading, consideration in detail amendment, suspension of standing orders, censure motion, order for the production of documents) and subject. NEVER characterise a motion by political direction or origin: "critical of the government", "opposition-led" and "government-supported" are banned, because every member of a governing party opposes censure motions and every opposition member supports them, so such phrases carry no information. Copy bill titles EXACTLY as they appear in the data, letter for letter.
+
+Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal, rebellious, strong, poor, impressive); no motives, ideology or character; nothing not present in the data. Australian English spelling (favour, criticise, labour). Return JSON {{"note": "..."}}"#
+    );
+
+    gemini
         .generate(
             "pollywiki.member-note",
+            NOTE_PROMPT_VERSION,
             &prompt,
             &[
                 ("person", person.slug.clone()),
                 ("prompt_version", NOTE_PROMPT_VERSION.to_string()),
             ],
+            |text| {
+                let parsed: Value = serde_json::from_str(text)?;
+                let note = parsed
+                    .get("note")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .ok_or_else(|| anyhow!("gemini: missing note field"))?;
+                if let Some(n) = unrecorded_number(note, &record) {
+                    return Err(anyhow!("note cites {n}, which is not in the record"));
+                }
+                Ok(Parsed::clean(note.to_string()))
+            },
         )
-        .await?;
-    let parsed: Value = serde_json::from_str(&text)?;
-    let note = parsed
-        .get("note")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .ok_or_else(|| anyhow!("gemini: missing note field"))?;
-    Ok(note.to_string())
+        .await
 }
 
 async fn generate_batch(
@@ -662,36 +794,20 @@ Return JSON: an array of {{"id": "<division id>", "summary": "<text>"}} covering
 {items}"#
     );
 
-    let ids = batch
-        .iter()
-        .map(|d| d.id.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
-    let text = gemini
+    let ids: Vec<&str> = batch.iter().map(|d| d.id.as_str()).collect();
+    gemini
         .generate(
             "pollywiki.division-context",
+            SUMMARY_PROMPT_VERSION,
             &prompt,
             &[
-                ("divisions", ids),
+                ("divisions", ids.join(",")),
                 ("prompt_version", SUMMARY_PROMPT_VERSION.to_string()),
             ],
+            // An empty context is no context: the division stays pending.
+            |text| parse_batch(text, &ids, "divisions", false),
         )
-        .await?;
-    let mut out = IndexMap::new();
-    let valid_ids: HashSet<&str> = batch.iter().map(|d| d.id.as_str()).collect();
-    let rows: Vec<Value> = serde_json::from_str(&text)?;
-    for row in rows {
-        let (Some(id), Some(summary)) = (
-            row.get("id").and_then(Value::as_str),
-            row.get("summary").and_then(Value::as_str),
-        ) else {
-            continue;
-        };
-        if !summary.is_empty() && valid_ids.contains(id) {
-            out.insert(id.to_string(), summary.trim().to_string());
-        }
-    }
-    Ok(out)
+        .await
 }
 
 /// String.prototype.slice counts UTF-16 code units.
@@ -736,6 +852,11 @@ mod tests {
         }
     }
 
+    /// The model's text, taken as it is.
+    fn text(t: &str) -> Result<Parsed<String>> {
+        Ok(Parsed::clean(t.to_string()))
+    }
+
     #[tokio::test]
     async fn each_call_is_traced_to_langfuse_and_a_failed_export_changes_nothing() {
         let server = TestServer::start(|req| {
@@ -764,15 +885,17 @@ mod tests {
         )));
 
         let refused = traced
-            .generate("pollywiki.first", "prompt one", &[])
+            .generate("pollywiki.first", 1, "prompt one", &[], text)
             .await
             .expect("an export failure never fails the call");
         assert_eq!(refused, "{\"note\":\"n\"}");
         traced
             .generate(
                 "pollywiki.member-note",
+                4,
                 "prompt two",
                 &[("person", "alex".to_string())],
+                text,
             )
             .await
             .expect("call");
@@ -799,11 +922,15 @@ mod tests {
             "usage: {attrs}"
         );
         assert!(attrs.contains("langfuse.observation.metadata.person"));
+        assert!(
+            attrs.contains(r#""key":"langfuse.version","value":{"stringValue":"v4"}"#),
+            "the prompt version is the span's version: {attrs}"
+        );
 
         // Without keys nothing is sent anywhere.
         let before = server.hits();
         gemini(&server)
-            .generate("pollywiki.member-note", "prompt three", &[])
+            .generate("pollywiki.member-note", 4, "prompt three", &[], text)
             .await
             .expect("call");
         assert_eq!(server.hits(), before + 1, "only the model call");
@@ -1251,9 +1378,26 @@ mod tests {
         let empty = TestServer::start(|_| Response::json("{\"candidates\":[]}"));
         let g = gemini(&empty);
         assert!(
-            g.generate("pollywiki.test", "prompt", &[]).await.is_err(),
+            g.generate("pollywiki.test", 1, "prompt", &[], text)
+                .await
+                .is_err(),
             "no candidate is an error"
         );
+
+        // A candidate with no text says why, which is the part worth having.
+        let cut_off = TestServer::start(|_| {
+            Response::json(
+                serde_json::json!({
+                    "candidates": [{ "finishReason": "MAX_TOKENS", "content": { "parts": [] } }]
+                })
+                .to_string(),
+            )
+        });
+        let err = gemini(&cut_off)
+            .generate("pollywiki.test", 1, "prompt", &[], text)
+            .await
+            .expect_err("no text is an error");
+        assert_eq!(err.to_string(), "gemini: empty response (MAX_TOKENS)");
 
         // A candidate whose text is not the JSON the prompt asked for: the note
         // is skipped, and the person stays pending.
@@ -1293,7 +1437,7 @@ mod tests {
     async fn the_request_carries_the_key_the_model_and_the_prompt() {
         let server = TestServer::start(|_| Response::json(candidate("[]")));
         let g = gemini(&server);
-        g.generate("pollywiki.test", "the prompt text", &[])
+        g.generate("pollywiki.test", 1, "the prompt text", &[], text)
             .await
             .expect("generate");
 
@@ -1408,6 +1552,188 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "person note written"
+        );
+    }
+
+    /// Ten members with ten votes each, so every one of them needs a note.
+    fn ten_members_with_votes() -> (Vec<Person>, Vec<Division>) {
+        let members: Vec<Person> = (1..=10)
+            .map(|n| person(&format!("member-{n}"), &format!("Member {n}")))
+            .collect();
+        let divisions: Vec<Division> = (1..=10)
+            .map(|n| {
+                let mut d = division(
+                    &format!("representatives/2026-08-12/{n}"),
+                    n,
+                    "Bills — Example Bill 2026; Second Reading",
+                    None,
+                );
+                d.votes = members.iter().map(|m| vote(&m.slug, false)).collect();
+                d
+            })
+            .collect();
+        (members, divisions)
+    }
+
+    #[tokio::test]
+    async fn scattered_failures_are_survived_but_five_in_a_row_abort() {
+        let (members, divisions) = ten_members_with_votes();
+
+        // Every second call fails, as an overloaded model does: five failures
+        // in all, never two in a row, and every other member still gets a note.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let flaky = TestServer::start(move |_| match counter.fetch_add(1, Ordering::SeqCst) % 2 {
+            0 => Response::status(400, "overloaded"),
+            _ => Response::json(candidate(
+                &serde_json::json!({ "note": "Voted aye on the bill." }).to_string(),
+            )),
+        });
+        let store = new_store("scattered");
+        person_notes(&store, &gemini(&flaky), &members, &divisions)
+            .await
+            .expect("scattered failures are not fatal");
+        assert_eq!(flaky.hits(), 10, "every member was tried");
+        let mut written = 0;
+        for member in &members {
+            if store
+                .get_json::<AiPersonNote>(&note_key(&member.slug))
+                .await
+                .unwrap()
+                .is_some()
+            {
+                written += 1;
+            }
+        }
+        assert_eq!(written, 5);
+
+        let down = TestServer::start(|_| Response::status(400, "down"));
+        let store = new_store("down");
+        let err = person_notes(&store, &gemini(&down), &members, &divisions)
+            .await
+            .expect_err("five in a row abort");
+        assert!(err.to_string().contains("in a row"), "{err}");
+        assert_eq!(down.hits(), 5, "the sixth member is not tried");
+    }
+
+    #[tokio::test]
+    async fn a_note_is_written_from_counts_and_kept_only_if_its_numbers_are_in_them() {
+        let (members, divisions) = ten_members_with_votes();
+        let member = members[0].clone();
+
+        let server = TestServer::start(|req| {
+            // The model sees the sums, never the vote list.
+            assert!(
+                req.body
+                    .contains("- Example Bill 2026: Second Reading: 10 divisions: aye 10, no 0"),
+                "prompt lost the counts: {}",
+                req.body
+            );
+            assert!(
+                !req.body.contains("| voted aye"),
+                "the vote list is not the model's to add up: {}",
+                req.body
+            );
+            Response::json(candidate(
+                &serde_json::json!({
+                    "note": "Voted aye in all 10 second reading divisions on Example Bill 2026."
+                })
+                .to_string(),
+            ))
+        });
+        let store = new_store("counted");
+        person_notes(
+            &store,
+            &gemini(&server),
+            std::slice::from_ref(&member),
+            &divisions,
+        )
+        .await
+        .expect("note");
+        let note: AiPersonNote = store
+            .get_json(&note_key(&member.slug))
+            .await
+            .unwrap()
+            .expect("every number in the note is in the record");
+        assert!(note.text.starts_with("Voted aye in all 10"));
+
+        // A number the record does not contain is a number the model made up.
+        let invented = TestServer::start(|_| {
+            Response::json(candidate(
+                &serde_json::json!({ "note": "Voted aye in 12 divisions on the bill." })
+                    .to_string(),
+            ))
+        });
+        let store = new_store("invented");
+        person_notes(
+            &store,
+            &gemini(&invented),
+            std::slice::from_ref(&member),
+            &divisions,
+        )
+        .await
+        .expect("a rejected note is skipped, not fatal");
+        assert!(
+            store
+                .get_json::<AiPersonNote>(&note_key(&member.slug))
+                .await
+                .unwrap()
+                .is_none(),
+            "a note citing 12 of 10 divisions is not kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unusable_reply_is_an_error_in_the_trace_and_a_short_one_a_warning() {
+        let server = TestServer::start(|req| {
+            if req.path.contains(":generateContent") {
+                let answer = if req.body.contains("explain bills") {
+                    // One of the two bills asked about is missing.
+                    serde_json::json!([{ "id": "r1", "summary": "What it does." }]).to_string()
+                } else {
+                    "Sorry, I cannot help.".to_string()
+                };
+                return Response::json(candidate(&answer));
+            }
+            Response::json("{}")
+        });
+        let mut traced = gemini(&server);
+        traced.telemetry = Some(crate::telemetry::Langfuse::at(&server.base));
+
+        let err = traced
+            .generate("pollywiki.member-note", 4, "prompt", &[], |t| {
+                let _: Value = serde_json::from_str(t)?;
+                Ok(Parsed::clean(()))
+            })
+            .await
+            .expect_err("prose is not the JSON asked for");
+        assert!(err.to_string().contains("expected"), "{err}");
+
+        let first = bill("r1", "First Bill 2026", Some("Dense."));
+        let second = bill("r2", "Second Bill 2026", Some("Dense."));
+        let notes = generate_bill_batch(&traced, &[&first, &second])
+            .await
+            .expect("a short batch is still used");
+        assert_eq!(notes.len(), 1);
+
+        let exports: Vec<_> = server
+            .requests()
+            .into_iter()
+            .filter(|r| r.path.contains("/otel/"))
+            .collect();
+        assert_eq!(exports.len(), 2);
+        let unusable = exports[0].body.as_str();
+        assert!(unusable.contains(r#""stringValue":"ERROR""#), "{unusable}");
+        assert!(unusable.contains("unusable reply: expected"), "{unusable}");
+        assert!(
+            unusable.contains("Sorry, I cannot help."),
+            "the text that could not be used is recorded: {unusable}"
+        );
+        let short = exports[1].body.as_str();
+        assert!(short.contains(r#""stringValue":"WARNING""#), "{short}");
+        assert!(
+            short.contains("1 of 2 bills missing from the reply: r2"),
+            "{short}"
         );
     }
 }

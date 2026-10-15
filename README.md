@@ -81,11 +81,19 @@ once their ACM validation records are in place.
 With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` set, every Gemini call
 in `summarise` is traced to Langfuse as one generation: prompt, reply, tokens,
 timing and failures. Traces are named by the job (`pollywiki.bill-notes`,
-`pollywiki.division-context`, `pollywiki.member-note`) and grouped into one
-session per workflow run. Spans go to Langfuse's v4 OpenTelemetry endpoint as
-OTLP/HTTP JSON; without the keys nothing is sent. `LANGFUSE_RECORD_CONTENT=off`
-keeps only the shape of each call. Read traces back through the Observations
-API v2 (`GET /api/public/v2/observations`, scores through
+`pollywiki.division-context`, `pollywiki.member-note`), versioned by the
+prompt (`v4`) and grouped into one session per workflow run. The reply is
+parsed inside the trace: a reply the job could not use is an ERROR generation
+carrying the text, and a batch reply that left items out is a WARNING naming
+them. Gemini's finish reason and model version land in the metadata. Spans go
+to Langfuse's v4 OpenTelemetry endpoint as OTLP/HTTP JSON; without the keys
+nothing is sent. `LANGFUSE_RECORD_CONTENT=off` keeps only the shape of each
+call. When `summarise` gives up for the night inside `all`, the job still
+succeeds (the record deploys without new AI text) but a warning annotation
+appears on the run.
+
+Read traces back through the Observations API v2
+(`GET /api/public/v2/observations`, scores through
 `GET /api/public/v3/scores`): the v1 reads such as `/api/public/observations`
 and `/api/public/traces` stop working when Langfuse Cloud moves to v4 on
 16 November 2026, and until then each call shows as an action item on the
