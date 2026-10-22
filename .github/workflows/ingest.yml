@@ -129,30 +129,34 @@ jobs:
         if: always() && steps.creds.outcome == 'success'
         run: |
           mkdir -p data/state
-          aws s3 cp "s3://${{ vars.DATA_BUCKET }}/state/sync-manifest.json" data/state/sync-stamp.json
-          git add data/state/sync-stamp.json
-          if git diff --cached --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            git config user.name "pollywiki-ingest"
-            git config user.email "ingest@users.noreply.github.com"
+          aws s3 cp "s3://${{ vars.DATA_BUCKET }}/state/sync-manifest.json" "$RUNNER_TEMP/sync-stamp.json"
+          git config user.name "pollywiki-ingest"
+          git config user.email "ingest@users.noreply.github.com"
+          # main can move while the sync runs: a code push, or on a re-run
+          # (which checks out the run's original commit) the stamp an
+          # earlier attempt pushed. Failing here would skip the deploy
+          # below, and the stamp is only a copy of the manifest, so rebuild
+          # it on the latest main, and again if main moves before the push.
+          changed=false
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard FETCH_HEAD
+            cp "$RUNNER_TEMP/sync-stamp.json" data/state/sync-stamp.json
+            git add data/state/sync-stamp.json
+            if git diff --cached --quiet; then
+              break
+            fi
             git commit -m "data: sync stamp $(date -u +%Y-%m-%dT%H:%MZ)"
-            # main can move while the sync runs (a code push, say). A bare
-            # push would then be refused, this step would fail and the
-            # deploy below would never publish the new data, so replay the
-            # stamp onto the latest main first, and again if it moves once
-            # more before the push lands.
-            for attempt in 1 2 3; do
-              if git pull --rebase --autostash origin main && git push; then
-                break
-              fi
-              if [ "$attempt" = 3 ]; then
-                exit 1
-              fi
-              sleep 5
-            done
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+            if git push origin HEAD:main; then
+              changed=true
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       # Pushes made with GITHUB_TOKEN never trigger other workflows,
       # so kick the deploy explicitly when data moved.
