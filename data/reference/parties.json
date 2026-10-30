@@ -1,15 +1,21 @@
 {
-  "australian-labor-party": { "name": "Australian Labor Party", "code": "ALP", "colour": "#B5303A", "aec": ["Australian Labor Party"] },
+  "australian-labor-party": { "name": "Australian Labor Party", "code": "ALP", "colour": "#B5303A", "aec": ["Australian Labor Party"], "aliases": ["ALP", "Labor"] },
   "liberal-national-coalition": { "name": "Liberal–National Coalition", "code": "LNP", "colour": "#1C4F9C", "aec": ["Liberal", "The Nationals", "Country Liberal Party (NT)"] },
-  "liberal-party-of-australia": { "name": "Liberal Party of Australia", "code": "LIB", "colour": "#1C4F9C", "aec": ["Liberal"] },
-  "national-party-of-australia": { "name": "National Party of Australia", "code": "NAT", "colour": "#00693C", "aec": ["The Nationals"] },
-  "australian-greens": { "name": "Australian Greens", "code": "GRN", "colour": "#3A8A3E", "aec": ["The Greens"] },
-  "pauline-hansons-one-nation": { "name": "Pauline Hanson's One Nation", "code": "ON", "colour": "#C46A1F", "aec": ["One Nation"] },
+  "liberal-party-of-australia": { "name": "Liberal Party of Australia", "code": "LIB", "colour": "#1C4F9C", "aec": ["Liberal"], "aliases": ["Liberal", "Liberals", "Liberal Party"] },
+  "national-party-of-australia": { "name": "National Party of Australia", "code": "NAT", "colour": "#00693C", "aec": ["The Nationals"], "aliases": ["The Nationals", "Nationals"] },
+  "australian-greens": { "name": "Australian Greens", "code": "GRN", "colour": "#3A8A3E", "aec": ["The Greens"], "aliases": ["Greens", "Green", "GRN", "Greens SA", "The Australian Greens - Victoria"] },
+  "pauline-hansons-one-nation": { "name": "Pauline Hanson's One Nation", "code": "ON", "colour": "#C46A1F", "aec": ["One Nation"], "aliases": ["One Nation", "One Nation Victoria"] },
   "jacqui-lambie-network": { "name": "Jacqui Lambie Network", "code": "JLN", "colour": "#2E7E8A", "aec": ["Jacqui Lambie Network"] },
   "centre-alliance": { "name": "Centre Alliance", "code": "CA", "colour": "#C77A2B", "aec": ["Centre Alliance"] },
-  "katters-australian-party": { "name": "Katter's Australian Party", "code": "KAP", "colour": "#8B0000", "aec": ["Katter's Australian Party (KAP)"] },
+  "katters-australian-party": { "name": "Katter's Australian Party", "code": "KAP", "colour": "#8B0000", "aec": ["Katter's Australian Party (KAP)"], "aliases": ["KAP"] },
   "united-australia-party": { "name": "United Australia Party", "code": "UAP", "colour": "#B8A000", "aec": ["United Australia Party"] },
   "australias-voice": { "name": "Australia's Voice", "code": "AV", "colour": "#5A4E8C", "aec": ["Australia's Voice"] },
   "trumpet-of-patriots": { "name": "Trumpet of Patriots", "code": "TOP", "colour": "#8A6D3B", "aec": ["Trumpet of Patriots"] },
-  "independent": { "name": "Independent", "code": "IND", "colour": "#6E7B74" }
+  "liberal-national-party-of-queensland": { "name": "Liberal National Party of Queensland", "code": "LNP", "colour": "#1C4F9C", "aliases": ["LNP"] },
+  "shooters-fishers-and-farmers-party": { "name": "Shooters, Fishers and Farmers Party", "code": "SFF", "colour": "#7A5230", "aliases": ["Shooters, Fishers and Farmers Party Victoria"] },
+  "legalise-cannabis-party": { "name": "Legalise Cannabis Party", "code": "LCP", "colour": "#7E9A2E", "aliases": ["Legalise Cannabis Victoria", "Legalise Cannabis Australia"] },
+  "animal-justice-party": { "name": "Animal Justice Party", "code": "AJP", "colour": "#8E3F68" },
+  "libertarian-party": { "name": "Libertarian Party", "code": "LBT", "colour": "#B08D2E" },
+  "family-first-party": { "name": "Family First", "code": "FF", "colour": "#2F6F8F", "aliases": ["Family First Party", "Family First Victoria"] },
+  "independent": { "name": "Independent", "code": "IND", "colour": "#6E7B74", "aliases": ["IND"] }
 }

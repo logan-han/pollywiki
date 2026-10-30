@@ -785,6 +785,128 @@ impl ElectorateResult {
     }
 }
 
+/// Whether a state or territory chamber is the house government is formed
+/// in, or the house of review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChamberKind {
+    Lower,
+    Upper,
+}
+
+/// A state or territory parliament as it stands, from the member lists it
+/// publishes itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateParliament {
+    pub state: StateCode,
+    /// "Parliament of New South Wales".
+    pub name: String,
+    /// The parliament's own website.
+    pub url: String,
+    /// "Premier", or "Chief Minister" in a territory.
+    pub leader_title: String,
+    /// When the member lists were last read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listed_at: Option<String>,
+    /// The lower house first. None until the lists have been read.
+    #[serde(default)]
+    pub chambers: Vec<StateChamber>,
+    /// Why the lists cannot be read, where the parliament does not publish
+    /// them in a form this site can read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+impl StateParliament {
+    /// The member the parliament lists as head of government.
+    pub fn leader(&self) -> Option<(&StateChamber, &StateMember)> {
+        self.chambers.iter().find_map(|chamber| {
+            chamber
+                .members
+                .iter()
+                .find(|m| m.offices.iter().any(|o| o == &self.leader_title))
+                .map(|m| (chamber, m))
+        })
+    }
+
+    pub fn member_by_slug(&self, slug: &str) -> Option<(&StateChamber, &StateMember)> {
+        self.chambers.iter().find_map(|chamber| {
+            chamber
+                .members
+                .iter()
+                .find(|m| m.slug == slug)
+                .map(|m| (chamber, m))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateChamber {
+    /// The chamber's name as a URL fragment, e.g. "legislative-assembly".
+    pub slug: String,
+    /// "Legislative Assembly".
+    pub name: String,
+    pub kind: ChamberKind,
+    /// Seats the chamber holds by law. Fewer members listed means vacancies.
+    pub seats: i64,
+    /// What its members sit for: "Electorate", "District", "Region" or
+    /// "Division". None where the whole state is one electorate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat_label: Option<String>,
+    /// The official list the members were read from.
+    pub source: String,
+    /// In the order the parliament lists them.
+    pub members: Vec<StateMember>,
+    /// Members per party, the largest group first.
+    #[serde(default)]
+    pub parties: Vec<StateSeatCount>,
+}
+
+impl StateChamber {
+    pub fn vacancies(&self) -> i64 {
+        (self.seats - self.members.len() as i64).max(0)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateMember {
+    /// Unique within the parliament.
+    pub slug: String,
+    pub name: String,
+    /// The party as the parliament lists it.
+    pub party: String,
+    pub party_slug: String,
+    /// The electorate, district or region sat for; none for a member elected
+    /// state-wide.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
+    /// Start of the member's current continuous service, where the
+    /// parliament publishes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// Ministries and parliamentary offices, as the parliament words them.
+    #[serde(default)]
+    pub offices: Vec<String>,
+    /// The member's page on the parliament's own site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateSeatCount {
+    pub party_slug: String,
+    pub party: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
+    pub seats: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceStatus {
@@ -872,6 +994,7 @@ pub const BUNDLE_ELECTORATES: &str = "electorates.jsonl";
 pub const BUNDLE_DIVISIONS: &str = "divisions.jsonl";
 pub const BUNDLE_BILLS: &str = "bills.jsonl";
 pub const BUNDLE_ELECTIONS: &str = "elections.jsonl";
+pub const BUNDLE_STATES: &str = "states.jsonl";
 
 #[cfg(test)]
 mod tests {
@@ -1013,6 +1136,48 @@ mod tests {
         };
         assert_eq!(formal_only.formal_votes(), 100_000);
         assert!(formal_only.informal().is_none());
+    }
+
+    #[test]
+    fn a_state_parliament_finds_its_leader_members_and_vacancies() {
+        let parliament: StateParliament = serde_json::from_str(
+            r#"{"state":"NSW","name":"Parliament of Example","url":"https://example.org",
+                "leaderTitle":"Premier","chambers":[
+                {"slug":"legislative-assembly","name":"Legislative Assembly","kind":"lower",
+                 "seats":3,"source":"https://example.org/la","members":[
+                   {"slug":"alex-paterson","name":"Alex Paterson","party":"Example Party",
+                    "partySlug":"example-party","seat":"Sampleford",
+                    "offices":["Minister for Examples"]},
+                   {"slug":"jordan-nguyen","name":"Jordan Nguyen","party":"Example Party",
+                    "partySlug":"example-party","seat":"Placeholder Bay",
+                    "offices":["Premier","Minister for the Arts"]}]},
+                {"slug":"legislative-council","name":"Legislative Council","kind":"upper",
+                 "seats":1,"source":"https://example.org/lc","members":[
+                   {"slug":"casey-doe","name":"Casey Doe","party":"Independent",
+                    "partySlug":"independent"}]}]}"#,
+        )
+        .expect("fixture");
+
+        // The office is matched whole: a minister to the Premier is not one.
+        let (chamber, leader) = parliament.leader().expect("a Premier is listed");
+        assert_eq!(leader.slug, "jordan-nguyen");
+        assert_eq!(chamber.kind, ChamberKind::Lower);
+
+        let (chamber, casey) = parliament.member_by_slug("casey-doe").expect("found");
+        assert_eq!(chamber.slug, "legislative-council");
+        assert!(casey.seat.is_none(), "elected state-wide");
+        assert!(casey.offices.is_empty(), "offices default to none");
+        assert!(parliament.member_by_slug("nobody").is_none());
+
+        assert_eq!(parliament.chambers[0].vacancies(), 1);
+        assert_eq!(parliament.chambers[1].vacancies(), 0);
+        assert!(parliament.chambers[0].parties.is_empty(), "derived later");
+
+        let without = StateParliament {
+            leader_title: "Chief Minister".to_string(),
+            ..parliament
+        };
+        assert!(without.leader().is_none());
     }
 
     #[test]

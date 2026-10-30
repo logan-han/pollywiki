@@ -31,6 +31,19 @@ pub struct Endpoints {
     pub aec_transparency: String,
     /// The ABS's ArcGIS services root, home of the boundary sets.
     pub abs_geo: String,
+    /// The Parliament of Victoria's website, home of its member search API.
+    pub vic_parliament: String,
+    /// The Queensland Parliament's documents host, which serves its member
+    /// mailing lists.
+    pub qld_documents: String,
+    /// The Parliament of Tasmania's website.
+    pub tas_parliament: String,
+    /// The ACT Legislative Assembly's website.
+    pub act_parliament: String,
+    /// The Parliament of South Australia's public member contact API.
+    pub sa_contacts: String,
+    /// The Parliament of South Australia's members app API.
+    pub sa_members: String,
     /// Replaces every source's own per-host spacing when set. Only tests set
     /// it; the real intervals are what keeps these APIs willing to answer.
     pub min_interval_ms: Option<u64>,
@@ -53,6 +66,12 @@ impl Default for Endpoints {
             data_gov: "https://data.gov.au/data/api/3/action".to_string(),
             aec_transparency: "https://transparency.aec.gov.au".to_string(),
             abs_geo: "https://geo.abs.gov.au/arcgis/rest/services".to_string(),
+            vic_parliament: "https://www.parliament.vic.gov.au".to_string(),
+            qld_documents: "https://documents.parliament.qld.gov.au".to_string(),
+            tas_parliament: "https://www.parliament.tas.gov.au".to_string(),
+            act_parliament: "https://www.parliament.act.gov.au".to_string(),
+            sa_contacts: "https://contact-details-api.parliament.sa.gov.au/api".to_string(),
+            sa_members: "https://membersapp.parliament.sa.gov.au/api".to_string(),
             min_interval_ms: None,
             backoff_ms: None,
         }
@@ -86,6 +105,12 @@ impl Endpoints {
             data_gov: format!("{base}/data-gov"),
             aec_transparency: format!("{base}/aec-transparency"),
             abs_geo: format!("{base}/abs-geo"),
+            vic_parliament: format!("{base}/vic"),
+            qld_documents: format!("{base}/qld-documents"),
+            tas_parliament: format!("{base}/tas"),
+            act_parliament: format!("{base}/act"),
+            sa_contacts: format!("{base}/sa-contacts"),
+            sa_members: format!("{base}/sa-members"),
             min_interval_ms: Some(1),
             backoff_ms: Some(1),
         }

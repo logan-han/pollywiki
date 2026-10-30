@@ -99,6 +99,7 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
         pages::bills_index(&data),
         pages::electorates_index(&data),
         pages::parties_index(&data),
+        pages::states_index(&data),
         pages::search_page(),
         pages::about_index(&data),
         pages::data_sources(&data),
@@ -130,6 +131,14 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
     }
     for party in &data.parties {
         page_list.push(pages::party_page(&data, party));
+    }
+    for parliament in data.listed_states() {
+        page_list.push(pages::state_page(&data, parliament));
+        for chamber in &parliament.chambers {
+            for member in &chamber.members {
+                page_list.push(pages::state_member_page(&data, parliament, chamber, member));
+            }
+        }
     }
 
     let mut sitemap_urls: Vec<(String, Option<String>)> = Vec::new();

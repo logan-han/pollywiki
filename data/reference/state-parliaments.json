@@ -1,0 +1,74 @@
+{
+  "NSW": {
+    "name": "Parliament of New South Wales",
+    "url": "https://www.parliament.nsw.gov.au",
+    "leaderTitle": "Premier",
+    "unavailable": "The Parliament of New South Wales turns away automated readers of its website, so its member list cannot be read here yet.",
+    "chambers": [
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 42 }
+    ]
+  },
+  "VIC": {
+    "name": "Parliament of Victoria",
+    "url": "https://www.parliament.vic.gov.au",
+    "leaderTitle": "Premier",
+    "chambers": [
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 88, "seatLabel": "District" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 40, "seatLabel": "Region" }
+    ]
+  },
+  "QLD": {
+    "name": "Parliament of Queensland",
+    "url": "https://www.parliament.qld.gov.au",
+    "leaderTitle": "Premier",
+    "chambers": [
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate" }
+    ]
+  },
+  "WA": {
+    "name": "Parliament of Western Australia",
+    "url": "https://www.parliament.wa.gov.au",
+    "leaderTitle": "Premier",
+    "unavailable": "The Parliament of Western Australia turns away automated readers of its website, so its member list cannot be read here yet.",
+    "chambers": [
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 59, "seatLabel": "District" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 37 }
+    ]
+  },
+  "SA": {
+    "name": "Parliament of South Australia",
+    "url": "https://www.parliament.sa.gov.au",
+    "leaderTitle": "Premier",
+    "chambers": [
+      { "slug": "house-of-assembly", "name": "House of Assembly", "kind": "lower", "seats": 47, "seatLabel": "District" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 22 }
+    ]
+  },
+  "TAS": {
+    "name": "Parliament of Tasmania",
+    "url": "https://www.parliament.tas.gov.au",
+    "leaderTitle": "Premier",
+    "chambers": [
+      { "slug": "house-of-assembly", "name": "House of Assembly", "kind": "lower", "seats": 35, "seatLabel": "Division" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 15, "seatLabel": "Division" }
+    ]
+  },
+  "ACT": {
+    "name": "Legislative Assembly for the Australian Capital Territory",
+    "url": "https://www.parliament.act.gov.au",
+    "leaderTitle": "Chief Minister",
+    "chambers": [
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate" }
+    ]
+  },
+  "NT": {
+    "name": "Legislative Assembly of the Northern Territory",
+    "url": "https://parliament.nt.gov.au",
+    "leaderTitle": "Chief Minister",
+    "unavailable": "The Legislative Assembly of the Northern Territory turns away automated readers of its website, so its member list cannot be read here yet.",
+    "chambers": [
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate" }
+    ]
+  }
+}

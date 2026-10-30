@@ -5,6 +5,7 @@ use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
 use crate::sources::ipea::{IpeaParliamentarian, IpeaQuarter};
 use crate::sources::legislation::ACTS_KEY;
+use crate::sources::states::{StateReferenceEntry, StateRoll};
 use crate::store::Store;
 use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonNote, AiSummary};
 use anyhow::Result;
@@ -14,8 +15,9 @@ use pollywiki_schema::{
     CandidateFunding, Division, DonorTotal, ElectionContest, Electorate, ElectorateResult,
     ExpenseLine, ExpenseQuarter, House, JsNum, MemberFunding, Meta, Party, PartyFacts,
     PartyFunding, PartySeats, Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult,
-    SenateSeat, StateCode, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS,
-    BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE,
+    SenateSeat, StateChamber, StateCode, StateMember, StateParliament, StateSeatCount, SummaryKind,
+    BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES,
+    BUNDLE_PEOPLE, BUNDLE_STATES, STATES,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -30,6 +32,10 @@ struct PartyReferenceEntry {
     /// disclosure returns are this group's.
     #[serde(default)]
     aec: Vec<String>,
+    /// Other names the state and territory parliaments list this party under,
+    /// such as a state branch or a short form.
+    #[serde(default)]
+    aliases: Vec<String>,
 }
 
 fn party_reference() -> IndexMap<String, PartyReferenceEntry> {
@@ -292,6 +298,8 @@ pub async fn derive(store: &Store) -> Result<()> {
         }
     }
     attach_person_funding(&mut people, &slug_to_index, &disclosures);
+    let rolls = load_all::<StateRoll>(store, crate::sources::states::PREFIX).await?;
+    let states = state_parliaments(&rolls, &crate::sources::states::reference(), &reference);
 
     // Each current electorate shows its own most recent contest, so a seat
     // decided at a by-election displays that result, not the older general.
@@ -341,6 +349,7 @@ pub async fn derive(store: &Store) -> Result<()> {
         &sorted_by(&current_elections, |e| e.electorate_slug.clone()),
     )
     .await?;
+    write_bundle(store, BUNDLE_STATES, &states).await?;
 
     let manifest = read_manifest(store).await?;
     let meta = Meta {
@@ -390,21 +399,194 @@ pub async fn derive(store: &Store) -> Result<()> {
             sub: format!("Electorate \u{b7} {}", e.state),
         });
     }
+    // State members last, keyed by their path under /states/, so a name
+    // shared with a federal member lands on the right parliament.
+    for parliament in &states {
+        for chamber in &parliament.chambers {
+            let house = chamber.name.rsplit(' ').next().unwrap_or(&chamber.name);
+            for m in &chamber.members {
+                quick_search.push(QuickSearchEntry {
+                    t: "state".to_string(),
+                    slug: format!("{}/{}", parliament.state.as_str().to_lowercase(), m.slug),
+                    name: m.name.clone(),
+                    sub: match &m.seat {
+                        Some(seat) => format!("{} {house} \u{b7} {seat}", parliament.state),
+                        None => format!("{} {house}", parliament.state),
+                    },
+                });
+            }
+        }
+    }
     store
         .put_json("bundles/quick-search.json", &quick_search)
         .await?;
 
     println!(
-        "derive: {} people ({} former), {} parties, {} electorates, {} divisions, {} bills, {} electorate results",
+        "derive: {} people ({} former), {} parties, {} electorates, {} divisions, {} bills, {} electorate results, {} state members in {} parliaments",
         people.len(),
         people.iter().filter(|p| p.is_former()).count(),
         parties.len(),
         electorates.len(),
         divisions.len(),
         bills.len(),
-        current_elections.len()
+        current_elections.len(),
+        states
+            .iter()
+            .flat_map(|s| &s.chambers)
+            .map(|c| c.members.len())
+            .sum::<usize>(),
+        states.len()
     );
     Ok(())
+}
+
+/// Each parliament's roll joined to its fixed facts: the chambers in the
+/// reference's order and size, members given page slugs unique within their
+/// parliament, and their parties matched to the reference and counted.
+fn state_parliaments(
+    rolls: &[StateRoll],
+    states: &IndexMap<String, StateReferenceEntry>,
+    parties: &IndexMap<String, PartyReferenceEntry>,
+) -> Vec<StateParliament> {
+    let mut out: Vec<StateParliament> = Vec::new();
+    for roll in rolls {
+        let Some(entry) = states.get(roll.state.as_str()) else {
+            eprintln!("derive: no reference entry for {}, skipped", roll.state);
+            continue;
+        };
+        if entry.unavailable.is_some() {
+            // A roll read before the lists became unreadable is out of date
+            // by an unknown amount; the reason is shown instead.
+            continue;
+        }
+        // Sitting members only, so a name is unique unless two members share
+        // it; the second is told apart by seat, or by chamber if elected
+        // state-wide.
+        let mut taken: HashSet<String> = HashSet::new();
+        let mut chambers: Vec<StateChamber> = Vec::new();
+        for reference in &entry.chambers {
+            let Some(listed) = roll.chambers.iter().find(|c| c.slug == reference.slug) else {
+                eprintln!(
+                    "derive: {} {} has no member list",
+                    roll.state, reference.name
+                );
+                continue;
+            };
+            let members: Vec<StateMember> = listed
+                .members
+                .iter()
+                .map(|m| {
+                    let mut slug = slugify(&m.name);
+                    if taken.contains(&slug) {
+                        let extra = m.seat.as_deref().unwrap_or(&reference.slug);
+                        slug = slugify(&format!("{} {extra}", m.name));
+                    }
+                    taken.insert(slug.clone());
+                    StateMember {
+                        slug,
+                        name: m.name.clone(),
+                        party: m.party.clone(),
+                        party_slug: party_slug_for(&m.party, parties),
+                        seat: m.seat.clone(),
+                        since: m.since.clone(),
+                        offices: m.offices.clone(),
+                        profile: m.profile.clone(),
+                    }
+                })
+                .collect();
+            chambers.push(StateChamber {
+                slug: reference.slug.clone(),
+                name: reference.name.clone(),
+                kind: reference.kind,
+                seats: reference.seats,
+                seat_label: reference.seat_label.clone(),
+                source: listed.source.clone(),
+                parties: state_seat_counts(&members, parties),
+                members,
+            });
+        }
+        out.push(StateParliament {
+            state: roll.state,
+            name: entry.name.clone(),
+            url: entry.url.clone(),
+            leader_title: entry.leader_title.clone(),
+            listed_at: Some(roll.listed_at.clone()),
+            chambers,
+            unavailable: None,
+        });
+    }
+    // Every parliament has a place, read or not: one with no roll yet keeps
+    // its name and website, and one that cannot be read says why.
+    for (code, entry) in states {
+        let Some(state) = StateCode::parse(code) else {
+            continue;
+        };
+        if out.iter().any(|p| p.state == state) {
+            continue;
+        }
+        out.push(StateParliament {
+            state,
+            name: entry.name.clone(),
+            url: entry.url.clone(),
+            leader_title: entry.leader_title.clone(),
+            listed_at: None,
+            chambers: Vec::new(),
+            unavailable: entry.unavailable.clone(),
+        });
+    }
+    out.sort_by_key(|p| STATES.iter().position(|code| *code == p.state.as_str()));
+    out
+}
+
+/// The reference party a parliament's label stands for: the entry it names
+/// or is an alias of, ignoring case, else a group of its own. Codes are not
+/// matched: "LNP" is the Coalition federally and a party of its own in
+/// Queensland.
+fn party_slug_for(label: &str, parties: &IndexMap<String, PartyReferenceEntry>) -> String {
+    let wanted = label.trim().to_lowercase();
+    parties
+        .iter()
+        .find(|(slug, entry)| {
+            **slug == slugify(label)
+                || entry
+                    .name
+                    .iter()
+                    .chain(entry.aliases.iter())
+                    .any(|name| name.to_lowercase() == wanted)
+        })
+        .map(|(slug, _)| slug.clone())
+        .unwrap_or_else(|| slugify(label))
+}
+
+/// Members per party in one chamber, the largest first and ties by name,
+/// each named and coloured as the reference has it.
+fn state_seat_counts(
+    members: &[StateMember],
+    parties: &IndexMap<String, PartyReferenceEntry>,
+) -> Vec<StateSeatCount> {
+    let mut counts: IndexMap<&str, StateSeatCount> = IndexMap::new();
+    for m in members {
+        let entry = parties.get(&m.party_slug);
+        counts
+            .entry(&m.party_slug)
+            .or_insert_with(|| StateSeatCount {
+                party_slug: m.party_slug.clone(),
+                party: entry
+                    .and_then(|e| e.name.clone())
+                    .unwrap_or_else(|| m.party.clone()),
+                code: entry.and_then(|e| e.code.clone()),
+                colour: entry.and_then(|e| e.colour.clone()),
+                seats: 0,
+            })
+            .seats += 1;
+    }
+    let mut out: Vec<StateSeatCount> = counts.into_values().collect();
+    out.sort_by(|a, b| {
+        b.seats
+            .cmp(&a.seats)
+            .then_with(|| js_compare(&a.party, &b.party))
+    });
+    out
 }
 
 /// A party's returns: those lodged by its AEC party group, or under its own
@@ -1671,6 +1853,117 @@ mod tests {
         );
     }
 
+    fn state_reference_fixture() -> IndexMap<String, StateReferenceEntry> {
+        serde_json::from_str(
+            r#"{"NSW":{"name":"Parliament of Example","url":"https://example.org",
+                "leaderTitle":"Premier","chambers":[
+                {"slug":"legislative-assembly","name":"Legislative Assembly","kind":"lower",
+                 "seats":4,"seatLabel":"Electorate"},
+                {"slug":"legislative-council","name":"Legislative Council","kind":"upper",
+                 "seats":2}]}}"#,
+        )
+        .expect("state reference fixture")
+    }
+
+    fn party_reference_fixture() -> IndexMap<String, PartyReferenceEntry> {
+        serde_json::from_str(
+            r##"{"example-party":{"name":"Example Party","code":"EXP","colour":"#47664f",
+                 "aliases":["Example Party (NSW Branch)"]},
+                "liberal-national-coalition":{"name":"Liberal–National Coalition","code":"LNP"},
+                "independent":{"name":"Independent","code":"IND","colour":"#6e7b74",
+                 "aliases":["Ind."]}}"##,
+        )
+        .expect("party reference fixture")
+    }
+
+    #[test]
+    fn state_rolls_join_their_reference_and_count_each_chamber_by_party() {
+        let rolls: Vec<StateRoll> = serde_json::from_str(
+            r#"[{"state":"NSW","listedAt":"2026-10-30T01:00:00.000Z","chambers":[
+                  {"slug":"legislative-council","source":"https://example.org/lc","members":[
+                    {"name":"Jane Smith","party":"Example Party"}]},
+                  {"slug":"legislative-assembly","source":"https://example.org/la","members":[
+                    {"name":"Jane Smith","party":"Example Party (NSW Branch)","seat":"Sampleford",
+                     "since":"2015-03-28","offices":["Premier"]},
+                    {"name":"Bo Lee","party":"ind.","seat":"Placeholder Bay"},
+                    {"name":"Kim Ray","party":"LNP","seat":"Oldbridge"}]}]},
+                {"state":"WA","listedAt":"2026-10-30T01:00:00.000Z","chambers":[]}]"#,
+        )
+        .expect("rolls fixture");
+        let mut reference = state_reference_fixture();
+        reference.insert(
+            "TAS".to_string(),
+            serde_json::from_str(
+                r#"{"name":"Parliament of Elsewhere","url":"https://example.net",
+                    "leaderTitle":"Premier","chambers":[],
+                    "unavailable":"Its website turns away automated readers."}"#,
+            )
+            .unwrap(),
+        );
+        let states = state_parliaments(&rolls, &reference, &party_reference_fixture());
+        let codes: Vec<&str> = states.iter().map(|s| s.state.as_str()).collect();
+        assert_eq!(
+            codes,
+            ["NSW", "TAS"],
+            "a state the reference lacks is skipped; one never read keeps its place"
+        );
+        let tas = &states[1];
+        assert!(tas.chambers.is_empty() && tas.listed_at.is_none());
+        assert_eq!(
+            tas.unavailable.as_deref(),
+            Some("Its website turns away automated readers.")
+        );
+        let nsw = &states[0];
+        assert!(nsw.unavailable.is_none());
+        assert_eq!(nsw.name, "Parliament of Example");
+        assert_eq!(nsw.listed_at.as_deref(), Some("2026-10-30T01:00:00.000Z"));
+        let slugs: Vec<&str> = nsw.chambers.iter().map(|c| c.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            ["legislative-assembly", "legislative-council"],
+            "the reference orders the chambers, not the roll"
+        );
+
+        let la = &nsw.chambers[0];
+        assert_eq!((la.seats, la.vacancies()), (4, 1));
+        assert_eq!(la.seat_label.as_deref(), Some("Electorate"));
+        assert_eq!(la.source, "https://example.org/la");
+        let parties: Vec<(&str, &str, i64)> = la
+            .parties
+            .iter()
+            .map(|p| (p.party_slug.as_str(), p.party.as_str(), p.seats))
+            .collect();
+        assert_eq!(
+            parties,
+            [
+                ("example-party", "Example Party", 1),
+                ("independent", "Independent", 1),
+                ("lnp", "LNP", 1)
+            ],
+            "a branch and a short form find their party by alias; a code alone does not"
+        );
+        assert_eq!(la.parties[0].colour.as_deref(), Some("#47664f"));
+        assert!(
+            la.parties[2].colour.is_none(),
+            "an unknown party has no colour"
+        );
+        assert_eq!(
+            la.members[0].party, "Example Party (NSW Branch)",
+            "the member keeps the label the parliament wrote"
+        );
+
+        // Two members of one name: the lower house claims the plain slug and
+        // the other, elected state-wide, is told apart by chamber.
+        assert_eq!(la.members[0].slug, "jane-smith");
+        assert_eq!(
+            nsw.chambers[1].members[0].slug,
+            "jane-smith-legislative-council"
+        );
+        let (_, leader) = nsw.leader().expect("the Premier");
+        assert_eq!(leader.slug, "jane-smith");
+        assert_eq!(leader.since.as_deref(), Some("2015-03-28"));
+    }
+
     #[tokio::test]
     async fn derive_over_an_empty_store_writes_empty_bundles() {
         let store = Store::Local(LocalStore::new(scratch("empty")));
@@ -1682,6 +1975,7 @@ mod tests {
             "divisions.jsonl",
             "bills.jsonl",
             "elections.jsonl",
+            "states.jsonl",
         ] {
             let raw = store
                 .get_raw(&format!("bundles/{file}"))

@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use indexmap::IndexMap;
 pub use pollywiki_schema::title_from_slug;
 use pollywiki_schema::{
-    js_compare, Bill, Division, Electorate, ElectorateResult, House, Meta, Party, Person, Vote,
-    VoteCast,
+    js_compare, Bill, Division, Electorate, ElectorateResult, House, Meta, Party, Person,
+    StateChamber, StateCode, StateParliament, Vote, VoteCast, BUNDLE_STATES,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,9 @@ pub struct SiteData {
     pub divisions: Vec<Division>,
     pub bills: Vec<Bill>,
     pub elections: Vec<ElectorateResult>,
+    /// State and territory parliaments, in the order the states are listed
+    /// everywhere else (NSW first, the territories last).
+    pub states: Vec<StateParliament>,
     pub meta: Meta,
     pub bundles_dir: PathBuf,
     /// Canonical origin without a trailing slash, for absolute URLs in
@@ -63,6 +66,12 @@ impl SiteData {
         let divisions: Vec<Division> = read_jsonl(bundles_dir, "divisions.jsonl")?;
         let bills: Vec<Bill> = read_jsonl(bundles_dir, "bills.jsonl")?;
         let elections: Vec<ElectorateResult> = read_jsonl(bundles_dir, "elections.jsonl")?;
+        let mut states: Vec<StateParliament> = read_jsonl(bundles_dir, BUNDLE_STATES)?;
+        states.sort_by_key(|s| {
+            pollywiki_schema::STATES
+                .iter()
+                .position(|c| *c == s.state.as_str())
+        });
 
         let meta_path = bundles_dir.join("meta.json");
         let meta: Meta = if meta_path.exists() {
@@ -110,6 +119,7 @@ impl SiteData {
             divisions,
             bills,
             elections,
+            states,
             meta,
             bundles_dir: bundles_dir.to_path_buf(),
             site_url: site_url.trim_end_matches('/').to_string(),
@@ -149,6 +159,29 @@ impl SiteData {
         self.elections_by_electorate
             .get(slug)
             .map(|&i| &self.elections[i])
+    }
+
+    pub fn state_parliament(&self, state: StateCode) -> Option<&StateParliament> {
+        self.states.iter().find(|s| s.state == state)
+    }
+
+    /// The parliaments whose member lists have been read: those with pages.
+    pub fn listed_states(&self) -> impl Iterator<Item = &StateParliament> {
+        self.states.iter().filter(|s| !s.chambers.is_empty())
+    }
+
+    /// The seats a party holds in each state and territory chamber, in the
+    /// order the parliaments are listed. Only chambers where it holds one.
+    pub fn state_seats_of_party(&self, slug: &str) -> Vec<(&StateParliament, &StateChamber, i64)> {
+        let mut out = Vec::new();
+        for parliament in &self.states {
+            for chamber in &parliament.chambers {
+                if let Some(count) = chamber.parties.iter().find(|c| c.party_slug == slug) {
+                    out.push((parliament, chamber, count.seats));
+                }
+            }
+        }
+        out
     }
 
     /// Members who hold a seat right now. Former members keep their page, but
@@ -389,6 +422,16 @@ pub fn seat_total(party: &Party) -> i64 {
 /// URL path segment for a division: date-number under its house.
 pub fn division_key(division: &Division) -> String {
     format!("{}-{}", division.date, division.number)
+}
+
+/// A state or territory parliament's page.
+pub fn state_path(state: StateCode) -> String {
+    format!("/states/{}/", state.as_str().to_lowercase())
+}
+
+/// A state member's page, under their parliament's.
+pub fn state_member_path(state: StateCode, slug: &str) -> String {
+    format!("{}{slug}/", state_path(state))
 }
 
 pub fn escape_html(s: &str) -> String {

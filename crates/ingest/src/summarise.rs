@@ -384,7 +384,17 @@ pub async fn summarise(store: &Store, people: &[Person]) -> Result<()> {
 pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -> Result<()> {
     let gemini = gemini.with_prompts_registered().await;
     let names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
+    let (divisions, bills) = load_records(store).await?;
 
+    division_summaries(store, &gemini, &divisions, &names, &bills).await?;
+    let bill_list: Vec<&Bill> = bills.values().collect();
+    bill_notes(store, &gemini, &bill_list).await?;
+    person_notes(store, &gemini, people, &divisions).await?;
+    Ok(())
+}
+
+/// Every division and bill in the store, the bills by id.
+async fn load_records(store: &Store) -> Result<(Vec<Division>, IndexMap<String, Bill>)> {
     let mut divisions: Vec<Division> = Vec::new();
     for key in store.list("canonical/divisions/").await? {
         if let Some(division) = store.get_json::<Division>(&key).await? {
@@ -397,11 +407,239 @@ pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -
             bills.insert(bill.id.clone(), bill);
         }
     }
+    Ok((divisions, bills))
+}
 
-    division_summaries(store, &gemini, &divisions, &names, &bills).await?;
-    let bill_list: Vec<&Bill> = bills.values().collect();
-    bill_notes(store, &gemini, &bill_list).await?;
-    person_notes(store, &gemini, people, &divisions).await?;
+/// Everything the three jobs write for, whether or not it is pending: each
+/// bill with an official summary, each division whose only context is a
+/// transcript, and each member with enough votes for a note, with the input
+/// its prompt is filled with.
+struct Writable {
+    bills: IndexMap<String, String>,
+    divisions: IndexMap<String, String>,
+    /// The record a note is written from, and the votes and crossings it
+    /// counts, which decide when the nightly run next rewrites it.
+    members: IndexMap<String, (String, i64, i64)>,
+}
+
+fn writable(people: &[Person], divisions: &[Division], bills: &IndexMap<String, Bill>) -> Writable {
+    let names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
+    let by_day = divisions_by_day(divisions);
+    let votes = votes_by_slug(divisions);
+    let (reps, senate) = chamber_totals(divisions);
+    Writable {
+        bills: bills
+            .values()
+            .filter(|b| {
+                b.summary
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|s| !s.is_empty())
+            })
+            .map(|b| (b.id.clone(), bill_block(b)))
+            .collect(),
+        divisions: divisions
+            .iter()
+            .filter(|d| {
+                d.summary
+                    .as_deref()
+                    .is_some_and(|s| is_transcript(s, &names))
+            })
+            .map(|d| (d.id.clone(), division_block(d, bills, &by_day)))
+            .collect(),
+        members: people
+            .iter()
+            .filter_map(|person| {
+                let votes = votes.get(person.slug.as_str())?;
+                if votes.len() < MIN_VOTES_FOR_NOTE {
+                    return None;
+                }
+                let chamber = match person.house {
+                    House::Representatives => reps,
+                    House::Senate => senate,
+                };
+                let crossed = votes.iter().filter(|v| v.crossed).count();
+                Some((
+                    person.slug.clone(),
+                    (
+                        member_record(person, votes, chamber),
+                        votes.len() as i64,
+                        crossed as i64,
+                    ),
+                ))
+            })
+            .collect(),
+    }
+}
+
+/// One item as `export` writes it: what kind of text it needs, whose it is,
+/// and the input its prompt is filled with.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportedItem {
+    pub kind: String,
+    pub id: String,
+    pub input: String,
+}
+
+/// Writes every prompt input the jobs would send, pending or not, so the
+/// text can be written outside the nightly run and brought back by `import`.
+/// `templates.json` holds the instructions each kind is written to, with the
+/// place its input goes; `items.jsonl` holds one item per line.
+pub async fn export(store: &Store, people: &[Person], dir: &std::path::Path) -> Result<()> {
+    let (divisions, bills) = load_records(store).await?;
+    let writable = writable(people, &divisions, &bills);
+    std::fs::create_dir_all(dir)?;
+    let template = |prompt: &Prompt| {
+        serde_json::json!({
+            "prompt": prompt.name,
+            "version": prompt.version,
+            "template": prompt.template,
+        })
+    };
+    let templates = serde_json::json!({
+        "bill": template(&BILL_NOTES),
+        "division": template(&DIVISION_CONTEXT),
+        "member": template(&MEMBER_NOTE),
+    });
+    std::fs::write(
+        dir.join("templates.json"),
+        serde_json::to_string_pretty(&templates)?,
+    )?;
+    let mut lines = String::new();
+    let items = writable
+        .bills
+        .iter()
+        .map(|(id, input)| ("bill", id, input))
+        .chain(
+            writable
+                .divisions
+                .iter()
+                .map(|(id, input)| ("division", id, input)),
+        )
+        .chain(
+            writable
+                .members
+                .iter()
+                .map(|(slug, (record, _, _))| ("member", slug, record)),
+        );
+    for (kind, id, input) in items {
+        lines.push_str(&serde_json::to_string(&ExportedItem {
+            kind: kind.to_string(),
+            id: id.clone(),
+            input: input.clone(),
+        })?);
+        lines.push('\n');
+    }
+    std::fs::write(dir.join("items.jsonl"), lines)?;
+    println!(
+        "summarise: exported {} bills, {} divisions and {} members to {}",
+        writable.bills.len(),
+        writable.divisions.len(),
+        writable.members.len(),
+        dir.display()
+    );
+    Ok(())
+}
+
+/// Text written for one exported item.
+#[derive(Debug, Deserialize)]
+struct ImportedText {
+    kind: String,
+    id: String,
+    text: String,
+}
+
+/// Brings back text written outside the nightly run, one JSON line per item
+/// ({"kind","id","text"}), checked as a model's reply would be: an item must
+/// still be one its job writes for, a context or note must say something,
+/// and a note may cite no number its record lacks. Accepted text is stored
+/// under the model that wrote it and the current prompt versions, so the
+/// nightly run leaves it be until the record moves on. Anything rejected is
+/// listed and fails the command once the rest is stored.
+pub async fn import(
+    store: &Store,
+    people: &[Person],
+    file: &std::path::Path,
+    model: &str,
+) -> Result<()> {
+    if model.trim().is_empty() {
+        return Err(anyhow!(
+            "an import needs the name of the model that wrote it"
+        ));
+    }
+    let (divisions, bills) = load_records(store).await?;
+    let writable = writable(people, &divisions, &bills);
+    let raw = std::fs::read_to_string(file)?;
+    let mut written = 0;
+    let mut rejected: Vec<String> = Vec::new();
+    for (n, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let item: ImportedText =
+            serde_json::from_str(line).map_err(|err| anyhow!("line {}: {err}", n + 1))?;
+        let text = item.text.trim().to_string();
+        let summary = |version: i64| AiSummary {
+            text: text.clone(),
+            model: model.to_string(),
+            generated_at: crate::now_iso(),
+            prompt_version: Some(version),
+        };
+        match item.kind.as_str() {
+            // An empty bill note is an answer: the summary is plain already.
+            "bill" if writable.bills.contains_key(&item.id) => {
+                store
+                    .put_json(&bill_note_key(&item.id), &summary(BILL_NOTE_PROMPT_VERSION))
+                    .await?;
+            }
+            "division" if writable.divisions.contains_key(&item.id) && !text.is_empty() => {
+                store
+                    .put_json(&ai_key(&item.id), &summary(SUMMARY_PROMPT_VERSION))
+                    .await?;
+            }
+            "member" if !text.is_empty() => {
+                let Some((record, votes, crossed)) = writable.members.get(&item.id) else {
+                    rejected.push(format!("member {}: no note is written for them", item.id));
+                    continue;
+                };
+                if let Some(n) = unrecorded_number(&text, record) {
+                    rejected.push(format!(
+                        "member {}: cites {n}, which is not in the record",
+                        item.id
+                    ));
+                    continue;
+                }
+                store
+                    .put_json(
+                        &note_key(&item.id),
+                        &AiPersonNote {
+                            text: text.clone(),
+                            model: model.to_string(),
+                            generated_at: crate::now_iso(),
+                            votes_considered: *votes,
+                            crossed_considered: *crossed,
+                            prompt_version: Some(NOTE_PROMPT_VERSION),
+                        },
+                    )
+                    .await?;
+            }
+            kind => {
+                rejected.push(format!(
+                    "{kind} {}: not an item its job writes for, or empty",
+                    item.id
+                ));
+                continue;
+            }
+        }
+        written += 1;
+    }
+    println!("summarise: imported {written} texts written by {model}");
+    if !rejected.is_empty() {
+        for reason in &rejected {
+            eprintln!("summarise: rejected {reason}");
+        }
+        return Err(anyhow!("{} imported texts rejected", rejected.len()));
+    }
     Ok(())
 }
 
@@ -544,17 +782,20 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
     Ok(())
 }
 
+/// One bill as a prompt gives it: its title and its official summary.
+fn bill_block(b: &Bill) -> String {
+    format!(
+        "<bill id=\"{}\">\nTitle: {}\nOfficial summary: {}\n</bill>",
+        b.id,
+        b.title,
+        b.summary.as_deref().unwrap_or_default()
+    )
+}
+
 async fn generate_bill_batch(gemini: &Gemini, batch: &[&Bill]) -> Result<IndexMap<String, String>> {
     let items = batch
         .iter()
-        .map(|b| {
-            format!(
-                "<bill id=\"{}\">\nTitle: {}\nOfficial summary: {}\n</bill>",
-                b.id,
-                b.title,
-                b.summary.as_deref().unwrap_or_default()
-            )
-        })
+        .map(|b| bill_block(b))
         .collect::<Vec<_>>()
         .join("\n\n");
     let ids: Vec<&str> = batch.iter().map(|b| b.id.as_str()).collect();
@@ -596,18 +837,7 @@ async fn division_summaries(
         return Ok(());
     }
 
-    // Same-day division titles give procedural motions their real context:
-    // a rearrangement or gag motion is about whatever business surrounded it.
-    let mut by_day: IndexMap<String, Vec<&Division>> = IndexMap::new();
-    for d in divisions {
-        by_day
-            .entry(format!("{}/{}", d.house, d.date))
-            .or_default()
-            .push(d);
-    }
-    for list in by_day.values_mut() {
-        list.sort_by_key(|d| d.number);
-    }
+    let by_day = divisions_by_day(divisions);
 
     let cap = gemini.request_cap;
     let mut requests = 0;
@@ -666,6 +896,22 @@ async fn division_summaries(
     Ok(())
 }
 
+/// Same-day division titles give procedural motions their real context: a
+/// rearrangement or gag motion is about whatever business surrounded it.
+fn divisions_by_day(divisions: &[Division]) -> IndexMap<String, Vec<&Division>> {
+    let mut by_day: IndexMap<String, Vec<&Division>> = IndexMap::new();
+    for d in divisions {
+        by_day
+            .entry(format!("{}/{}", d.house, d.date))
+            .or_default()
+            .push(d);
+    }
+    for list in by_day.values_mut() {
+        list.sort_by_key(|d| d.number);
+    }
+    by_day
+}
+
 pub fn ai_key(division_id: &str) -> String {
     format!("derived/ai-summaries/{}.json", key_for(division_id))
 }
@@ -697,30 +943,8 @@ async fn person_notes(
     people: &[Person],
     divisions: &[Division],
 ) -> Result<()> {
-    let mut votes_by_slug: IndexMap<&str, Vec<VoteRow>> = IndexMap::new();
-    for division in divisions {
-        for vote in &division.votes {
-            votes_by_slug
-                .entry(vote.person_slug.as_str())
-                .or_default()
-                .push(VoteRow {
-                    division,
-                    vote: vote.vote,
-                    crossed: vote.against_group_majority == Some(true),
-                });
-        }
-    }
-
-    let chamber_totals = (
-        divisions
-            .iter()
-            .filter(|d| d.house == House::Representatives)
-            .count(),
-        divisions
-            .iter()
-            .filter(|d| d.house == House::Senate)
-            .count(),
-    );
+    let votes_by_slug = votes_by_slug(divisions);
+    let chamber_totals = chamber_totals(divisions);
 
     let cap = gemini.request_cap;
     let mut requests = 0;
@@ -786,6 +1010,37 @@ async fn person_notes(
     Ok(())
 }
 
+/// Each member's votes, as rows the tally can sum.
+fn votes_by_slug(divisions: &[Division]) -> IndexMap<&str, Vec<VoteRow<'_>>> {
+    let mut out: IndexMap<&str, Vec<VoteRow>> = IndexMap::new();
+    for division in divisions {
+        for vote in &division.votes {
+            out.entry(vote.person_slug.as_str())
+                .or_default()
+                .push(VoteRow {
+                    division,
+                    vote: vote.vote,
+                    crossed: vote.against_group_majority == Some(true),
+                });
+        }
+    }
+    out
+}
+
+/// Divisions held in the House and in the Senate.
+fn chamber_totals(divisions: &[Division]) -> (usize, usize) {
+    (
+        divisions
+            .iter()
+            .filter(|d| d.house == House::Representatives)
+            .count(),
+        divisions
+            .iter()
+            .filter(|d| d.house == House::Senate)
+            .count(),
+    )
+}
+
 /// A number in the note that the record it was written from does not
 /// contain. The model is told to copy counts exactly; a figure it made up,
 /// or a vote count it worked out for itself, is the failure this catches.
@@ -806,24 +1061,7 @@ async fn generate_person_note(
     votes: &[VoteRow<'_>],
     chamber_divisions: usize,
 ) -> Result<String> {
-    let crossed = votes.iter().filter(|v| v.crossed).count();
-    let record = format!(
-        "Data for {name} ({group}), {house}:\n\
-         - Voted in {voted} of {total} recorded divisions; {crossed} vote{plural} against their party grouping's majority.\n\
-         \n\
-         {tally}",
-        name = person.name,
-        group = person.group,
-        house = match person.house {
-            House::Senate => "Senate",
-            House::Representatives => "House of Representatives",
-        },
-        voted = votes.len(),
-        total = chamber_divisions,
-        crossed = crossed,
-        plural = if crossed == 1 { "" } else { "s" },
-        tally = Tally::of(votes).render(),
-    );
+    let record = member_record(person, votes, chamber_divisions);
 
     gemini
         .generate(
@@ -850,6 +1088,84 @@ async fn generate_person_note(
         .await
 }
 
+/// What a member note is written from: the two headline counts, then the
+/// tally's sums per bill and stage and per kind of motion.
+fn member_record(person: &Person, votes: &[VoteRow<'_>], chamber_divisions: usize) -> String {
+    let crossed = votes.iter().filter(|v| v.crossed).count();
+    format!(
+        "Data for {name} ({group}), {house}:\n\
+         - Voted in {voted} of {total} recorded divisions; {crossed} vote{plural} against their party grouping's majority.\n\
+         \n\
+         {tally}",
+        name = person.name,
+        group = person.group,
+        house = match person.house {
+            House::Senate => "Senate",
+            House::Representatives => "House of Representatives",
+        },
+        voted = votes.len(),
+        total = chamber_divisions,
+        crossed = crossed,
+        plural = if crossed == 1 { "" } else { "s" },
+        tally = Tally::of(votes).render(),
+    )
+}
+
+/// One division as a prompt gives it: the motion, the bills it concerned
+/// with their official summaries, the rest of that day's divisions in the
+/// chamber, and the start of the Hansard excerpt.
+fn division_block(
+    d: &Division,
+    bills: &IndexMap<String, Bill>,
+    by_day: &IndexMap<String, Vec<&Division>>,
+) -> String {
+    let related = d
+        .bill_ids
+        .iter()
+        .filter_map(|id| bills.get(id))
+        .map(|b| {
+            format!(
+                "- {}: {}",
+                b.title,
+                b.summary.as_deref().unwrap_or("no official summary")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let same_day = by_day
+        .get(&format!("{}/{}", d.house, d.date))
+        .map(|list| {
+            list.iter()
+                .filter(|s| s.id != d.id)
+                .map(|s| format!("- (division {}) {}", s.number, s.name))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    format!(
+        "<division id=\"{id}\">\nMotion: {name} (division {number} of the day)\nHouse: {house}, Date: {date}\n{related_block}{same_day_block}Official record excerpt:\n{excerpt}\n</division>",
+        id = d.id,
+        name = d.name,
+        number = d.number,
+        house = match d.house {
+            House::Senate => "Senate",
+            House::Representatives => "House of Representatives",
+        },
+        date = d.date,
+        related_block = if related.is_empty() {
+            String::new()
+        } else {
+            format!("Related bills (official summaries):\n{related}\n")
+        },
+        same_day_block = if same_day.is_empty() {
+            String::new()
+        } else {
+            format!("Other divisions in this chamber the same day, in order:\n{same_day}\n")
+        },
+        excerpt = utf16_slice(d.summary.as_deref().unwrap_or(""), 2200),
+    )
+}
+
 async fn generate_batch(
     gemini: &Gemini,
     batch: &[&Division],
@@ -858,53 +1174,7 @@ async fn generate_batch(
 ) -> Result<IndexMap<String, String>> {
     let items = batch
         .iter()
-        .map(|d| {
-            let related = d
-                .bill_ids
-                .iter()
-                .filter_map(|id| bills.get(id))
-                .map(|b| {
-                    format!(
-                        "- {}: {}",
-                        b.title,
-                        b.summary.as_deref().unwrap_or("no official summary")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let same_day = by_day
-                .get(&format!("{}/{}", d.house, d.date))
-                .map(|list| {
-                    list.iter()
-                        .filter(|s| s.id != d.id)
-                        .map(|s| format!("- (division {}) {}", s.number, s.name))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default();
-            format!(
-                "<division id=\"{id}\">\nMotion: {name} (division {number} of the day)\nHouse: {house}, Date: {date}\n{related_block}{same_day_block}Official record excerpt:\n{excerpt}\n</division>",
-                id = d.id,
-                name = d.name,
-                number = d.number,
-                house = match d.house {
-                    House::Senate => "Senate",
-                    House::Representatives => "House of Representatives",
-                },
-                date = d.date,
-                related_block = if related.is_empty() {
-                    String::new()
-                } else {
-                    format!("Related bills (official summaries):\n{related}\n")
-                },
-                same_day_block = if same_day.is_empty() {
-                    String::new()
-                } else {
-                    format!("Other divisions in this chamber the same day, in order:\n{same_day}\n")
-                },
-                excerpt = utf16_slice(d.summary.as_deref().unwrap_or(""), 2200),
-            )
-        })
+        .map(|d| division_block(d, bills, by_day))
         .collect::<Vec<_>>()
         .join("\n\n");
     let ids: Vec<&str> = batch.iter().map(|d| d.id.as_str()).collect();
@@ -1988,6 +2258,191 @@ mod tests {
                 .is_none(),
             "a note citing 12 of 10 divisions is not kept"
         );
+    }
+
+    /// A store with one item for each job, and one bill no job writes for.
+    async fn one_of_each(name: &str) -> (Store, Person) {
+        let store = new_store(name);
+        let member = person("alex-paterson", "Alex Paterson");
+        let mut transcript = division(
+            "representatives/2026-08-12/1",
+            1,
+            "Rearrangement",
+            Some("Alex Paterson\n\nThe question is that the motion be agreed to."),
+        );
+        transcript.votes = vec![vote("alex-paterson", false)];
+        store
+            .put_json(
+                "canonical/divisions/representatives-2026-08-12-1.json",
+                &transcript,
+            )
+            .await
+            .unwrap();
+        for n in 2..=10 {
+            let mut d = division(
+                &format!("representatives/2026-08-12/{n}"),
+                n,
+                "Bills — Example Bill 2026; Second Reading",
+                None,
+            );
+            d.votes = vec![vote("alex-paterson", false)];
+            store
+                .put_json(
+                    &format!("canonical/divisions/representatives-2026-08-12-{n}.json"),
+                    &d,
+                )
+                .await
+                .unwrap();
+        }
+        for (id, summary) in [("r1", Some("Standing appropriations.")), ("r2", None)] {
+            store
+                .put_json(
+                    &format!("canonical/bills/{id}.json"),
+                    &bill(id, "Example Bill 2026", summary),
+                )
+                .await
+                .unwrap();
+        }
+        (store, member)
+    }
+
+    #[tokio::test]
+    async fn every_prompt_input_is_exported_as_the_model_would_be_given_it() {
+        let (store, member) = one_of_each("export").await;
+        let dir = scratch("export-out");
+        export(&store, std::slice::from_ref(&member), &dir)
+            .await
+            .expect("export");
+
+        let templates: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("templates.json")).unwrap())
+                .unwrap();
+        assert_eq!(templates["member"]["prompt"], "pollywiki.member-note");
+        assert_eq!(templates["bill"]["version"], BILL_NOTE_PROMPT_VERSION);
+        assert!(templates["division"]["template"]
+            .as_str()
+            .unwrap()
+            .contains("{{items}}"));
+
+        let items: Vec<ExportedItem> = std::fs::read_to_string(dir.join("items.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("item"))
+            .collect();
+        let keys: Vec<(&str, &str)> = items
+            .iter()
+            .map(|i| (i.kind.as_str(), i.id.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("bill", "r1"),
+                ("division", "representatives/2026-08-12/1"),
+                ("member", "alex-paterson")
+            ],
+            "a bill with no official summary is nobody's to write for"
+        );
+        // The inputs are the ones a nightly prompt carries, letter for letter.
+        let (_, bills) = load_records(&store).await.unwrap();
+        assert_eq!(items[0].input, bill_block(&bills["r1"]));
+        assert!(items[1]
+            .input
+            .contains("Official record excerpt:\nAlex Paterson"));
+        assert!(items[1]
+            .input
+            .contains("Other divisions in this chamber the same day, in order:"));
+        assert!(items[2]
+            .input
+            .starts_with("Data for Alex Paterson (Example), House of Representatives:"));
+    }
+
+    #[tokio::test]
+    async fn imported_text_is_checked_like_a_reply_and_kept_by_the_nightly_run() {
+        let (store, member) = one_of_each("import").await;
+        let people = std::slice::from_ref(&member);
+        let dir = scratch("import-files");
+        let lines = |rows: &[Value]| {
+            rows.iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let good = dir.join("good.jsonl");
+        std::fs::write(
+            &good,
+            lines(&[
+                serde_json::json!({"kind": "bill", "id": "r1", "text": " Plain words. "}),
+                serde_json::json!({"kind": "division", "id": "representatives/2026-08-12/1",
+                                   "text": "The motion changed the order of business."}),
+                serde_json::json!({"kind": "member", "id": "alex-paterson",
+                                   "text": "Voted aye in all 10 divisions recorded."}),
+            ]),
+        )
+        .unwrap();
+        import(&store, people, &good, "claude-opus-5-5")
+            .await
+            .expect("every line is usable");
+
+        let bill_note: AiSummary = store.get_json(&bill_note_key("r1")).await.unwrap().unwrap();
+        assert_eq!(bill_note.text, "Plain words.", "trimmed as a reply is");
+        assert_eq!(bill_note.model, "claude-opus-5-5");
+        assert_eq!(bill_note.prompt_version, Some(BILL_NOTE_PROMPT_VERSION));
+        let context: AiSummary = store
+            .get_json(&ai_key("representatives/2026-08-12/1"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(context.prompt_version, Some(SUMMARY_PROMPT_VERSION));
+        let note: AiPersonNote = store
+            .get_json(&note_key("alex-paterson"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((note.votes_considered, note.crossed_considered), (10, 0));
+        assert!(
+            note_is_current(&note, 10, 0),
+            "the nightly run leaves it until the record moves on"
+        );
+        assert!(!note_is_current(&note, 20, 0));
+
+        // What a reply could not get away with, an import cannot either; the
+        // stored note is left as it was.
+        let bad = dir.join("bad.jsonl");
+        std::fs::write(
+            &bad,
+            lines(&[
+                serde_json::json!({"kind": "bill", "id": "r2", "text": "From a title alone."}),
+                serde_json::json!({"kind": "division", "id": "representatives/2026-08-12/2",
+                                   "text": "Not a transcript division."}),
+                serde_json::json!({"kind": "division", "id": "representatives/2026-08-12/1",
+                                   "text": "  "}),
+                serde_json::json!({"kind": "member", "id": "alex-paterson",
+                                   "text": "Voted aye in 12 divisions."}),
+                serde_json::json!({"kind": "member", "id": "nobody", "text": "A note."}),
+                serde_json::json!({"kind": "speech", "id": "x", "text": "Anything."}),
+            ]),
+        )
+        .unwrap();
+        let err = import(&store, people, &bad, "claude-opus-5-5")
+            .await
+            .expect_err("rejections fail the command");
+        assert_eq!(err.to_string(), "6 imported texts rejected");
+        let kept: AiPersonNote = store
+            .get_json(&note_key("alex-paterson"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.text, note.text);
+        assert!(store
+            .get_json::<AiSummary>(&bill_note_key("r2"))
+            .await
+            .unwrap()
+            .is_none());
+
+        let err = import(&store, people, &good, " ")
+            .await
+            .expect_err("text needs a model to be credited to");
+        assert!(err.to_string().contains("model"), "{err}");
     }
 
     #[tokio::test]

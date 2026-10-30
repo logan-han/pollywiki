@@ -20,9 +20,13 @@ use store::{LocalStore, S3Store, Store};
 const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [options]
   --store local|s3       default local (.store/); s3 needs POLLYWIKI_DATA_BUCKET
   --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec,
-                         legislation,ipea,aec-disclosures,boundaries
+                         legislation,ipea,aec-disclosures,boundaries, and states
+                         (every parliament) or one of nsw-parliament ... nt-parliament
   --event <ids>          AEC event id(s), comma-separated, or all (default 31496)
   --rebuild              tvfy only: re-normalise from cached raw, no API calls
+  --export <dir>         summarise only: write every prompt input, no model calls
+  --import <file>        summarise only: store text written for exported items
+  --model <name>         the model that wrote an --import file
 summarise needs GEMINI_API_KEY; 'all' runs it between sync and derive when set.
 ";
 
@@ -72,6 +76,12 @@ struct Options {
     sources: Vec<String>,
     event: String,
     rebuild: bool,
+    /// summarise: a directory to export every prompt input to.
+    export: Option<String>,
+    /// summarise: a file of text written for exported items, and the model
+    /// that wrote it.
+    import: Option<String>,
+    model: Option<String>,
 }
 
 #[tokio::main]
@@ -122,6 +132,21 @@ async fn run_on(
             endpoints,
         )
         .await?;
+    }
+    // Text written outside the nightly run goes out and comes back through
+    // the same inputs and checks; no model is called.
+    if command == "summarise" && (options.export.is_some() || options.import.is_some()) {
+        let people = load_people(store).await?;
+        if let Some(dir) = &options.export {
+            summarise::export(store, &people, std::path::Path::new(dir)).await?;
+        }
+        if let Some(file) = &options.import {
+            let model = options.model.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--import needs --model, the model that wrote the text")
+            })?;
+            summarise::import(store, &people, std::path::Path::new(file), model).await?;
+        }
+        return Ok(());
     }
     if command == "summarise" || (command == "all" && std::env::var("GEMINI_API_KEY").is_ok()) {
         let people = load_people(store).await?;
@@ -257,6 +282,21 @@ async fn sync(
             sources::aec_profiles::sync_aec_profiles(store, "31496", endpoints)
         );
     }
+    // "states" runs every parliament; each is recorded, and can be run, alone.
+    let mut state_reference = None;
+    for code in pollywiki_schema::STATES {
+        let Some(state) = pollywiki_schema::StateCode::parse(code) else {
+            continue;
+        };
+        let name = sources::states::source_name(state);
+        if has("states") || has(&name) {
+            let reference = state_reference.get_or_insert_with(sources::states::reference);
+            run_source!(
+                name.as_str(),
+                sources::states::sync_state(store, state, reference.get(code), endpoints)
+            );
+        }
+    }
     if has("tvfy") {
         if std::env::var("TVFY_API_KEY").is_ok() || rebuild {
             if people.is_empty() {
@@ -310,6 +350,9 @@ fn parse_options(args: &[String]) -> Options {
             .collect(),
         event: get("event").unwrap_or_else(|| "31496".to_string()),
         rebuild: args.iter().any(|a| a == "--rebuild"),
+        export: get("export"),
+        import: get("import"),
+        model: get("model"),
     }
 }
 
@@ -325,7 +368,7 @@ mod orchestration_tests {
     use crate::test_http::{Response, TestServer};
     use std::path::PathBuf;
 
-    const ALL_SOURCES: [&str; 10] = [
+    const ALL_SOURCES: [&str; 11] = [
         "wikidata",
         "aec",
         "aph",
@@ -336,6 +379,7 @@ mod orchestration_tests {
         "ipea",
         "aec-profiles",
         "tvfy",
+        "states",
     ];
 
     fn new_store(name: &str) -> Store {
@@ -353,6 +397,9 @@ mod orchestration_tests {
             sources: sources.iter().map(|s| s.to_string()).collect(),
             event: "31496".to_string(),
             rebuild,
+            export: None,
+            import: None,
+            model: None,
         }
     }
 
@@ -395,7 +442,12 @@ mod orchestration_tests {
         )
         .await
         .expect("a source failure is not a run failure");
-        assert_eq!(failures, ALL_SOURCES.len(), "one per source");
+        // "states" is eight sources, one per parliament.
+        assert_eq!(
+            failures,
+            ALL_SOURCES.len() - 1 + pollywiki_schema::STATES.len(),
+            "one per source"
+        );
 
         let manifest = read_manifest(&store).await.expect("manifest");
         let mut names: Vec<&String> = manifest.sources.keys().collect();
@@ -403,6 +455,7 @@ mod orchestration_tests {
         assert_eq!(
             names,
             vec![
+                "act-parliament",
                 "aec",
                 "aec-disclosures",
                 "aec-profiles",
@@ -411,7 +464,14 @@ mod orchestration_tests {
                 "handbook",
                 "ipea",
                 "legislation",
+                "nsw-parliament",
+                "nt-parliament",
+                "qld-parliament",
+                "sa-parliament",
+                "tas-parliament",
                 "tvfy",
+                "vic-parliament",
+                "wa-parliament",
                 "wikidata"
             ],
             "every source leaves a record of its attempt"
@@ -606,6 +666,31 @@ mod orchestration_tests {
     }
 
     #[tokio::test]
+    async fn summarise_exports_and_imports_without_calling_a_model() {
+        let server = dead_server();
+        let store = new_store("run-export");
+        let endpoints = Endpoints::at(&server.base);
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/orchestration-tests/run-export-out");
+
+        let mut export = options(&[], false);
+        export.export = Some(dir.to_string_lossy().into_owned());
+        run_on("summarise", &export, &store, &endpoints)
+            .await
+            .expect("an export needs no key");
+        assert!(dir.join("items.jsonl").is_file());
+        assert!(dir.join("templates.json").is_file());
+
+        let mut import = options(&[], false);
+        import.import = Some(dir.join("items.jsonl").to_string_lossy().into_owned());
+        let err = run_on("summarise", &import, &store, &endpoints)
+            .await
+            .expect_err("text is credited to the model that wrote it");
+        assert!(err.to_string().contains("--model"), "{err}");
+        assert_eq!(server.hits(), 0, "no model was called");
+    }
+
+    #[tokio::test]
     async fn the_default_store_is_a_local_directory_and_s3_needs_a_bucket() {
         let Store::Local(_) = make_store("local").await.expect("local store") else {
             panic!("--store local must open the development directory");
@@ -729,6 +814,27 @@ mod tests {
         assert_eq!(options.sources, vec!["aph", "tvfy", "handbook"]);
         assert_eq!(options.event, "31633");
         assert!(options.rebuild);
+    }
+
+    #[test]
+    fn summarise_reads_where_to_export_and_what_to_import() {
+        let args: Vec<String> = [
+            "--export",
+            "/tmp/prompts",
+            "--import",
+            "texts.jsonl",
+            "--model",
+            "claude-opus-5-5",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let options = parse_options(&args);
+        assert_eq!(options.export.as_deref(), Some("/tmp/prompts"));
+        assert_eq!(options.import.as_deref(), Some("texts.jsonl"));
+        assert_eq!(options.model.as_deref(), Some("claude-opus-5-5"));
+        let none = parse_options(&[]);
+        assert!(none.export.is_none() && none.import.is_none() && none.model.is_none());
     }
 
     #[test]
