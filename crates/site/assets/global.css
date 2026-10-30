@@ -1219,163 +1219,122 @@ td.date {
   );
 }
 
-/* The nine parliaments as a map: the federal parliament across the top, over
-   all of them, and each state and territory roughly where it lies, with the
-   ocean left empty. Each tile is one link, its name. */
-.federation {
-  list-style: none;
-  margin: 0.2rem 0 0;
-  padding: 0;
+/* The nine parliaments as one ledger, every row laid out alike. The seat
+   bars share a column and a width, so the nine read as small multiples and
+   their majority marks line up down the page. */
+.parliaments {
+  margin-top: 0.4rem;
+}
+
+.parliaments ul,
+.parliaments-head {
+  --cols: 14rem minmax(0, 1fr) 7rem 7.8rem;
+}
+
+.parliaments-head {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-areas:
-    'fed fed fed fed'
-    'wa  nt  qld .'
-    'wa  sa  nsw act'
-    '.   .   vic .'
-    '.   .   tas .';
-  gap: 0.5rem;
-}
-
-.federation.states-only {
-  grid-template-areas:
-    'wa nt qld .'
-    'wa sa nsw act'
-    '.  .  vic .'
-    '.  .  tas .';
-}
-
-.federation .fed { grid-area: fed; }
-.federation .nsw { grid-area: nsw; }
-.federation .vic { grid-area: vic; }
-.federation .qld { grid-area: qld; }
-.federation .wa { grid-area: wa; }
-.federation .sa { grid-area: sa; }
-.federation .tas { grid-area: tas; }
-.federation .act { grid-area: act; }
-.federation .nt { grid-area: nt; }
-
-.federation .tile {
-  position: relative;
-  padding: 0.75rem 0.85rem 0.8rem;
-  background: var(--card);
-  border: 1px solid var(--hair);
-  border-radius: 4px;
-}
-
-.federation .tile:hover {
-  border-color: var(--hair-strong);
-}
-
-/* The name's link covers the tile, so the tile shows the focus. */
-.federation .tile:focus-within {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.federation h3 {
+  grid-template-columns: var(--cols);
+  column-gap: 1.2rem;
   margin: 0;
-  font-family: var(--sans);
-  font-size: 1rem;
-  line-height: 1.1;
+  padding: 0 0 0.45rem;
+  border-bottom: 1px solid var(--hair-strong);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
-.federation h3 a {
+.parliaments-head span:nth-child(2) {
+  grid-column: span 2;
+}
+
+.parliaments-head span:last-child {
+  text-align: right;
+}
+
+.parliaments ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.parliaments li {
+  display: grid;
+  grid-template-columns: var(--cols);
+  column-gap: 1.2rem;
+  align-items: center;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.parliaments .who {
   display: flex;
   flex-direction: column;
-  text-decoration: none;
-  outline: none;
+  min-width: 0;
 }
 
-.federation h3 a::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-}
-
-/* The Style Manual's short forms carry the map: set large, in the serif, the
-   way a state is lettered on a printed map. */
-.federation .short {
+/* The Style Manual's short forms carry the rows, set in the serif. */
+.parliaments .name {
   font-family: var(--serif);
   font-weight: 600;
-  font-size: 1.75rem;
-  line-height: 1;
+  font-size: 1.375rem;
+  line-height: 1.1;
   letter-spacing: -0.01em;
+  text-decoration: none;
 }
 
-.federation .name {
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  font-weight: 400;
-  color: var(--muted);
-}
-
-.federation h3 a:hover .short {
+.parliaments .name:hover {
   color: var(--accent);
 }
 
-.federation .leader {
-  margin: 0.6rem 0 0.45rem;
+.parliaments .leader {
+  margin-top: 0.15rem;
   font-size: 0.8125rem;
   line-height: 1.35;
-}
-
-.federation .unread .leader,
-.federation .leader:only-of-type:last-child {
   color: var(--muted);
 }
 
-.federation .seats {
-  margin: 0.35rem 0 0;
+.parliaments .seats,
+.parliaments .open {
   font-family: var(--mono);
-  font-size: 0.6875rem;
-  color: var(--muted);
-}
-
-/* The federal tile reads across: its name and leader, then a bar for each
-   chamber with its leading party's seats. */
-.federation .fed {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr);
-  column-gap: 1.4rem;
-  align-items: start;
-}
-
-.federation .fed .houses {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: center;
-}
-
-.federation .fed .leader {
-  grid-column: 1;
-}
-
-.federation .houses p {
-  display: grid;
-  grid-template-columns: 3.4rem minmax(0, 1fr) 6.2rem;
-  align-items: center;
-  gap: 0.7rem;
-  margin: 0.4rem 0;
-}
-
-.federation .houses .house {
   font-size: 0.75rem;
   color: var(--muted);
 }
 
-.federation .houses .seats {
-  margin: 0;
+.parliaments .open {
+  text-align: right;
 }
 
-.federation .bills {
-  margin: 0.15rem 0 0;
-  font-family: var(--mono);
-  font-size: 0.6875rem;
+.parliaments .open a {
+  font-size: 0.9375rem;
   color: var(--ink);
 }
 
-.federation + .board-key {
+/* Said on a phone, where the column label is not shown. */
+.parliaments .open .unit {
+  display: none;
+}
+
+/* A parliament whose list is not read says so where its bar would be. */
+.parliaments .unread .house {
+  grid-column: span 2;
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: var(--muted);
+}
+
+.parliaments .unread .name {
+  color: var(--muted);
+}
+
+.parliaments .none {
+  font-size: 0.6875rem;
+  color: var(--faint);
+}
+
+.parliaments > .note {
   margin: 0.55rem 0 0;
   font-size: 0.78rem;
 }
@@ -1385,7 +1344,7 @@ td.date {
   position: relative;
   display: flex;
   gap: 1px;
-  height: 8px;
+  height: 10px;
 }
 
 .mini-bar > span {
@@ -1402,8 +1361,7 @@ td.date {
   background: var(--ink);
 }
 
-.mini-bar .vacant,
-.mini-bar.empty {
+.mini-bar .vacant {
   background: repeating-linear-gradient(
     135deg,
     var(--hair-strong) 0 2px,
@@ -1411,38 +1369,45 @@ td.date {
   );
 }
 
-/* Tablets and phones: the map gives way to two columns in the Style
-   Manual's order, the federal tile across both. */
-@media (max-width: 46rem) {
-  .federation {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+/* Phones: each row restacks, the parliament and its bills on one line and
+   the bar under them across the full width, with the figures below it. */
+@media (max-width: 40rem) {
+  .parliaments-head {
+    display: none;
+  }
+
+  .parliaments li {
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      'fed fed'
-      'nsw vic'
-      'qld wa'
-      'sa  tas'
-      'act nt';
+      'who open'
+      'house house'
+      'seats seats';
+    row-gap: 0.45rem;
   }
 
-  .federation.states-only {
-    grid-template-areas:
-      'nsw vic'
-      'qld wa'
-      'sa  tas'
-      'act nt';
+  .parliaments .who {
+    grid-area: who;
   }
 
-  .federation .fed {
-    grid-template-columns: minmax(0, 1fr);
+  .parliaments .house {
+    grid-area: house;
   }
 
-  .federation .fed .houses {
-    grid-column: 1;
-    grid-row: auto;
+  .parliaments .seats {
+    grid-area: seats;
   }
 
-  .federation .houses p {
-    grid-template-columns: 3.2rem minmax(0, 1fr) auto;
+  .parliaments .open {
+    grid-area: open;
+    align-self: start;
+  }
+
+  .parliaments .open .unit {
+    display: inline;
+  }
+
+  .parliaments .unread .house {
+    grid-column: auto;
   }
 }
 

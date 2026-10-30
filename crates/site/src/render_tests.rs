@@ -426,42 +426,62 @@ fn a_nav_link_is_the_current_page_only_on_its_own_index() {
 }
 
 #[test]
-fn home_maps_all_nine_parliaments_as_peers() {
+fn home_lists_all_nine_parliaments_as_peers() {
     let data = sample_data();
     let html = render(&data, &pages::home(&data));
     assert!(html.contains("<h1>What Australia's parliaments actually did.</h1>"));
-    let board = html
-        .split("<ul class=\"federation\" role=\"list\">")
+    let ledger = html
+        .split("<div class=\"parliaments\">")
         .nth(1)
         .and_then(|b| b.split("</ul>").next())
-        .expect("the map of parliaments");
-    // One tile each, the federal one first and every state and territory in
-    // its own place on the map.
-    let tiles: Vec<&str> = board
-        .match_indices("<li class=\"tile ")
+        .expect("the ledger of parliaments");
+    // One row each, federal first and the states and territories in the
+    // Style Manual's order, each named by its short form.
+    let rows: Vec<&str> = ledger
+        .match_indices("<a class=\"name\" href=\"")
         .map(|(i, m)| {
-            let rest = &board[i + m.len()..];
-            &rest[..rest.find('"').expect("class ends")]
+            let rest = &ledger[i + m.len()..];
+            &rest[..rest.find('"').expect("href ends")]
         })
         .collect();
     assert_eq!(
-        tiles,
-        ["fed", "nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt"]
+        rows,
+        [
+            "/federal/",
+            "/states/nsw/",
+            "/states/vic/",
+            "/states/qld/",
+            "/states/wa/",
+            "/states/sa/",
+            "/states/tas/",
+            "/states/act/",
+            "/states/nt/"
+        ]
     );
-    // A tile names its leader and shows the house government is formed in.
-    assert!(board.contains("<p class=\"leader\">Prime Minister Alex Paterson</p>"));
-    assert!(board.contains("<p class=\"leader\">Premier Riley Okafor</p>"));
-    assert!(board.contains("aria-label=\"Legislative Assembly, 6 seats, majority 4: EXP 2,"));
-    assert!(board.contains("<p class=\"seats\">EXP 2 of 6</p>"));
-    // A parliament that turns scripts away says so; one not synced yet, too.
-    let wa = board.split("<li class=\"tile wa\">").nth(1).expect("WA");
-    assert!(wa.contains("Member list not readable yet"));
-    let vic = board.split("<li class=\"tile vic\">").nth(1).expect("Vic");
-    assert!(vic.contains("Member list not read yet"));
-    // The states index has the same map, without the federal tile.
+    // A row names its leader and shows the house government is formed in,
+    // its leading party's share and the bills still before it.
+    assert!(ledger.contains("<span class=\"leader\">Prime Minister Alex Paterson</span>"));
+    assert!(ledger.contains("<span class=\"leader\">Premier Riley Okafor</span>"));
+    assert!(ledger.contains("aria-label=\"Legislative Assembly, 6 seats, majority 4: EXP 2,"));
+    assert!(ledger.contains("<span class=\"seats\">EXP 2 of 6</span>"));
+    // A parliament that turns scripts away says so where its bar would be;
+    // one not synced yet, too.
+    let row = |href: &str| -> String {
+        let start = ledger
+            .find(&format!("<a class=\"name\" href=\"{href}\""))
+            .expect("row");
+        let open = ledger[..start].rfind("<li").expect("row opens");
+        ledger[open..start + ledger[start..].find("</li>").expect("row ends")].to_string()
+    };
+    let wa = row("/states/wa/");
+    assert!(wa.starts_with("<li class=\"unread\">"));
+    assert!(wa.contains("<span class=\"house\">Member list not readable yet</span>"));
+    assert!(row("/states/vic/").contains("Member list not read yet"));
+    assert!(row("/states/vic/").contains("<span class=\"open none\">Not read</span>"));
+    // The states index has the same ledger, without the federal row.
     let index = render(&data, &pages::states_index(&data));
-    assert!(index.contains("<ul class=\"federation states-only\" role=\"list\">"));
-    assert!(!index.contains("<li class=\"tile fed\">"));
+    assert!(index.contains("<div class=\"parliaments\">"));
+    assert!(!index.contains("<a class=\"name\" href=\"/federal/\""));
 }
 
 #[test]
@@ -540,17 +560,9 @@ fn a_state_s_bills_are_listed_and_each_has_a_page() {
         .expect("sample WA");
     let unread = render(&data, &pages::state_page(&data, wa));
     assert!(unread.contains("<a href=\"/states/wa/\" aria-current=\"page\">Overview</a><a href=\"/states/wa/bills/\">Bills</a></span>"));
-    // The map counts the bills still before each parliament.
+    // The ledger counts the bills still before each parliament.
     let home = render(&data, &pages::home(&data));
-    let tile = home
-        .split("<li class=\"tile nsw\">")
-        .nth(1)
-        .expect("NSW tile");
-    assert!(tile
-        .split("</li>")
-        .next()
-        .unwrap()
-        .contains("<p class=\"bills\">1 bill before it</p>"));
+    assert!(home.contains("<span class=\"open\"><a href=\"/states/nsw/bills/\">1</a><span class=\"unit\"> bill before it</span></span>"));
 }
 
 #[test]

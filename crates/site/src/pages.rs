@@ -301,7 +301,7 @@ pub fn home(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>What Australia's parliaments actually did.</h1><p class=\"lede\">Decisions that change people's lives should stay on the record. pollywiki keeps the record of all nine of Australia's parliaments, federal, state and territory: who sits in them and what they pass, and for federal parliament how every member voted, straight from official sources, with no commentary.</p></div>");
     body.push_str("<h2 class=\"visually-hidden\">The nine parliaments</h2>");
-    body.push_str(&federation_board(data, true));
+    body.push_str(&parliament_ledger(data, true));
     body.push_str(&latest_activity_everywhere(data));
     body.push_str(&latest_divisions_section(data, "Latest federal divisions"));
 
@@ -523,96 +523,106 @@ fn latest_activity_everywhere(data: &SiteData) -> String {
     out
 }
 
-/// Australia's parliaments laid out roughly as the country is: the federal
-/// parliament across the top, over all of them, and each state and territory
-/// in its place on the map, with the ocean left empty. Each shows who leads
-/// its government and, by party, the house government is formed in.
-fn federation_board(data: &SiteData, with_federal: bool) -> String {
-    let mut out = format!(
-        "<ul class=\"federation{}\" role=\"list\">",
-        if with_federal { "" } else { " states-only" }
-    );
+/// Australia's parliaments as one ledger, federal first and then the states
+/// and territories in the Style Manual's order, every row laid out alike: who
+/// leads its government, the house that government is formed in by party,
+/// and the bills still before it. The bars share one width and line up, so
+/// the nine compare at a glance; the mark on each is a majority.
+fn parliament_ledger(data: &SiteData, with_federal: bool) -> String {
+    struct Row {
+        short: &'static str,
+        name: &'static str,
+        href: String,
+        leader: Option<String>,
+        house: Option<String>,
+        seats: Option<String>,
+        unread: Option<&'static str>,
+        bills: Option<(usize, String)>,
+    }
+    let mut rows: Vec<Row> = Vec::new();
     if with_federal {
-        out.push_str("<li class=\"tile fed\"><h3><a href=\"/federal/\"><span class=\"short\">Federal</span> <span class=\"name\">Parliament of Australia</span></a></h3>");
-        if let Some(pm) = data.prime_minister() {
-            out.push_str(&format!(
-                "<p class=\"leader\">Prime Minister {}</p>",
-                esc(&pm.name)
-            ));
-        }
-        out.push_str("<div class=\"houses\">");
-        for (house, label) in [(House::Representatives, "House"), (House::Senate, "Senate")] {
-            let segments = federal_segments(data, house);
-            let total: i64 = segments.iter().map(|s| s.seats).sum();
-            out.push_str(&format!("<p><span class=\"house\">{label}</span>"));
-            out.push_str(&mini_bar(
-                match house {
-                    House::Representatives => "House of Representatives",
-                    House::Senate => "Senate",
-                },
-                &segments,
-                0,
-            ));
-            if let Some(lead) = segments.first() {
-                out.push_str(&format!(
-                    "<span class=\"seats\">{} {} of {total}</span>",
-                    esc(lead.code),
-                    lead.seats
-                ));
-            }
-            out.push_str("</p>");
-        }
-        out.push_str("</div></li>");
+        let segments = federal_segments(data, House::Representatives);
+        let total: i64 = segments.iter().map(|s| s.seats).sum();
+        let pm = data.prime_minister();
+        let governing = pm
+            .and_then(|p| data.party_by_slug(&p.group_slug))
+            .map(|party| {
+                format!(
+                    "{} {} of {total}",
+                    party.code.as_deref().unwrap_or(&party.name),
+                    party
+                        .seats
+                        .as_ref()
+                        .map(|s| s.get(House::Representatives))
+                        .unwrap_or(0)
+                )
+            });
+        rows.push(Row {
+            short: "Federal",
+            name: "Parliament of Australia",
+            href: "/federal/".to_string(),
+            leader: pm.map(|p| format!("Prime Minister {}", p.name)),
+            house: Some(mini_bar("House of Representatives", &segments, 0)),
+            seats: governing,
+            unread: None,
+            bills: Some((
+                data.bills
+                    .iter()
+                    .filter(|b| b.status.starts_with("Before"))
+                    .count(),
+                "/bills/".to_string(),
+            )),
+        });
     }
     for (short, name, href) in crate::layout::PARLIAMENTS.iter().skip(1) {
         let code = href.trim_matches('/').rsplit('/').next().unwrap_or("");
-        out.push_str(&format!(
-            "<li class=\"tile {code}\"><h3><a href=\"{href}\"><span class=\"short\">{short}</span> <span class=\"name\">{name}</span></a></h3>"
-        ));
         let record = StateCode::parse(&code.to_uppercase()).and_then(|s| data.state_parliament(s));
+        let mut row = Row {
+            short,
+            name,
+            href: href.to_string(),
+            leader: None,
+            house: None,
+            seats: None,
+            unread: None,
+            bills: None,
+        };
         match record.filter(|p| !p.chambers.is_empty()) {
             Some(parliament) => {
-                if let Some((_, leader)) = parliament.leader() {
-                    out.push_str(&format!(
-                        "<p class=\"leader\">{} {}</p>",
-                        esc(&parliament.leader_title),
-                        esc(&leader.name)
-                    ));
-                }
                 let lower = parliament
                     .chambers
                     .iter()
                     .find(|c| c.kind == ChamberKind::Lower)
                     .unwrap_or(&parliament.chambers[0]);
-                out.push_str(&mini_bar(
+                row.leader = parliament
+                    .leader()
+                    .map(|(_, l)| format!("{} {}", parliament.leader_title, l.name));
+                row.house = Some(mini_bar(
                     &lower.name,
                     &state_segments(data, lower),
                     lower.vacancies(),
                 ));
                 // The governing party's share of that house, or the largest
                 // party's where no leader is listed.
-                let leading = parliament
+                row.seats = parliament
                     .leader()
                     .and_then(|(_, l)| lower.parties.iter().find(|p| p.party_slug == l.party_slug))
-                    .or_else(|| lower.parties.first());
-                if let Some(party) = leading {
-                    out.push_str(&format!(
-                        "<p class=\"seats\">{} {} of {}</p>",
-                        esc(party.code.as_deref().unwrap_or(&party.party)),
-                        party.seats,
-                        lower.seats
-                    ));
-                }
+                    .or_else(|| lower.parties.first())
+                    .map(|party| {
+                        format!(
+                            "{} {} of {}",
+                            party.code.as_deref().unwrap_or(&party.party),
+                            party.seats,
+                            lower.seats
+                        )
+                    });
             }
             None => {
-                out.push_str(&format!(
-                    "<p class=\"leader\">{}</p><span class=\"mini-bar empty\" aria-hidden=\"true\"></span>",
-                    if record.is_some_and(|p| p.unavailable.is_some()) {
-                        "Member list not readable yet"
-                    } else {
-                        "Member list not read yet"
-                    }
-                ));
+                row.unread = Some(if record.is_some_and(|p| p.unavailable.is_some()) {
+                    "Member list not readable yet"
+                } else {
+                    "Member list not read yet"
+                });
             }
         }
         if let Some(parliament) = record.filter(|p| !p.bills.is_empty()) {
@@ -624,14 +634,47 @@ fn federation_board(data: &SiteData, with_federal: bool) -> String {
                 .iter()
                 .filter(|b| b.stage < through && !b.stopped)
                 .count();
-            out.push_str(&format!(
-                "<p class=\"bills\">{} before it</p>",
-                counted(open, "bill")
-            ));
+            row.bills = Some((open, state_bills_path(parliament.state)));
+        }
+        rows.push(row);
+    }
+
+    let mut out = String::from("<div class=\"parliaments\"><p class=\"parliaments-head\" aria-hidden=\"true\"><span>Parliament</span><span>House government is formed in</span><span>Bills before it</span></p><ul role=\"list\">");
+    for row in &rows {
+        let label = if row.short == "Federal" {
+            row.short.to_string()
+        } else {
+            format!(
+                "{}<span class=\"visually-hidden\"> ({})</span>",
+                row.short, row.name
+            )
+        };
+        out.push_str(&format!(
+            "<li{}><span class=\"who\"><a class=\"name\" href=\"{}\">{label}</a><span class=\"leader\">{}</span></span>",
+            if row.unread.is_some() { " class=\"unread\"" } else { "" },
+            row.href,
+            esc(row.leader.as_deref().unwrap_or(row.name)),
+        ));
+        match (&row.house, row.unread) {
+            (Some(bar), _) => out.push_str(&format!(
+                "<span class=\"house\">{bar}</span><span class=\"seats\">{}</span>",
+                esc(row.seats.as_deref().unwrap_or(""))
+            )),
+            (None, unread) => out.push_str(&format!(
+                "<span class=\"house\">{}</span>",
+                unread.unwrap_or("")
+            )),
+        }
+        match &row.bills {
+            Some((open, href)) => out.push_str(&format!(
+                "<span class=\"open\"><a href=\"{href}\">{open}</a><span class=\"unit\"> {} before it</span></span>",
+                if *open == 1 { "bill" } else { "bills" }
+            )),
+            None => out.push_str("<span class=\"open none\">Not read</span>"),
         }
         out.push_str("</li>");
     }
-    out.push_str("</ul><p class=\"note board-key\">Each bar is the house government is formed in, by party, marked at a majority.</p>");
+    out.push_str("</ul><p class=\"note\">Seats by party in the house each government is formed in, marked at a majority.</p></div>");
     out
 }
 
@@ -2781,7 +2824,7 @@ pub fn states_index(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>States and territories</h1><p class=\"lede\">The eight state and territory parliaments as they stand: who sits in each chamber, for which party, and who leads the government, from the member lists each parliament publishes.</p></div>");
     body.push_str("<h2 class=\"visually-hidden\">The eight parliaments</h2>");
-    body.push_str(&federation_board(data, false));
+    body.push_str(&parliament_ledger(data, false));
     for code in pollywiki_schema::STATES {
         let Some(state) = StateCode::parse(code) else {
             continue;
