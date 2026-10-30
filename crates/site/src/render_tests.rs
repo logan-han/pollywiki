@@ -2509,6 +2509,7 @@ fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
         "<td><a href=\"https://www.parliament.act.gov.au\">Legislative Assembly for the Australian Capital Territory</a></td><td><a href=\"https://example.org/members/act\">Legislative Assembly</a></td><td>CC BY-NC-ND 4.0, Legislative Assembly for the ACT</td><td class=\"num\">14 Aug 2026</td>"
     ));
     assert!(states.contains("turns away automated readers"));
+    assert!(states.contains("Legislative Council</a> (downloaded by hand)</td><td>Downloaded by hand; the facts of membership reproduced with acknowledgement</td>"));
     assert!(states.contains("<td>Not read</td><td class=\"num\">not yet</td>"));
 }
 
@@ -3401,6 +3402,17 @@ fn a_state_chamber_s_majority_counts_its_empty_seats() {
     assert!(html.contains(
         "<tr><th class=\"label\" scope=\"row\">Premier</th><td><a href=\"/states/nsw/riley-okafor/\">Riley Okafor</a>, Member for Harbourside</td></tr>"
     ));
+    // A list downloaded by hand says so, above the figures it gave.
+    let note = html
+        .find("<strong>Downloaded by hand:</strong>")
+        .expect("the hand-download note");
+    assert!(note < html.find("<h2 id=\"composition\">").expect("composition"));
+
+    // A parliament read by a script carries no such note.
+    let act = data
+        .state_parliament(pollywiki_schema::StateCode::ACT)
+        .expect("sample ACT");
+    assert!(!render(&data, &pages::state_page(&data, act)).contains("Downloaded by hand"));
 }
 
 #[test]

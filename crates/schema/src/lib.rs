@@ -816,6 +816,10 @@ pub struct StateParliament {
     /// them in a form this site can read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
+    /// How the lists arrive when they are downloaded by hand, because the
+    /// parliament's site turns automated readers away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hand_listed: Option<String>,
 }
 
 impl StateParliament {

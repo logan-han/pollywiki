@@ -10,9 +10,13 @@ use crate::store::Store;
 use anyhow::{anyhow, bail, Result};
 use indexmap::IndexMap;
 use pollywiki_schema::{ChamberKind, StateCode};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 mod act;
+mod drop;
+mod nsw;
 mod qld;
 mod sa;
 mod tas;
@@ -33,6 +37,20 @@ pub struct StateReferenceEntry {
     /// sync is skipped and its place on the site says so.
     #[serde(default)]
     pub unavailable: Option<String>,
+    /// Where the lists are downloaded by hand instead, for a parliament
+    /// whose site turns automated readers away. Read whenever a download has
+    /// been filed; until then the parliament stays unavailable.
+    #[serde(default)]
+    pub drop: Option<DropConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DropConfig {
+    /// How the lists arrive, in the words the parliament's page shows.
+    pub note: String,
+    /// The official page the files are downloaded from.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -128,6 +146,36 @@ pub fn plain_name(styled: &str) -> String {
     name
 }
 
+/// Offices a list runs together in one cell, as Queensland's and New South
+/// Wales's do:
+/// "Premier and Minister for Veterans", "Deputy Premier, Minister for State
+/// Development, Infrastructure and Planning and Minister for Industrial
+/// Relations". It is cut wherever ", " or " and " is followed by the start of
+/// another office, so a single portfolio with commas of its own stays whole.
+pub fn split_offices(portfolio: &str) -> Vec<String> {
+    static BREAK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?:, | and )(?:Minister|Shadow|Assistant|Leader|Deputy|Manager|Parliamentary|Government Whip|Opposition Whip|Chair|Speaker|Treasurer|Attorney-General|Premier)\b",
+        )
+        .unwrap()
+    });
+    let mut out = Vec::new();
+    let mut start = 0;
+    for found in BREAK.find_iter(portfolio) {
+        out.push(portfolio[start..found.start()].trim().to_string());
+        // The office begins after the separator, not at it.
+        let separator = if found.as_str().starts_with(", ") {
+            2
+        } else {
+            5
+        };
+        start = found.start() + separator;
+    }
+    out.push(portfolio[start..].trim().to_string());
+    out.retain(|o| !o.is_empty());
+    out
+}
+
 /// The name a parliament's sync is recorded under, and can be run by.
 pub fn source_name(state: StateCode) -> String {
     format!("{}-parliament", state.as_str().to_lowercase())
@@ -144,15 +192,41 @@ pub async fn sync_state(
 ) -> Result<()> {
     let reference =
         reference.ok_or_else(|| anyhow!("no entry for {state} in state-parliaments.json"))?;
-    if let Some(reason) = &reference.unavailable {
-        println!("{}: skipped ({reason})", source_name(state));
-        return Ok(());
-    }
-    let chambers = read(store, state, endpoints).await?;
-    let roll = StateRoll {
-        state,
-        listed_at: crate::now_iso(),
-        chambers,
+    let filed = match &reference.drop {
+        Some(_) => {
+            drop::newest(&crate::reference_path("state-drops").join(state.as_str().to_lowercase()))?
+        }
+        None => None,
+    };
+    let roll = match (&reference.drop, filed) {
+        // Downloaded by hand: listed the day it was downloaded.
+        (Some(config), Some(filed)) => {
+            let age = drop::age_days(&filed.date, chrono::Utc::now().date_naive());
+            if age.is_some_and(|days| days > drop::STALE_AFTER_DAYS) {
+                eprintln!(
+                    "{}: the list downloaded on {} is {} days old; file a fresh one",
+                    source_name(state),
+                    filed.date,
+                    age.unwrap_or_default()
+                );
+            }
+            StateRoll {
+                state,
+                listed_at: format!("{}T00:00:00.000Z", filed.date),
+                chambers: drop::read(state, &filed, &config.source)?,
+            }
+        }
+        _ => {
+            if let Some(reason) = &reference.unavailable {
+                println!("{}: skipped ({reason})", source_name(state));
+                return Ok(());
+            }
+            StateRoll {
+                state,
+                listed_at: crate::now_iso(),
+                chambers: read(store, state, endpoints).await?,
+            }
+        }
     };
     check_roll(&roll, reference)?;
     store.put_json(&roll_key(state), &roll).await?;
@@ -314,6 +388,35 @@ mod tests {
         assert_eq!(plain_name("Jeremy Hanson CSC MLA"), "Jeremy Hanson");
         // A name that merely starts like a title keeps it.
         assert_eq!(plain_name("Drew Honeysett"), "Drew Honeysett");
+    }
+
+    #[test]
+    fn a_portfolio_splits_into_its_offices_and_no_further() {
+        assert_eq!(
+            split_offices("Premier and Minister for Veterans"),
+            ["Premier", "Minister for Veterans"]
+        );
+        assert_eq!(
+            split_offices("Deputy Premier, Minister for State Development, Infrastructure and Planning and Minister for Industrial Relations"),
+            [
+                "Deputy Premier",
+                "Minister for State Development, Infrastructure and Planning",
+                "Minister for Industrial Relations"
+            ]
+        );
+        assert_eq!(
+            split_offices("Minister for Finance, Trade, Employment and Training"),
+            ["Minister for Finance, Trade, Employment and Training"],
+            "one portfolio with commas of its own"
+        );
+        assert_eq!(
+            split_offices("Assistant Minister to the Premier on Matters of State and New Citizens, Leader of the House"),
+            [
+                "Assistant Minister to the Premier on Matters of State and New Citizens",
+                "Leader of the House"
+            ]
+        );
+        assert!(split_offices("").is_empty());
     }
 
     #[test]

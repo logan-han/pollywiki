@@ -454,7 +454,7 @@ fn state_parliaments(
             eprintln!("derive: no reference entry for {}, skipped", roll.state);
             continue;
         };
-        if entry.unavailable.is_some() {
+        if entry.unavailable.is_some() && entry.drop.is_none() {
             // A roll read before the lists became unreadable is out of date
             // by an unknown amount; the reason is shown instead.
             continue;
@@ -513,6 +513,7 @@ fn state_parliaments(
             listed_at: Some(roll.listed_at.clone()),
             chambers,
             unavailable: None,
+            hand_listed: entry.drop.as_ref().map(|d| d.note.clone()),
         });
     }
     // Every parliament has a place, read or not: one with no roll yet keeps
@@ -532,6 +533,7 @@ fn state_parliaments(
             listed_at: None,
             chambers: Vec::new(),
             unavailable: entry.unavailable.clone(),
+            hand_listed: None,
         });
     }
     out.sort_by_key(|p| STATES.iter().position(|code| *code == p.state.as_str()));
@@ -1915,6 +1917,32 @@ mod tests {
         );
         let nsw = &states[0];
         assert!(nsw.unavailable.is_none());
+        assert!(nsw.hand_listed.is_none(), "read by a script, not by hand");
+
+        // A parliament that turns scripts away but whose list was downloaded
+        // by hand is read from that download, and says how it arrived.
+        let mut hand = state_reference_fixture();
+        let entry = hand.get_mut("NSW").expect("fixture");
+        entry.unavailable = Some("Turns away automated readers.".to_string());
+        entry.drop = Some(crate::sources::states::DropConfig {
+            note: "Downloaded by hand each month.".to_string(),
+            source: "https://example.org/lists".to_string(),
+        });
+        let states = state_parliaments(&rolls, &hand, &party_reference_fixture());
+        assert_eq!(states[0].chambers.len(), 2);
+        assert!(states[0].unavailable.is_none());
+        assert_eq!(
+            states[0].hand_listed.as_deref(),
+            Some("Downloaded by hand each month.")
+        );
+        // With no download filed, the reason stands in its place.
+        let unread = state_parliaments(&[], &hand, &party_reference_fixture());
+        assert!(unread[0].chambers.is_empty());
+        assert!(unread[0].hand_listed.is_none());
+        assert_eq!(
+            unread[0].unavailable.as_deref(),
+            Some("Turns away automated readers.")
+        );
         assert_eq!(nsw.name, "Parliament of Example");
         assert_eq!(nsw.listed_at.as_deref(), Some("2026-10-30T01:00:00.000Z"));
         let slugs: Vec<&str> = nsw.chambers.iter().map(|c| c.slug.as_str()).collect();
