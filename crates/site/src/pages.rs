@@ -3,15 +3,16 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, composition_bar, group_chip, group_chip_labelled,
-    ledger_month, ledger_row_labelled, month_jump, month_label, person_card, portrait, result_chip,
-    result_word, seat_bar, series_row, series_row_in_month, sitting_day_row, vote_bar, BarSegment,
-    BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
+    avatar, bill_dots, chamber_chip, composition_bar, federal_segments, group_chip,
+    group_chip_labelled, ledger_month, ledger_row_labelled, mini_bar, month_jump, month_label,
+    person_card, portrait, result_chip, result_word, seat_bar, series_row, series_row_in_month,
+    sitting_day_row, vote_bar, BarSegment, BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
-    parse_qualification, short_date, state_member_path, state_name, state_path, title_from_slug,
-    title_tier, to_fixed, Occupation, SiteData,
+    parse_qualification, short_date, state_bill_path, state_bills_path, state_member_path,
+    state_members_path, state_name, state_path, title_from_slug, title_tier, to_fixed, Occupation,
+    SiteData,
 };
 use crate::html::{esc, esc_attr};
 use crate::layout::Page;
@@ -20,7 +21,7 @@ use crate::procedures::procedure_for;
 use crate::strip::js_without_comment_lines;
 use pollywiki_schema::{
     Bill, CandidateResult, ChamberKind, Division, Electorate, House, JsNum, Party, Person,
-    StateChamber, StateCode, StateMember, StateParliament, SummaryKind, Vote,
+    StateBill, StateChamber, StateCode, StateMember, StateParliament, SummaryKind, Vote,
 };
 use regex::Regex;
 use std::sync::LazyLock;
@@ -298,52 +299,23 @@ fn bill_activity_row(bill: &Bill) -> String {
 
 pub fn home(data: &SiteData) -> Page {
     let mut body = String::new();
-    body.push_str("<div class=\"masthead\"><h1>What federal parliament actually did.</h1><p class=\"lede\">Decisions that change people's lives should stay on the record. pollywiki keeps the record of Australia's federal parliament: who sits in it, how they voted, and what became law, straight from official sources, with no commentary. It also lists who sits in the <a href=\"/states/\">state and territory parliaments</a>.</p></div>");
-    body.push_str("<h2>Composition of the 48th Parliament</h2>");
-    body.push_str(&format!(
-        "<p class=\"note\">{} sitting parliamentarians, grouped by parliamentary group.</p>",
-        data.sitting().count()
-    ));
-    body.push_str(&seat_bar(data, House::Representatives));
-    body.push_str(&seat_bar(data, House::Senate));
-
-    body.push_str("<div class=\"section-head\"><h2>Latest divisions</h2><a href=\"/divisions/\">All divisions →</a></div>");
-    // One row per matter, not per division: a contested bill can be put ten
-    // times in a sitting day and would otherwise fill the list on its own.
-    let latest = data.latest_series(8);
-    if !latest.is_empty() {
-        body.push_str("<ul class=\"ledger\">");
-        for series in &latest {
-            body.push_str(&series_row(data, series));
-        }
-        body.push_str("</ul>");
-    } else {
-        body.push_str("<p class=\"note\">No division records loaded yet. Votes appear here once the They Vote For You sync runs.</p>");
-    }
-
-    body.push_str("<div class=\"section-head\"><h2>Latest bill activity</h2><a href=\"/bills/\">All bills →</a></div>");
-    // Newest recorded step first. The sort is stable, so bills with no
-    // timeline keep the bundle's alphabetical order at the bottom.
-    let mut by_activity: Vec<&Bill> = data.bills.iter().collect();
-    by_activity.sort_by(|a, b| {
-        latest_step(b)
-            .map(|s| s.date.as_str())
-            .cmp(&latest_step(a).map(|s| s.date.as_str()))
-    });
-    let recent: Vec<&Bill> = by_activity.into_iter().take(8).collect();
-    if !recent.is_empty() {
-        body.push_str("<ul class=\"bill-list activity\">");
-        for b in recent {
-            body.push_str(&bill_activity_row(b));
-        }
-        body.push_str("</ul>");
-        body.push_str(BILL_DOTS_LEGEND);
-    } else {
-        body.push_str("<p class=\"note\">No bill records loaded yet.</p>");
-    }
+    body.push_str("<div class=\"masthead\"><h1>What Australia's parliaments actually did.</h1><p class=\"lede\">Decisions that change people's lives should stay on the record. pollywiki keeps the record of all nine of Australia's parliaments, federal, state and territory: who sits in them and what they pass, and for federal parliament how every member voted, straight from official sources, with no commentary.</p></div>");
+    body.push_str("<h2 class=\"visually-hidden\">The nine parliaments</h2>");
+    body.push_str(&federation_board(data, true));
+    body.push_str(&latest_activity_everywhere(data));
+    body.push_str(&latest_divisions_section(data, "Latest federal divisions"));
 
     let mut page = Page::new("pollywiki", None, "/", body);
-    page.lastmod = newest_division_date(data).max(newest_bill_date(data));
+    // The front page turns over with any parliament's bills.
+    let newest_state_bill = data
+        .states
+        .iter()
+        .flat_map(|p| p.bills.iter())
+        .filter_map(|b| b.latest().map(|s| s.date.clone()))
+        .max();
+    page.lastmod = newest_division_date(data)
+        .max(newest_bill_date(data))
+        .max(newest_state_bill);
     page.jsonld = Some(jsonld_script(vec![serde_json::json!({
         "@context": "https://schema.org",
         "@type": "WebSite",
@@ -361,6 +333,306 @@ pub fn home(data: &SiteData) -> Page {
         },
     })]));
     page
+}
+
+/// The federal parliament's own front page, laid out as each state's is.
+pub fn federal_page(data: &SiteData) -> Page {
+    let mut body = String::new();
+    body.push_str("<div class=\"masthead\"><h1>Parliament of Australia</h1><p class=\"lede\">The federal parliament: who sits in the House of Representatives and the Senate, how every member voted, and what became law.</p></div>");
+    body.push_str(&table_scroll("Parliament facts"));
+    body.push_str("<table class=\"facts\"><tbody>");
+    if let Some(pm) = data.prime_minister() {
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Prime Minister</th><td><a href=\"/people/{}/\">{}</a></td></tr>",
+            pm.slug,
+            esc(&pm.name)
+        ));
+    }
+    body.push_str("<tr><th class=\"label\" scope=\"row\">Website</th><td><a href=\"https://www.aph.gov.au\">aph.gov.au</a></td></tr></tbody></table></div>");
+    body.push_str("<h2>Composition of the 48th Parliament</h2>");
+    body.push_str(&format!(
+        "<p class=\"note\">{} sitting parliamentarians, grouped by parliamentary group.</p>",
+        data.sitting().count()
+    ));
+    body.push_str(&seat_bar(data, House::Representatives));
+    body.push_str(&seat_bar(data, House::Senate));
+    body.push_str(&latest_divisions_section(data, "Latest divisions"));
+    body.push_str(&latest_bills_section(data, "Latest bill activity"));
+
+    const DESCRIPTION: &str = "The Parliament of Australia: who sits in the House of Representatives and the Senate, how every member voted, and what became law.";
+    let mut page = Page::new(
+        "Parliament of Australia",
+        Some(DESCRIPTION.to_string()),
+        "/federal/",
+        body,
+    );
+    page.lastmod = newest_division_date(data).max(newest_bill_date(data));
+    page.jsonld = Some(jsonld_script(vec![
+        serde_json::json!({
+            "@context": "https://schema.org",
+            "@type": "GovernmentOrganization",
+            "name": "Parliament of Australia",
+            "url": format!("{}/federal/", data.site_url),
+            "sameAs": "https://www.aph.gov.au",
+            "areaServed": "Australia",
+        }),
+        breadcrumb(
+            &data.site_url,
+            &[("pollywiki", "/"), ("Parliament of Australia", "/federal/")],
+        ),
+    ]));
+    page
+}
+
+/// The newest divisions, one row per matter: a contested bill can be put
+/// ten times in a sitting day and would otherwise fill the list on its own.
+fn latest_divisions_section(data: &SiteData, heading: &str) -> String {
+    let mut out = format!(
+        "<div class=\"section-head\"><h2>{heading}</h2><a href=\"/divisions/\">All divisions →</a></div>"
+    );
+    let latest = data.latest_series(8);
+    if !latest.is_empty() {
+        out.push_str("<ul class=\"ledger\">");
+        for series in &latest {
+            out.push_str(&series_row(data, series));
+        }
+        out.push_str("</ul>");
+    } else {
+        out.push_str("<p class=\"note\">No division records loaded yet. Votes appear here once the They Vote For You sync runs.</p>");
+    }
+    out
+}
+
+/// The bills that moved most recently, newest step first. The sort is
+/// stable, so bills with no timeline keep the bundle's order at the bottom.
+fn latest_bills_section(data: &SiteData, heading: &str) -> String {
+    let mut out = format!(
+        "<div class=\"section-head\"><h2>{heading}</h2><a href=\"/bills/\">All bills →</a></div>"
+    );
+    let mut by_activity: Vec<&Bill> = data.bills.iter().collect();
+    by_activity.sort_by(|a, b| {
+        latest_step(b)
+            .map(|s| s.date.as_str())
+            .cmp(&latest_step(a).map(|s| s.date.as_str()))
+    });
+    let recent: Vec<&Bill> = by_activity.into_iter().take(8).collect();
+    if !recent.is_empty() {
+        out.push_str("<ul class=\"bill-list activity\">");
+        for b in recent {
+            out.push_str(&bill_activity_row(b));
+        }
+        out.push_str("</ul>");
+        out.push_str(BILL_DOTS_LEGEND);
+    } else {
+        out.push_str("<p class=\"note\">No bill records loaded yet.</p>");
+    }
+    out
+}
+
+/// The bills that moved most recently in any parliament, newest step first,
+/// each tagged with its parliament: the tag links to that parliament's bills.
+fn latest_activity_everywhere(data: &SiteData) -> String {
+    struct Row {
+        date: Option<String>,
+        tag: String,
+        title: String,
+        dots: String,
+        event: String,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for bill in &data.bills {
+        let step = latest_step(bill);
+        rows.push(Row {
+            date: step.map(|s| s.date.clone()),
+            tag: "<a class=\"jur\" href=\"/bills/\">Federal</a>".to_string(),
+            title: format!("<a href=\"/bills/{}/\">{}</a>", bill.id, esc(&bill.title)),
+            dots: bill_dots(bill),
+            event: match step {
+                Some(step) => format!(
+                    "<span class=\"event\" title=\"{}\">{}</span>",
+                    esc_attr(&format!(
+                        "{} \u{b7} {}",
+                        step.event,
+                        format_date(&step.date)
+                    )),
+                    esc(event_description(&step.event)),
+                ),
+                None => format!("<span class=\"event\">{}</span>", esc(&bill.status)),
+            },
+        });
+    }
+    for parliament in &data.states {
+        let short = crate::layout::PARLIAMENTS
+            .iter()
+            .find(|(_, _, href)| *href == state_path(parliament.state))
+            .map(|(short, _, _)| *short)
+            .unwrap_or(parliament.state.as_str());
+        for bill in &parliament.bills {
+            let (_, event) = state_bill_event(bill);
+            rows.push(Row {
+                date: bill.latest().map(|s| s.date.clone()),
+                tag: format!(
+                    "<a class=\"jur\" href=\"{}\">{short}</a>",
+                    state_bills_path(parliament.state)
+                ),
+                title: format!(
+                    "<a href=\"{}\">{}</a>",
+                    state_bill_path(parliament.state, &bill.slug),
+                    esc(&bill.title)
+                ),
+                dots: state_bill_dots(bill, parliament.houses),
+                event,
+            });
+        }
+    }
+    // Newest first; the sort is stable, so undated bills keep their order last.
+    rows.sort_by(|a, b| b.date.cmp(&a.date));
+    let mut out = String::from("<div class=\"section-head\"><h2>Latest bill activity</h2></div>");
+    if rows.is_empty() {
+        out.push_str("<p class=\"note\">No bill records loaded yet.</p>");
+        return out;
+    }
+    // Parliaments sit at different times of year, so a row from an earlier
+    // year than the newest says which.
+    let newest_year: String = rows[0]
+        .date
+        .as_deref()
+        .map(|d| d.chars().take(4).collect())
+        .unwrap_or_default();
+    out.push_str("<ul class=\"bill-list activity everywhere\">");
+    for row in rows.into_iter().take(10) {
+        let when = match &row.date {
+            Some(date) => format!(
+                "<span class=\"when\"><time datetime=\"{}\">{}</time></span>",
+                esc_attr(date),
+                esc(&if date.starts_with(&newest_year) {
+                    short_date(date)
+                } else {
+                    format_date(date)
+                }),
+            ),
+            None => "<span class=\"when\"></span>".to_string(),
+        };
+        out.push_str(&format!(
+            "<li>{when}<span class=\"what\">{} {}</span><span>{}</span>{}</li>",
+            row.tag, row.title, row.dots, row.event
+        ));
+    }
+    out.push_str("</ul>");
+    out.push_str("<p class=\"note\">Dots show how far each bill has come: four stages in a parliament of two chambers, three in a parliament of one. Each parliament's own list has the rest.</p>");
+    out
+}
+
+/// Australia's parliaments laid out roughly as the country is: the federal
+/// parliament across the top, over all of them, and each state and territory
+/// in its place on the map, with the ocean left empty. Each shows who leads
+/// its government and, by party, the house government is formed in.
+fn federation_board(data: &SiteData, with_federal: bool) -> String {
+    let mut out = format!(
+        "<ul class=\"federation{}\" role=\"list\">",
+        if with_federal { "" } else { " states-only" }
+    );
+    if with_federal {
+        out.push_str("<li class=\"tile fed\"><h3><a href=\"/federal/\"><span class=\"short\">Federal</span> <span class=\"name\">Parliament of Australia</span></a></h3>");
+        if let Some(pm) = data.prime_minister() {
+            out.push_str(&format!(
+                "<p class=\"leader\">Prime Minister {}</p>",
+                esc(&pm.name)
+            ));
+        }
+        out.push_str("<div class=\"houses\">");
+        for (house, label) in [(House::Representatives, "House"), (House::Senate, "Senate")] {
+            let segments = federal_segments(data, house);
+            let total: i64 = segments.iter().map(|s| s.seats).sum();
+            out.push_str(&format!("<p><span class=\"house\">{label}</span>"));
+            out.push_str(&mini_bar(
+                match house {
+                    House::Representatives => "House of Representatives",
+                    House::Senate => "Senate",
+                },
+                &segments,
+                0,
+            ));
+            if let Some(lead) = segments.first() {
+                out.push_str(&format!(
+                    "<span class=\"seats\">{} {} of {total}</span>",
+                    esc(lead.code),
+                    lead.seats
+                ));
+            }
+            out.push_str("</p>");
+        }
+        out.push_str("</div></li>");
+    }
+    for (short, name, href) in crate::layout::PARLIAMENTS.iter().skip(1) {
+        let code = href.trim_matches('/').rsplit('/').next().unwrap_or("");
+        out.push_str(&format!(
+            "<li class=\"tile {code}\"><h3><a href=\"{href}\"><span class=\"short\">{short}</span> <span class=\"name\">{name}</span></a></h3>"
+        ));
+        let record = StateCode::parse(&code.to_uppercase()).and_then(|s| data.state_parliament(s));
+        match record.filter(|p| !p.chambers.is_empty()) {
+            Some(parliament) => {
+                if let Some((_, leader)) = parliament.leader() {
+                    out.push_str(&format!(
+                        "<p class=\"leader\">{} {}</p>",
+                        esc(&parliament.leader_title),
+                        esc(&leader.name)
+                    ));
+                }
+                let lower = parliament
+                    .chambers
+                    .iter()
+                    .find(|c| c.kind == ChamberKind::Lower)
+                    .unwrap_or(&parliament.chambers[0]);
+                out.push_str(&mini_bar(
+                    &lower.name,
+                    &state_segments(data, lower),
+                    lower.vacancies(),
+                ));
+                // The governing party's share of that house, or the largest
+                // party's where no leader is listed.
+                let leading = parliament
+                    .leader()
+                    .and_then(|(_, l)| lower.parties.iter().find(|p| p.party_slug == l.party_slug))
+                    .or_else(|| lower.parties.first());
+                if let Some(party) = leading {
+                    out.push_str(&format!(
+                        "<p class=\"seats\">{} {} of {}</p>",
+                        esc(party.code.as_deref().unwrap_or(&party.party)),
+                        party.seats,
+                        lower.seats
+                    ));
+                }
+            }
+            None => {
+                out.push_str(&format!(
+                    "<p class=\"leader\">{}</p><span class=\"mini-bar empty\" aria-hidden=\"true\"></span>",
+                    if record.is_some_and(|p| p.unavailable.is_some()) {
+                        "Member list not readable yet"
+                    } else {
+                        "Member list not read yet"
+                    }
+                ));
+            }
+        }
+        if let Some(parliament) = record.filter(|p| !p.bills.is_empty()) {
+            // Still before it: not yet through every chamber it has. A bill
+            // that has passed and waits only on assent is no longer.
+            let through = if parliament.houses == 1 { 2 } else { 3 };
+            let open = parliament
+                .bills
+                .iter()
+                .filter(|b| b.stage < through && !b.stopped)
+                .count();
+            out.push_str(&format!(
+                "<p class=\"bills\">{} before it</p>",
+                counted(open, "bill")
+            ));
+        }
+        out.push_str("</li>");
+    }
+    out.push_str("</ul><p class=\"note board-key\">Each bar is the house government is formed in, by party, marked at a majority.</p>");
+    out
 }
 
 pub fn people_index(data: &SiteData) -> Page {
@@ -2343,7 +2615,7 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
         for (parliament, chamber, seats) in &state_seats {
             body.push_str(&format!(
                 "<tr><td><a href=\"{}#{}\">{} {}</a></td><td class=\"num\">{seats}</td><td class=\"num\">{}</td></tr>",
-                state_path(parliament.state),
+                state_members_path(parliament.state),
                 chamber.slug,
                 parliament.state,
                 esc(&chamber.name),
@@ -2420,7 +2692,16 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
 /// A state chamber's seats by party. The key links a party wherever the site
 /// has a page for it, which is wherever it sits in federal parliament.
 fn state_chamber_bar(data: &SiteData, chamber: &StateChamber) -> String {
-    let segments: Vec<BarSegment> = chamber
+    composition_bar(
+        &chamber.name,
+        &state_segments(data, chamber),
+        chamber.vacancies(),
+    )
+}
+
+/// A state chamber's parties by seats held, as the derive step ordered them.
+fn state_segments<'a>(data: &SiteData, chamber: &'a StateChamber) -> Vec<BarSegment<'a>> {
+    chamber
         .parties
         .iter()
         .map(|p| BarSegment {
@@ -2432,8 +2713,7 @@ fn state_chamber_bar(data: &SiteData, chamber: &StateChamber) -> String {
                 .party_by_slug(&p.party_slug)
                 .map(|_| format!("/parties/{}/", p.party_slug)),
         })
-        .collect();
-    composition_bar(&chamber.name, &segments, chamber.vacancies())
+        .collect()
 }
 
 /// A member's party as its chip, named and coloured as the chamber's bar
@@ -2500,6 +2780,8 @@ fn counted(n: usize, noun: &str) -> String {
 pub fn states_index(data: &SiteData) -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1>States and territories</h1><p class=\"lede\">The eight state and territory parliaments as they stand: who sits in each chamber, for which party, and who leads the government, from the member lists each parliament publishes.</p></div>");
+    body.push_str("<h2 class=\"visually-hidden\">The eight parliaments</h2>");
+    body.push_str(&federation_board(data, false));
     for code in pollywiki_schema::STATES {
         let Some(state) = StateCode::parse(code) else {
             continue;
@@ -2525,7 +2807,8 @@ pub fn states_index(data: &SiteData) -> Page {
                 None => String::new(),
             };
             body.push_str(&format!(
-                "<section aria-labelledby=\"{id}\"><h2 id=\"{id}\">{}</h2><p class=\"note\">{}{website}</p></section>",
+                "<section aria-labelledby=\"{id}\"><h2 id=\"{id}\"><a href=\"{}\">{}</a></h2><p class=\"note\">{}{website}</p></section>",
+                state_path(state),
                 esc(name),
                 esc(reason)
             ));
@@ -2533,9 +2816,10 @@ pub fn states_index(data: &SiteData) -> Page {
         };
         let members: usize = parliament.chambers.iter().map(|c| c.members.len()).sum();
         body.push_str(&format!(
-            "<section aria-labelledby=\"{id}\"><div class=\"section-head\"><h2 id=\"{id}\">{}</h2><a href=\"{}\">All {} \u{2192}</a></div>",
-            esc(name),
+            "<section aria-labelledby=\"{id}\"><div class=\"section-head\"><h2 id=\"{id}\"><a href=\"{}\">{}</a></h2><a href=\"{}\">All {} \u{2192}</a></div>",
             state_path(state),
+            esc(name),
+            state_members_path(state),
             counted(members, "member"),
         ));
         if let Some((_, leader)) = parliament.leader() {
@@ -2576,14 +2860,11 @@ pub fn states_index(data: &SiteData) -> Page {
     page
 }
 
-pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
-    let state = parliament.state;
-    let path = state_path(state);
+/// "127 sitting members: 87 in the Legislative Assembly and 40 in the
+/// Legislative Council."
+fn state_members_lede(parliament: &StateParliament) -> String {
     let members: usize = parliament.chambers.iter().map(|c| c.members.len()).sum();
-
-    let mut body = String::new();
-    body.push_str(&record_article("Parliament", None));
-    let lede = match parliament.chambers.as_slice() {
+    match parliament.chambers.as_slice() {
         [only] => format!(
             "{} in a single chamber, the {}.",
             counted(members, "sitting member"),
@@ -2598,6 +2879,49 @@ pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
                 .collect::<Vec<_>>()
                 .join(" and ")
         ),
+    }
+}
+
+/// The parliament's website, named by its host.
+fn website_link(url: &str) -> String {
+    let label = WEBSITE_PREFIX.replace(url, "");
+    format!(
+        "<a href=\"{}\">{}</a>",
+        esc_attr(url),
+        esc(label.strip_suffix('/').unwrap_or(&label))
+    )
+}
+
+/// The member lists a parliament's figures come from, credited.
+fn state_lists_attribution(parliament: &StateParliament) -> String {
+    format!(
+        "<p class=\"attribution\">Source: {}, member lists ({}). Parliamentary material reproduced fairly and accurately with acknowledgement. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
+        esc(&parliament.name),
+        parliament
+            .chambers
+            .iter()
+            .map(|c| format!("<a href=\"{}\">{}</a>", esc_attr(&c.source), esc(&c.name)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// A state or territory parliament's front page: who leads it, how its
+/// chambers divide, and where to go next. A parliament whose lists cannot be
+/// read still has one, saying why and where its members are listed.
+pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
+    let state = parliament.state;
+    let path = state_path(state);
+    let read = !parliament.chambers.is_empty();
+
+    let mut body = String::new();
+    body.push_str(&record_article("Parliament", None));
+    let lede = if read {
+        state_members_lede(parliament)
+    } else {
+        parliament.unavailable.clone().unwrap_or_else(|| {
+            "No member list loaded yet. Its members appear here once its sync runs.".to_string()
+        })
     };
     body.push_str(&format!(
         "<div class=\"masthead\"><h1 data-pagefind-meta=\"title\">{}</h1><p class=\"lede\">{}</p></div>",
@@ -2616,11 +2940,9 @@ pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
             esc(&state_seat(chamber, leader))
         ));
     }
-    let site_label = WEBSITE_PREFIX.replace(&parliament.url, "");
     body.push_str(&format!(
-        "<tr><th class=\"label\" scope=\"row\">Website</th><td><a href=\"{}\">{}</a></td></tr>",
-        esc_attr(&parliament.url),
-        esc(site_label.strip_suffix('/').unwrap_or(&site_label))
+        "<tr><th class=\"label\" scope=\"row\">Website</th><td>{}</td></tr>",
+        website_link(&parliament.url)
     ));
     if let Some(listed) = &parliament.listed_at {
         body.push_str(&format!(
@@ -2636,11 +2958,102 @@ pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
         ));
     }
 
-    body.push_str("<h2 id=\"composition\">Composition</h2>");
-    for chamber in &parliament.chambers {
-        body.push_str(&state_chamber_bar(data, chamber));
+    if read {
+        body.push_str("<h2 id=\"composition\">Composition</h2>");
+        for chamber in &parliament.chambers {
+            body.push_str(&state_chamber_bar(data, chamber));
+        }
+        let members: usize = parliament.chambers.iter().map(|c| c.members.len()).sum();
+        body.push_str(&format!(
+            "<div class=\"section-head\"><h2 id=\"members\">Members</h2><a href=\"{}\">All {} \u{2192}</a></div>",
+            state_members_path(state),
+            counted(members, "member"),
+        ));
+        body.push_str("<ul class=\"chamber-links\">");
+        for chamber in &parliament.chambers {
+            body.push_str(&format!(
+                "<li><a href=\"{}#{}\">{}</a> <span class=\"note\">{} of {}</span></li>",
+                state_members_path(state),
+                chamber.slug,
+                esc(&chamber.name),
+                counted(chamber.members.len(), "member"),
+                counted(chamber.seats as usize, "seat"),
+            ));
+        }
+        body.push_str("</ul>");
+    } else {
+        body.push_str(&format!(
+            "<p class=\"note\">Its members are listed on its own website, {}.</p>",
+            website_link(&parliament.url)
+        ));
     }
+    if !parliament.bills.is_empty() {
+        body.push_str(&format!(
+            "<div class=\"section-head\"><h2 id=\"bills\">Latest bill activity</h2><a href=\"{}\">All {} \u{2192}</a></div>",
+            state_bills_path(state),
+            counted(parliament.bills.len(), "bill"),
+        ));
+        body.push_str(&state_bill_activity(parliament, 6));
+    }
+    if read {
+        body.push_str(&state_lists_attribution(parliament));
+    }
+    body.push_str(&state_bills_attribution(parliament));
+    body.push_str("</article>");
 
+    let description = if read {
+        format!(
+            "{}: who leads the government and how its chambers divide, from the parliament's own member lists.",
+            parliament.name
+        )
+    } else {
+        format!(
+            "{}: why its member list is not shown here yet.",
+            parliament.name
+        )
+    };
+    // No lastmod on any state page: the lists are read every night, and the
+    // date of a reading would claim the page changed when only the reading did.
+    let mut page = Page::new(
+        parliament.name.clone(),
+        Some(description),
+        path.clone(),
+        body,
+    );
+    page.jsonld = Some(jsonld_script(vec![
+        serde_json::json!({
+            "@context": "https://schema.org",
+            "@type": "GovernmentOrganization",
+            "name": parliament.name,
+            "url": format!("{}{path}", data.site_url),
+            "sameAs": parliament.url,
+            "areaServed": state_name(state.as_str()).unwrap_or(state.as_str()),
+        }),
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("States and territories", "/states/"),
+                (&parliament.name, &path),
+            ],
+        ),
+    ]));
+    page
+}
+
+/// Everyone sitting in a parliament, chamber by chamber.
+pub fn state_members_page(data: &SiteData, parliament: &StateParliament) -> Page {
+    let state = parliament.state;
+    let path = state_members_path(state);
+    let title = format!("Members of the {}", parliament.name);
+
+    let mut body = String::new();
+    body.push_str(&format!(
+        "<div class=\"masthead\"><h1 class=\"{}\">{}</h1><p class=\"lede\">{}</p></div>",
+        title_tier(&title),
+        esc(&title),
+        esc(&state_members_lede(parliament))
+    ));
     for chamber in &parliament.chambers {
         body.push_str(&format!(
             "<h2 id=\"{}\">{}</h2>",
@@ -2700,46 +3113,23 @@ pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
         }
         body.push_str("</tbody></table></div>");
     }
+    body.push_str(&state_lists_attribution(parliament));
 
-    body.push_str(&format!(
-        "<p class=\"attribution\">Source: {}, member lists ({}). Parliamentary material reproduced fairly and accurately with acknowledgement. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
-        esc(&parliament.name),
-        parliament
-            .chambers
-            .iter()
-            .map(|c| format!("<a href=\"{}\">{}</a>", esc_attr(&c.source), esc(&c.name)))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
-    body.push_str("</article>");
-
+    let members: usize = parliament.chambers.iter().map(|c| c.members.len()).sum();
     let description = format!(
-        "{}: the {} sitting members, their parties and the government's leader, from the parliament's own member lists.",
-        parliament.name, members
+        "The {members} sitting members of the {}, chamber by chamber, with their seats, parties and offices.",
+        parliament.name
     );
-    // No lastmod on any state page: the lists are read every night, and the
-    // date of a reading would claim the page changed when only the reading did.
-    let mut page = Page::new(
-        parliament.name.clone(),
-        Some(description),
-        path.clone(),
-        body,
-    );
+    let mut page = Page::new(title.clone(), Some(description.clone()), path.clone(), body);
     page.jsonld = Some(jsonld_script(vec![
-        serde_json::json!({
-            "@context": "https://schema.org",
-            "@type": "GovernmentOrganization",
-            "name": parliament.name,
-            "url": format!("{}{path}", data.site_url),
-            "sameAs": parliament.url,
-            "areaServed": state_name(state.as_str()).unwrap_or(state.as_str()),
-        }),
+        collection_page(&data.site_url, &title, &description, &path, members),
         breadcrumb(
             &data.site_url,
             &[
                 ("pollywiki", "/"),
                 ("States and territories", "/states/"),
-                (&parliament.name, &path),
+                (&parliament.name, &state_path(state)),
+                ("Members", &path),
             ],
         ),
     ]));
@@ -2865,6 +3255,384 @@ pub fn state_member_page(
     page
 }
 
+/// A state bill's progress as dots, filled as far as it has come: four for a
+/// parliament of two chambers (introduced, passed the first, passed the
+/// second, assent), three for a parliament of one (introduced, passed,
+/// assent).
+fn state_bill_dots(bill: &StateBill, houses: u8) -> String {
+    let (filled, total, reached): (u8, u8, &str) = if houses == 1 {
+        match bill.stage {
+            0 => (0, 3, "not yet introduced"),
+            1 => (1, 3, "introduced"),
+            2 | 3 => (2, 3, "passed"),
+            _ => (3, 3, "assented"),
+        }
+    } else {
+        match bill.stage {
+            0 => (0, 4, "not yet introduced"),
+            1 => (1, 4, "introduced"),
+            2 => (2, 4, "passed the chamber it began in"),
+            3 => (3, 4, "passed both chambers"),
+            _ => (4, 4, "assented"),
+        }
+    };
+    let mut out = format!(
+        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {filled} of {total}: {reached}\" title=\"Stage {filled} of {total}: {reached}\">"
+    );
+    for step in 1..=total {
+        out.push_str(if step <= filled {
+            "<i class=\"on\"></i>"
+        } else {
+            "<i class=\"off\"></i>"
+        });
+    }
+    out.push_str("</span>");
+    out
+}
+
+/// The key to a state's progress dots: the federal key for a parliament of
+/// two chambers, three stages for a parliament of one.
+fn state_dots_legend(houses: u8) -> &'static str {
+    if houses == 1 {
+        "<p class=\"dots-legend\"><span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"off\"></i><i class=\"off\"></i></span>Introduced</span> <span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"on\"></i><i class=\"off\"></i></span>Passed</span> <span><span class=\"bill-dots\" aria-hidden=\"true\"><i class=\"on\"></i><i class=\"on\"></i><i class=\"on\"></i></span>Assent</span></p>"
+    } else {
+        BILL_DOTS_LEGEND
+    }
+}
+
+/// The bills index's status filter key: still before the parliament, an Act,
+/// or gone no further.
+fn state_bill_status_key(bill: &StateBill) -> &'static str {
+    if bill.stage >= 4 {
+        "act"
+    } else if bill.stopped {
+        "other"
+    } else {
+        "open"
+    }
+}
+
+/// The chamber a bill began in as its members speak of it: "Assembly",
+/// "Council".
+fn origin_short(bill: &StateBill) -> &str {
+    bill.origin
+        .as_deref()
+        .and_then(|o| o.rsplit(' ').next())
+        .unwrap_or("")
+}
+
+/// A state bill's latest dated step, else its status, for the activity rows.
+fn state_bill_event(bill: &StateBill) -> (String, String) {
+    match bill.latest() {
+        Some(step) => (
+            format!(
+                "<span class=\"when\"><time datetime=\"{}\">{}</time></span>",
+                esc_attr(&step.date),
+                esc(&short_date(&step.date)),
+            ),
+            format!(
+                "<span class=\"event\" title=\"{}\">{}</span>",
+                esc_attr(&format!(
+                    "{} \u{b7} {}",
+                    step.event,
+                    format_date(&step.date)
+                )),
+                esc(&step.event),
+            ),
+        ),
+        None => (
+            "<span class=\"when\"></span>".to_string(),
+            format!("<span class=\"event\">{}</span>", esc(&bill.status)),
+        ),
+    }
+}
+
+/// Bills index row, in the federal index's columns: latest step, title,
+/// chamber of origin, progress and status.
+fn state_bill_row(state: StateCode, bill: &StateBill, houses: u8) -> String {
+    let when = match bill.latest() {
+        Some(step) => format!(
+            "<span class=\"when\" title=\"{}\"><time datetime=\"{}\">{}</time></span>",
+            esc_attr(&format!(
+                "{} \u{b7} {}",
+                step.event,
+                format_date(&step.date)
+            )),
+            esc_attr(&step.date),
+            esc(&short_date(&step.date)),
+        ),
+        None => "<span class=\"when\"></span>".to_string(),
+    };
+    format!(
+        "<li data-status=\"{key}\" data-text=\"{text}\">{when}<span class=\"what\"><a href=\"{href}\">{title}</a></span><span class=\"chamber\">{origin}</span><span>{dots}</span><span class=\"{status_class}\">{status}</span></li>",
+        key = state_bill_status_key(bill),
+        text = esc_attr(&bill.title.to_lowercase()),
+        href = state_bill_path(state, &bill.slug),
+        title = esc(&bill.title),
+        origin = esc(origin_short(bill)),
+        dots = state_bill_dots(bill, houses),
+        status_class = if state_bill_status_key(bill) == "open" {
+            "status open"
+        } else {
+            "status"
+        },
+        status = esc(&bill.status),
+    )
+}
+
+/// The bills that moved most recently in one parliament, newest step first.
+fn state_bill_activity(parliament: &StateParliament, limit: usize) -> String {
+    let mut out = String::from("<ul class=\"bill-list activity\">");
+    for bill in parliament.bills.iter().take(limit) {
+        let (when, event) = state_bill_event(bill);
+        out.push_str(&format!(
+            "<li>{when}<span class=\"what\"><a href=\"{}\">{}</a></span><span>{}</span>{event}</li>",
+            state_bill_path(parliament.state, &bill.slug),
+            esc(&bill.title),
+            state_bill_dots(bill, parliament.houses),
+        ));
+    }
+    out.push_str("</ul>");
+    out.push_str(state_dots_legend(parliament.houses));
+    out
+}
+
+/// Where a parliament's bills were read from, credited.
+fn state_bills_attribution(parliament: &StateParliament) -> String {
+    match &parliament.bills_source {
+        Some(source) => {
+            let read = format_date(&source.listed_at.chars().take(10).collect::<String>());
+            format!(
+                "<p class=\"attribution\">Source: {}, <a href=\"{}\">bills list</a>, read {}. Parliamentary material reproduced fairly and accurately with acknowledgement.{} Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
+                esc(&source.name),
+                esc_attr(&source.url),
+                esc(&read),
+                state_bills_credit(parliament.state, &esc(&read)),
+            )
+        }
+        None => String::new(),
+    }
+}
+
+/// Every bill in a parliament's current term, laid out as the federal index
+/// is: by the month each last moved, filterable by status and title.
+pub fn state_bills_index(data: &SiteData, parliament: &StateParliament) -> Page {
+    let state = parliament.state;
+    let path = state_bills_path(state);
+    let title = format!("Bills in the {}", parliament.name);
+    let publisher = parliament
+        .bills_source
+        .as_ref()
+        .map(|s| s.name.as_str())
+        .unwrap_or(&parliament.name);
+
+    let mut body = String::new();
+    body.push_str(&format!(
+        "<div class=\"masthead\"><h1 class=\"{}\">{}</h1><p class=\"lede\">{} of the current parliament, from the record the {} keeps, most recent step first.</p></div>",
+        title_tier(&title),
+        esc(&title),
+        esc(&counted(parliament.bills.len(), "bill")),
+        esc(publisher),
+    ));
+    body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title\" enterkeyhint=\"done\" aria-label=\"Filter bills\"></div>");
+    body.push_str(&filter_feedback("No bills match these filters."));
+    let mut months: Vec<(&str, Vec<&StateBill>)> = Vec::new();
+    for bill in &parliament.bills {
+        let key = bill
+            .latest()
+            .map(|s| s.date.get(..7).unwrap_or(s.date.as_str()))
+            .unwrap_or("undated");
+        if months.last().map(|(m, _)| *m) == Some(key) {
+            months.last_mut().expect("just matched").1.push(bill);
+        } else {
+            months.push((key, vec![bill]));
+        }
+    }
+    let counts: Vec<(&str, usize)> = months.iter().map(|(m, rows)| (*m, rows.len())).collect();
+    body.push_str(&month_jump(&counts, "bill"));
+    body.push_str(state_dots_legend(parliament.houses));
+    body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
+    body.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Latest</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
+    for (month, rows) in &months {
+        body.push_str(&ledger_month(month, rows.len(), "bill"));
+        for bill in rows {
+            body.push_str(&state_bill_row(state, bill, parliament.houses));
+        }
+    }
+    body.push_str("</ul>");
+    body.push_str(&state_bills_attribution(parliament));
+
+    let description = format!(
+        "Bills before the {} in its current term and how far each has come, from the official record.",
+        parliament.name
+    );
+    let mut page = Page::new(title.clone(), Some(description.clone()), path.clone(), body);
+    page.page_script = Some(BILL_FILTER_JS.as_str());
+    page.jsonld = Some(jsonld_script(vec![
+        collection_page(
+            &data.site_url,
+            &title,
+            &description,
+            &path,
+            parliament.bills.len(),
+        ),
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("States and territories", "/states/"),
+                (&parliament.name, &state_path(state)),
+                ("Bills", &path),
+            ],
+        ),
+    ]));
+    page
+}
+
+/// One state bill: where it stands, who brought it in, the steps it has
+/// taken, and its documents on the official site.
+pub fn state_bill_page(data: &SiteData, parliament: &StateParliament, bill: &StateBill) -> Page {
+    let state = parliament.state;
+    let path = state_bill_path(state, &bill.slug);
+
+    let mut body = String::new();
+    body.push_str(&record_article("Bill", None));
+    body.push_str("<div class=\"meta-row\"><span class=\"ids\">");
+    if let Some(origin) = &bill.origin {
+        body.push_str(&format!(
+            "<span class=\"chip {}\">{} {}</span>",
+            match bill.origin_kind {
+                Some(ChamberKind::Upper) => "senate",
+                _ => "house",
+            },
+            state.as_str(),
+            esc(origin.rsplit(' ').next().unwrap_or(origin))
+        ));
+    }
+    if let Some(number) = &bill.number {
+        body.push_str(&format!(" {}", esc(number)));
+    }
+    body.push_str(
+        "</span> <span class=\"status\"><span class=\"label\">Status</span> <span class=\"value\">",
+    );
+    body.push_str(&esc(&bill.status));
+    body.push_str("</span>");
+    body.push_str(&state_bill_dots(bill, parliament.houses));
+    body.push_str("</span></div>");
+    body.push_str(&format!(
+        "<h1 class=\"{}\" data-pagefind-meta=\"title\">{}</h1>",
+        title_tier(&bill.title),
+        esc(&bill.title)
+    ));
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(kind) = &bill.kind {
+        meta.push(format!("<span>{}</span>", esc(kind)));
+    }
+    if let Some(sponsor) = &bill.sponsor {
+        let name = match &bill.sponsor_slug {
+            Some(slug) => format!(
+                "<a href=\"{}\">{}</a>",
+                state_member_path(state, slug),
+                esc(sponsor)
+            ),
+            None => esc(sponsor),
+        };
+        meta.push(format!(
+            "<span><strong>Introduced by</strong> {name}</span>"
+        ));
+    }
+    meta.push(format!(
+        "<span><a href=\"{}\">{}</a></span>",
+        state_path(state),
+        esc(&parliament.name)
+    ));
+    body.push_str(&format!(
+        "<div class=\"meta-line\">{}</div>",
+        meta.join(" ")
+    ));
+
+    if let Some(act) = &bill.act {
+        body.push_str(&format!(
+            "<p class=\"procedure-note\"><strong>Became law</strong> as the {}.</p>",
+            esc(act)
+        ));
+    } else if bill.stopped {
+        body.push_str(&format!(
+            "<p class=\"procedure-note\"><strong>Went no further:</strong> {}.</p>",
+            esc(&bill.status.to_lowercase())
+        ));
+    }
+
+    body.push_str("<h2>Progress</h2>");
+    if bill.timeline.is_empty() {
+        body.push_str("<p class=\"note\">The record gives no dated steps for this bill yet.</p>");
+    } else {
+        body.push_str(&table_scroll("Progress"));
+        body.push_str("<table class=\"progress\"><tbody>");
+        for step in &bill.timeline {
+            body.push_str(&format!(
+                "<tr><td class=\"date\">{}</td><td>{}</td></tr>",
+                esc(&format_date(&step.date)),
+                esc(&step.event)
+            ));
+        }
+        body.push_str("</tbody></table></div>");
+    }
+
+    body.push_str("<h2>Documents</h2><ul class=\"doc-links\">");
+    if let Some(text) = &bill.text {
+        body.push_str(&format!(
+            "<li><a href=\"{}\">Text of the bill</a></li>",
+            esc_attr(text)
+        ));
+    }
+    if let Some(explanatory) = &bill.explanatory {
+        body.push_str(&format!(
+            "<li><a href=\"{}\">Explanatory memorandum</a></li>",
+            esc_attr(explanatory)
+        ));
+    }
+    body.push_str(&format!(
+        "<li><a href=\"{}\">The bill's record on the official site</a></li></ul>",
+        esc_attr(&bill.source)
+    ));
+    body.push_str(&state_bills_attribution(parliament));
+    body.push_str("</article>");
+
+    let description = format!(
+        "{}. Progress of this bill through the {}.",
+        bill.status, parliament.name
+    );
+    let mut legislation = serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "Legislation",
+        "name": bill.title,
+        "legislationStatus": bill.status,
+        "legislationJurisdiction": state_name(state.as_str()).unwrap_or(state.as_str()),
+        "url": bill.source,
+    });
+    if let Some(number) = &bill.number {
+        legislation["legislationIdentifier"] = serde_json::json!(number);
+    }
+    let mut page = Page::new(bill.title.clone(), Some(description), path.clone(), body);
+    page.og_type = "article";
+    page.lastmod = bill.latest().map(|step| step.date.clone());
+    page.jsonld = Some(jsonld_script(vec![
+        legislation,
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("States and territories", "/states/"),
+                (&parliament.name, &state_path(state)),
+                ("Bills", &state_bills_path(state)),
+                (&bill.title, &path),
+            ],
+        ),
+    ]));
+    page
+}
+
 pub fn search_page() -> Page {
     let mut body = String::new();
     body.push_str("<div class=\"masthead\"><h1 id=\"search-heading\">Search the record</h1><p class=\"lede\">People, divisions, bills, electorates and parties.</p></div>");
@@ -2872,7 +3640,7 @@ pub fn search_page() -> Page {
     let mut page = Page::new(
         "Search",
         Some(
-            "Search people, divisions, bills and electorates across the federal record."
+            "Search people, divisions, bills and electorates across Australia's parliaments."
                 .to_string(),
         ),
         "/search/",
@@ -2895,7 +3663,7 @@ pub fn not_found() -> Page {
 pub fn about_index(data: &SiteData) -> Page {
     let body = concat!(
         "<div class=\"masthead\"><h1>About pollywiki</h1>",
-        "<p class=\"lede\">pollywiki is a public register of Australia's federal parliament: the people who sit in it, the divisions they voted in, the bills before it, and the results of the elections that put them there. It also lists who sits in the state and territory parliaments whose member lists it can read.</p></div>",
+        "<p class=\"lede\">pollywiki is a public register of Australia's nine parliaments, federal, state and territory: who sits in each and the bills before them. For federal parliament it also keeps every division vote and the results of the elections that put its members there.</p></div>",
         "<p><strong>This service does not evaluate politicians or laws.</strong> There are no scores, rankings, endorsements or opinions here. Every page is generated automatically from official public records, reproduced faithfully, and every figure links back to its source. Where a number needs interpretation (like attendance), the limits of the official record are stated next to it.</p>",
         "<h2>What powers it</h2>",
         "<p>Data comes from the Parliament of Australia, the eight state and territory parliaments, the Australian Electoral Commission, the Federal Register of Legislation, the Independent Parliamentary Expenses Authority, the Australian Bureau of Statistics, the OpenAustralia Foundation's <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a>, and Wikidata. Full details, licences and sync times are on the <a href=\"/about/data-sources/\">data sources</a> page. The site rebuilds automatically after each sync.</p>",
@@ -2930,6 +3698,36 @@ fn state_licence(parliament: &StateParliament) -> &'static str {
         StateCode::NSW | StateCode::WA | StateCode::NT => {
             "Downloaded by hand; the facts of membership reproduced with acknowledgement"
         }
+    }
+}
+
+/// The terms a parliament's bills are read under, where its bills are read.
+fn state_bills_licence(state: StateCode) -> &'static str {
+    match state {
+        StateCode::VIC => {
+            "Victorian Legislation: all rights reserved; the facts of each bill reproduced with acknowledgement"
+        }
+        StateCode::QLD => "Queensland Legislation: CC BY 4.0",
+        StateCode::ACT => "ACT Legislation Register: CC BY 4.0, \u{a9} Australian Capital Territory",
+        StateCode::NT => {
+            "NT Legislation: published under its terms of use, never as the official version"
+        }
+        _ => "No licence stated; the facts of each bill reproduced with acknowledgement",
+    }
+}
+
+/// What a bill's page owes its source beyond the usual acknowledgement, in
+/// the words the source's licence asks for. `read` is the day of download.
+fn state_bills_credit(state: StateCode, read: &str) -> String {
+    match state {
+        StateCode::QLD => format!(
+            " Sourced from the Queensland Legislation website at {read}. For the latest information on Queensland Government legislation please go to <a href=\"https://www.legislation.qld.gov.au\">https://www.legislation.qld.gov.au</a>."
+        ),
+        StateCode::ACT => " Register material \u{a9} Australian Capital Territory, CC BY 4.0.".to_string(),
+        StateCode::NT => {
+            " This is not an official version of the legislation; the official version is the NT Legislation database's.".to_string()
+        }
+        _ => String::new(),
     }
 }
 
@@ -3032,11 +3830,11 @@ pub fn data_sources(data: &SiteData) -> Page {
     body.push_str("</tbody></table></div>");
 
     if !data.states.is_empty() {
-        body.push_str("<h2 id=\"states\">State and territory parliaments</h2><p>Each parliament's members, parties, seats and offices are read from the member list that parliament publishes. Only those facts are reproduced: no photos, biographies or other material from the parliaments' sites. Members' photos, where shown, come from Wikimedia Commons under free licences, found through Wikidata as federal members' are.</p>");
+        body.push_str("<h2 id=\"states\">State and territory parliaments</h2><p>Each parliament's members, parties, seats and offices are read from the member list that parliament publishes, and its bills from the official record of them that it or its legislation register keeps. Only those facts are reproduced: no photos, biographies or other material from the parliaments' sites. Members' photos, where shown, come from Wikimedia Commons under free licences, found through Wikidata as federal members' are.</p>");
         body.push_str(&table_scroll("State and territory sources"));
         body.push_str("<table><thead><tr><th scope=\"col\">Parliament</th><th scope=\"col\">Read from</th><th scope=\"col\">Licence</th><th scope=\"col\">Last synced</th></tr></thead><tbody>");
         for parliament in &data.states {
-            let read_from = if parliament.chambers.is_empty() {
+            let mut read_from = if parliament.chambers.is_empty() {
                 esc(parliament.unavailable.as_deref().unwrap_or("Not read yet."))
             } else {
                 let lists = parliament
@@ -3050,15 +3848,35 @@ pub fn data_sources(data: &SiteData) -> Page {
                     None => lists,
                 }
             };
+            if let Some(source) = &parliament.bills_source {
+                read_from.push_str(&format!(
+                    "<br>Bills: <a href=\"{}\">{}</a>",
+                    esc_attr(&source.url),
+                    esc(&source.name)
+                ));
+            }
+            let mut licence = state_licence(parliament).to_string();
+            let mut synced = last_synced(&format!(
+                "{}-parliament",
+                parliament.state.as_str().to_lowercase()
+            ));
+            if parliament.bills_source.is_some() {
+                licence.push_str(&format!(
+                    "<br>Bills: {}",
+                    state_bills_licence(parliament.state)
+                ));
+                synced.push_str(&format!(
+                    "<br>{}",
+                    last_synced(&format!(
+                        "{}-bills",
+                        parliament.state.as_str().to_lowercase()
+                    ))
+                ));
+            }
             body.push_str(&format!(
-                "<tr><td><a href=\"{}\">{}</a></td><td>{read_from}</td><td>{}</td><td class=\"num\">{}</td></tr>",
+                "<tr><td><a href=\"{}\">{}</a></td><td>{read_from}</td><td>{licence}</td><td class=\"num\">{synced}</td></tr>",
                 esc_attr(&parliament.url),
                 esc(&parliament.name),
-                state_licence(parliament),
-                last_synced(&format!(
-                    "{}-parliament",
-                    parliament.state.as_str().to_lowercase()
-                )),
             ));
         }
         body.push_str("</tbody></table></div>");
@@ -3117,7 +3935,8 @@ pub fn methodology(data: &SiteData) -> Page {
         "<p>Each state and territory parliament's members are read from the member list that parliament publishes, and nothing else: who sits in which chamber, for which party, for which seat, and the offices the list gives them. A member who leaves drops off at the next reading, and a seat the list leaves empty is shown as vacant.</p>",
         "<p>Seats are counted by the party each parliament lists a member under, with a state branch counted as its party. A chamber's majority is more than half of all its seats, vacancies included, so a party can hold most of the members sitting today and still lack a majority. The Premier or Chief Minister is the member the parliament's list gives that office.</p>",
         "<p>Where a parliament's website turns away automated readers, its member list is downloaded by hand from that site about once a month, and its page says so and dates the list by the day it was downloaded. Until a download is filed, its place on the site says why the list cannot be read and links to the parliament's own list.</p>",
-        "<p>For the states and territories there are no voting records, bills or election results yet: only federal parliament has a source that records every vote in a form this site can read.</p>",
+        "<p>Each state and territory parliament's bills are read from the official list of them that the parliament or its legislation register publishes: title, the chamber it began in, who introduced it, where it stands and the dated steps it took. How far a bill has come is shown as for federal bills, in four stages for a parliament of two chambers and three for a parliament of one, worked out from those steps and the list's own status. State bills carry no machine-written summaries.</p>",
+        "<p>For the states and territories there are no voting records or election results yet: only federal parliament has a source that records every vote in a form this site can read.</p>",
         "<h2>Maps</h2>",
         "<p>Electorate maps draw the ABS's approximation of each division, built from mesh blocks, simplified to what the map can show. The AEC's own maps show the legal boundary.</p>",
         "<h2>AI summaries and notes</h2>",

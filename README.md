@@ -3,10 +3,10 @@
 [![ci](https://github.com/logan-han/pollywiki/actions/workflows/ci.yml/badge.svg)](https://github.com/logan-han/pollywiki/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/logan-han/pollywiki/branch/main/graph/badge.svg)](https://codecov.io/gh/logan-han/pollywiki)
 
-The Australian federal record, unedited. A public register of federal
-parliamentarians, division votes, bills and election results, plus who sits
-in the state and territory parliaments, generated automatically from official
-sources with no editorial layer.
+The record of Australia's nine parliaments, unedited. A public register of
+who sits in the federal, state and territory parliaments and the bills before
+them, with federal division votes and election results, generated
+automatically from official sources with no editorial layer.
 
 **This service does not evaluate politicians or laws.** No scores, no rankings,
 no opinions. Official records plus arithmetic, always linked to the source.
@@ -72,6 +72,13 @@ the parliament stays marked unavailable. `--sources state-photos` then finds
 each sitting member on Wikidata, by the chamber's position and their name
 and seat, and mirrors any freely licensed Commons photo; the parliaments'
 own portraits are not licensed for reuse.
+
+Bills sync with `--sources state-bills`, or one parliament at a time, e.g.
+`--sources vic-bills`. Each reads the official record its parliament or
+legislation register keeps, for the term that began with the election dated
+`billsSince` in `data/reference/state-parliaments.json`; move that date on
+after each election. Pages that do not change once a bill is settled are
+cached in the store, and every reader keeps to its host's crawl delay.
 
 AI text can also be written outside the nightly Gemini run. `summarise
 --export <dir>` writes every prompt input, pending or not, with the

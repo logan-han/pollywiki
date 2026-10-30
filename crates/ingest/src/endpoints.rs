@@ -44,6 +44,19 @@ pub struct Endpoints {
     pub sa_contacts: String,
     /// The Parliament of South Australia's members app API.
     pub sa_members: String,
+    /// Victoria's legislation website, which keeps the Parliament's bills.
+    pub vic_legislation: String,
+    /// The ACT Legislation Register, which publishes each Assembly bill.
+    pub act_legislation: String,
+    /// The Northern Territory's legislation database, which keeps the
+    /// Assembly's bills.
+    pub nt_legislation: String,
+    /// Queensland's legislation register, whose browse lists carry every
+    /// bill as introduced and as passed.
+    pub qld_legislation: String,
+    /// The API behind the Parliament of South Australia's legislative
+    /// tracker, SALT.
+    pub sa_salt: String,
     /// Replaces every source's own per-host spacing when set. Only tests set
     /// it; the real intervals are what keeps these APIs willing to answer.
     pub min_interval_ms: Option<u64>,
@@ -72,6 +85,11 @@ impl Default for Endpoints {
             act_parliament: "https://www.parliament.act.gov.au".to_string(),
             sa_contacts: "https://contact-details-api.parliament.sa.gov.au/api".to_string(),
             sa_members: "https://membersapp.parliament.sa.gov.au/api".to_string(),
+            vic_legislation: "https://www.legislation.vic.gov.au".to_string(),
+            act_legislation: "https://www.legislation.act.gov.au".to_string(),
+            nt_legislation: "https://legislation.nt.gov.au".to_string(),
+            qld_legislation: "https://www.legislation.qld.gov.au".to_string(),
+            sa_salt: "https://prod-internet-salt-functionapp.azurewebsites.net/api".to_string(),
             min_interval_ms: None,
             backoff_ms: None,
         }
@@ -111,6 +129,11 @@ impl Endpoints {
             act_parliament: format!("{base}/act"),
             sa_contacts: format!("{base}/sa-contacts"),
             sa_members: format!("{base}/sa-members"),
+            vic_legislation: format!("{base}/vic-legislation"),
+            act_legislation: format!("{base}/act-legislation"),
+            nt_legislation: format!("{base}/nt-legislation"),
+            qld_legislation: format!("{base}/qld-legislation"),
+            sa_salt: format!("{base}/sa-salt"),
             min_interval_ms: Some(1),
             backoff_ms: Some(1),
         }

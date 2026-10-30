@@ -1,5 +1,5 @@
 // Header quick search: a combobox over the build-time index of bills, people,
-// electorates and state members. Progressive enhancement: the box is a real search form, so
+// electorates, state members and state bills. Progressive enhancement: the box is a real search form, so
 // with no JS (or before the index arrives) Enter still goes to /search/?q=.
 const input = document.getElementById('quick-search-input')
 const form = input?.form
@@ -9,12 +9,14 @@ const LIMIT = 8
 // Every group with a hit gets this many rows before any group gets more.
 const FLOOR = 2
 // Groups are shown closest match first; on a tie they keep this order.
-// A state member's slug carries their parliament: 'nsw/jane-smith'.
+// A state member's or bill's slug carries their parliament: 'nsw/jane-smith',
+// 'nsw/bills/roads-bill-2026'.
 const GROUPS = [
   { t: 'bill', label: 'Bills', prefix: '/bills/' },
   { t: 'person', label: 'People', prefix: '/people/' },
   { t: 'electorate', label: 'Electorates', prefix: '/electorates/' },
   { t: 'state', label: 'State members', prefix: '/states/' },
+  { t: 'state-bill', label: 'State bills', prefix: '/states/' },
 ]
 
 let pending = null

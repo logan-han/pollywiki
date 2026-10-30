@@ -94,6 +94,7 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
 
     let mut page_list: Vec<Page> = vec![
         pages::home(&data),
+        pages::federal_page(&data),
         pages::people_index(&data),
         pages::divisions_index(&data),
         pages::bills_index(&data),
@@ -112,7 +113,10 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
     // Per-division share cards. Best-effort: a division with no card falls
     // back to the site-wide default image.
     let cards = match og::Cards::load() {
-        Some(cards) => cards.write_all(out_dir, &data)?,
+        Some(cards) => {
+            cards.write_default(out_dir)?;
+            cards.write_all(out_dir, &data)?
+        }
         None => std::collections::HashMap::new(),
     };
     if !cards.is_empty() {
@@ -132,8 +136,18 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
     for party in &data.parties {
         page_list.push(pages::party_page(&data, party));
     }
-    for parliament in data.listed_states() {
+    // Every parliament has a page, read or not: the header links to all nine.
+    for parliament in &data.states {
         page_list.push(pages::state_page(&data, parliament));
+        if !parliament.bills.is_empty() {
+            page_list.push(pages::state_bills_index(&data, parliament));
+            for bill in &parliament.bills {
+                page_list.push(pages::state_bill_page(&data, parliament, bill));
+            }
+        }
+    }
+    for parliament in data.listed_states() {
+        page_list.push(pages::state_members_page(&data, parliament));
         for chamber in &parliament.chambers {
             for member in &chamber.members {
                 page_list.push(pages::state_member_page(&data, parliament, chamber, member));

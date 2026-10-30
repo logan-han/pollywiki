@@ -36,6 +36,7 @@ fn sample_data() -> SiteData {
 fn all_pages(data: &SiteData) -> Vec<Page> {
     let mut list = vec![
         pages::home(data),
+        pages::federal_page(data),
         pages::people_index(data),
         pages::divisions_index(data),
         pages::bills_index(data),
@@ -64,8 +65,17 @@ fn all_pages(data: &SiteData) -> Vec<Page> {
         list.push(pages::party_page(data, party));
     }
     list.push(pages::states_index(data));
-    for parliament in data.listed_states() {
+    for parliament in &data.states {
         list.push(pages::state_page(data, parliament));
+        if !parliament.bills.is_empty() {
+            list.push(pages::state_bills_index(data, parliament));
+            for bill in &parliament.bills {
+                list.push(pages::state_bill_page(data, parliament, bill));
+            }
+        }
+    }
+    for parliament in data.listed_states() {
+        list.push(pages::state_members_page(data, parliament));
         for chamber in &parliament.chambers {
             for member in &chamber.members {
                 list.push(pages::state_member_page(data, parliament, chamber, member));
@@ -73,6 +83,21 @@ fn all_pages(data: &SiteData) -> Vec<Page> {
         }
     }
     list
+}
+
+/// Markup with its tags taken out: what a heading says.
+fn plain(html: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn render(data: &SiteData, page: &Page) -> String {
@@ -310,29 +335,77 @@ fn the_quick_search_is_a_labelled_search_form_that_works_without_script() {
 #[test]
 fn a_nav_link_is_the_current_page_only_on_its_own_index() {
     let data = sample_data();
-    let nav = |html: &str| -> String {
-        let start = html.find("<nav class=\"site-nav\"").expect("primary nav");
-        html[start..start + html[start..].find("</nav>").unwrap()].to_string()
+    let between = |html: &str, open: &str| -> String {
+        match html.find(open) {
+            Some(start) => html[start..start + html[start..].find("</nav>").unwrap()].to_string(),
+            None => String::new(),
+        }
     };
+    let header = |html: &str| between(html, "<nav class=\"site-nav\"");
+    let tabs = |html: &str| between(html, "<nav class=\"parliament-bar\"");
 
-    let index = nav(&render(&data, &pages::people_index(&data)));
-    assert!(index.contains("<a href=\"/people/\" aria-current=\"page\">People</a>"));
-    assert_eq!(index.matches("aria-current").count(), 1);
+    // The header names all nine parliaments, each a peer of the others, the
+    // short form on screen and the full name read out with it.
+    let home = render(&data, &pages::home(&data));
+    let strip = header(&home);
+    assert!(strip.contains("<nav class=\"site-nav\" aria-label=\"Parliaments\">"));
+    assert_eq!(strip.matches("<a href=").count(), 9);
+    assert!(strip.contains("<a href=\"/federal/\">Federal</a>"));
+    assert!(strip.contains(
+        "<a href=\"/states/qld/\">Qld<span class=\"visually-hidden\"> (Queensland)</span></a>"
+    ));
+    assert!(
+        !strip.contains("aria-current"),
+        "home is no one parliament's"
+    );
+    assert!(
+        tabs(&home).is_empty(),
+        "nor does it have a parliament's tabs"
+    );
 
-    // On a profile the link marks the section, not the page itself.
+    // A federal index marks its parliament in the header and itself in the
+    // tabs; a record inside it marks both as sections.
+    let index = render(&data, &pages::people_index(&data));
+    assert!(header(&index).contains("<a href=\"/federal/\" aria-current=\"true\">Federal</a>"));
+    assert!(tabs(&index).contains("<a href=\"/people/\" aria-current=\"page\">People</a>"));
+    assert_eq!(tabs(&index).matches("aria-current").count(), 1);
     let person = &data.people[0];
-    let profile = nav(&render(&data, &pages::person_page(&data, person)));
-    assert!(profile.contains("<a href=\"/people/\" aria-current=\"true\">People</a>"));
-    assert!(!profile.contains("aria-current=\"page\""));
-    assert_eq!(profile.matches("aria-current").count(), 1);
+    let profile = render(&data, &pages::person_page(&data, person));
+    assert!(tabs(&profile).contains("<a href=\"/people/\" aria-current=\"true\">People</a>"));
+    assert!(!tabs(&profile).contains("aria-current=\"page\""));
+    let federal = render(&data, &pages::federal_page(&data));
+    assert!(header(&federal).contains("<a href=\"/federal/\" aria-current=\"page\">Federal</a>"));
+    assert!(tabs(&federal).contains("<a href=\"/federal/\" aria-current=\"page\">Overview</a>"));
 
-    // Pages outside the six sections mark nothing, the search page among
+    // A state is laid out the same way: its overview, and its members.
+    let nsw = data
+        .state_parliament(pollywiki_schema::StateCode::NSW)
+        .expect("sample NSW");
+    let overview = render(&data, &pages::state_page(&data, nsw));
+    assert!(header(&overview).contains("<a href=\"/states/nsw/\" aria-current=\"page\">NSW"));
+    assert!(tabs(&overview).contains("<a href=\"/states/nsw/\" aria-current=\"page\">Overview</a><a href=\"/states/nsw/members/\">Members</a>"));
+    let (chamber, member) = nsw.member_by_slug("riley-okafor").expect("sample member");
+    let profile = render(
+        &data,
+        &pages::state_member_page(&data, nsw, chamber, member),
+    );
+    assert!(header(&profile).contains("<a href=\"/states/nsw/\" aria-current=\"true\">NSW"));
+    assert!(tabs(&profile).contains("<a href=\"/states/nsw/\">Overview</a><a href=\"/states/nsw/members/\" aria-current=\"true\">Members</a>"));
+    // A parliament with no list has no members to go to.
+    let wa = data
+        .state_parliament(pollywiki_schema::StateCode::WA)
+        .expect("sample WA");
+    let unread = render(&data, &pages::state_page(&data, wa));
+    assert!(!tabs(&unread).contains("Members"));
+
+    // Pages about the site belong to no parliament, the search page among
     // them: the quick search reaches it, not a link of its own.
-    let about = nav(&render(&data, &pages::about_index(&data)));
-    assert!(!about.contains("aria-current"));
-    let search = nav(&render(&data, &pages::search_page()));
-    assert!(!search.contains("aria-current"));
-    assert!(!search.contains("href=\"/search/\""));
+    for page in [pages::about_index(&data), pages::search_page()] {
+        let html = render(&data, &page);
+        assert!(!header(&html).contains("aria-current"), "{}", page.path);
+        assert!(tabs(&html).is_empty(), "{}", page.path);
+        assert!(!header(&html).contains("href=\"/search/\""));
+    }
 
     assert_eq!(layout::nav_state("/bills/", "/bills/"), Some("page"));
     assert_eq!(
@@ -340,6 +413,144 @@ fn a_nav_link_is_the_current_page_only_on_its_own_index() {
         Some("true")
     );
     assert_eq!(layout::nav_state("/", "/bills/"), None);
+    assert_eq!(
+        layout::parliament_of("/divisions/senate/x/"),
+        Some("/federal/")
+    );
+    assert_eq!(
+        layout::parliament_of("/states/tas/members/"),
+        Some("/states/tas/")
+    );
+    assert_eq!(layout::parliament_of("/states/"), None);
+    assert_eq!(layout::parliament_of("/about/"), None);
+}
+
+#[test]
+fn home_maps_all_nine_parliaments_as_peers() {
+    let data = sample_data();
+    let html = render(&data, &pages::home(&data));
+    assert!(html.contains("<h1>What Australia's parliaments actually did.</h1>"));
+    let board = html
+        .split("<ul class=\"federation\" role=\"list\">")
+        .nth(1)
+        .and_then(|b| b.split("</ul>").next())
+        .expect("the map of parliaments");
+    // One tile each, the federal one first and every state and territory in
+    // its own place on the map.
+    let tiles: Vec<&str> = board
+        .match_indices("<li class=\"tile ")
+        .map(|(i, m)| {
+            let rest = &board[i + m.len()..];
+            &rest[..rest.find('"').expect("class ends")]
+        })
+        .collect();
+    assert_eq!(
+        tiles,
+        ["fed", "nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt"]
+    );
+    // A tile names its leader and shows the house government is formed in.
+    assert!(board.contains("<p class=\"leader\">Prime Minister Alex Paterson</p>"));
+    assert!(board.contains("<p class=\"leader\">Premier Riley Okafor</p>"));
+    assert!(board.contains("aria-label=\"Legislative Assembly, 6 seats, majority 4: EXP 2,"));
+    assert!(board.contains("<p class=\"seats\">EXP 2 of 6</p>"));
+    // A parliament that turns scripts away says so; one not synced yet, too.
+    let wa = board.split("<li class=\"tile wa\">").nth(1).expect("WA");
+    assert!(wa.contains("Member list not readable yet"));
+    let vic = board.split("<li class=\"tile vic\">").nth(1).expect("Vic");
+    assert!(vic.contains("Member list not read yet"));
+    // The states index has the same map, without the federal tile.
+    let index = render(&data, &pages::states_index(&data));
+    assert!(index.contains("<ul class=\"federation states-only\" role=\"list\">"));
+    assert!(!index.contains("<li class=\"tile fed\">"));
+}
+
+#[test]
+fn every_parliament_has_a_front_page_read_or_not() {
+    let data = sample_data();
+    let federal = render(&data, &pages::federal_page(&data));
+    assert!(federal.contains("<h1>Parliament of Australia</h1>"));
+    assert!(federal.contains("<tr><th class=\"label\" scope=\"row\">Prime Minister</th><td><a href=\"/people/alex-paterson/\">Alex Paterson</a></td></tr>"));
+    assert!(federal.contains("<h2>Composition of the 48th Parliament</h2>"));
+
+    let wa = data
+        .state_parliament(pollywiki_schema::StateCode::WA)
+        .expect("sample WA");
+    let html = render(&data, &pages::state_page(&data, wa));
+    assert!(html.contains("<p class=\"lede\">The Parliament of Western Australia turns away automated readers of its website, so its member list cannot be read here yet.</p>"));
+    assert!(html.contains("Its members are listed on its own website, <a href=\"https://www.parliament.wa.gov.au\">parliament.wa.gov.au</a>."));
+    assert!(!html.contains("<h2 id=\"composition\">"));
+}
+
+#[test]
+fn a_state_s_bills_are_listed_and_each_has_a_page() {
+    let data = sample_data();
+    let nsw = data
+        .state_parliament(pollywiki_schema::StateCode::NSW)
+        .expect("sample NSW");
+    let index = render(&data, &pages::state_bills_index(&data, nsw));
+    assert!(index.contains("<h1 class=\"title-l\">Bills in the Parliament of New South Wales</h1>"));
+    // The federal index's filters and columns, keyed by how far each got.
+    assert!(index.contains("<input type=\"search\" id=\"bill-filter\""));
+    assert!(index
+        .contains("<li data-status=\"act\" data-text=\"sample transport amendment bill 2026\">"));
+    assert!(index.contains("<li data-status=\"other\" data-text=\"example inquiry bill 2026\">"));
+    assert!(index.contains("<span class=\"chamber\">Council</span>"));
+    assert!(index.contains("<span class=\"status open\">Before the Legislative Council</span>"));
+    assert!(index.contains("Source: Parliament of New South Wales, <a href=\"https://example.org/nsw/bills\">bills list</a>, read 14 Aug 2026."));
+
+    let page = |slug: &str| {
+        let bill = nsw
+            .bills
+            .iter()
+            .find(|b| b.slug == slug)
+            .expect("sample bill");
+        render(&data, &pages::state_bill_page(&data, nsw, bill))
+    };
+    let act = page("sample-transport-amendment-bill-2026");
+    assert!(act.contains("<span class=\"chip house\">NSW Assembly</span> Bill 12 of 2026"));
+    assert!(act.contains("aria-label=\"Stage 4 of 4: assented\""));
+    assert!(act.contains("<span><strong>Introduced by</strong> <a href=\"/states/nsw/riley-okafor/\">Riley Okafor</a></span>"));
+    assert!(act.contains("<strong>Became law</strong> as the Act No. 18 of 2026."));
+    assert!(act.contains(
+        "<tr><td class=\"date\">24 Jun 2026</td><td>Passed the Legislative Council</td></tr>"
+    ));
+    assert!(act.contains("<li><a href=\"https://example.org/nsw/bills/12\">The bill's record on the official site</a></li>"));
+    assert!(
+        !act.contains("Text of the bill"),
+        "no text link where the record gives none"
+    );
+    let lost = page("example-inquiry-bill-2026");
+    assert!(lost.contains("<span class=\"chip senate\">NSW Council</span>"));
+    assert!(lost.contains("<strong>Went no further:</strong> negatived."));
+    let open = page("demonstration-planning-bill-2026");
+    assert!(open.contains(
+        "<li><a href=\"https://example.org/nsw/bills/31/em.pdf\">Explanatory memorandum</a></li>"
+    ));
+
+    // The overview shows the latest steps and counts every bill.
+    let overview = render(&data, &pages::state_page(&data, nsw));
+    assert!(overview.contains("<h2 id=\"bills\">Latest bill activity</h2><a href=\"/states/nsw/bills/\">All 3 bills \u{2192}</a>"));
+    // The tabs offer the bills wherever there are some, and members only
+    // where the list was read.
+    assert!(overview.contains(
+        "<a href=\"/states/nsw/members/\">Members</a><a href=\"/states/nsw/bills/\">Bills</a>"
+    ));
+    let wa = data
+        .state_parliament(pollywiki_schema::StateCode::WA)
+        .expect("sample WA");
+    let unread = render(&data, &pages::state_page(&data, wa));
+    assert!(unread.contains("<a href=\"/states/wa/\" aria-current=\"page\">Overview</a><a href=\"/states/wa/bills/\">Bills</a></span>"));
+    // The map counts the bills still before each parliament.
+    let home = render(&data, &pages::home(&data));
+    let tile = home
+        .split("<li class=\"tile nsw\">")
+        .nth(1)
+        .expect("NSW tile");
+    assert!(tile
+        .split("</li>")
+        .next()
+        .unwrap()
+        .contains("<p class=\"bills\">1 bill before it</p>"));
 }
 
 #[test]
@@ -349,8 +560,17 @@ fn home_lists_bill_activity_newest_first() {
     let html = render(&data, &page);
 
     assert!(html.contains("Latest bill activity"));
-    assert!(html.contains("class=\"bill-list activity\""));
-    assert!(html.contains("class=\"dots-legend\""));
+    assert!(html.contains("class=\"bill-list activity everywhere\""));
+
+    // Every parliament's bills share the list, each tagged with its own.
+    assert!(html.contains(
+        "<span class=\"what\"><a class=\"jur\" href=\"/bills/\">Federal</a> <a href=\"/bills/"
+    ));
+    assert!(html.contains("<span class=\"what\"><a class=\"jur\" href=\"/states/nsw/bills/\">NSW</a> <a href=\"/states/nsw/bills/demonstration-planning-bill-2026/\">Demonstration Planning Bill 2026</a></span>"));
+    // A single-chamber parliament's bill has three stages, not four.
+    assert!(html.contains("aria-label=\"Stage 2 of 3: passed\""));
+    // A parliament whose members cannot be read can still list its bills.
+    assert!(html.contains("href=\"/states/wa/bills/illustrative-water-bill-2026/\""));
 
     // Rows are ordered by their newest step, descending.
     let dates: Vec<&str> = html
@@ -367,9 +587,12 @@ fn home_lists_bill_activity_newest_first() {
 
     // The date leads the row, as on the bills index; the event closes it. The
     // chamber suffix is dropped from the visible text but kept in the title.
-    assert!(
-        html.contains("<li><span class=\"when\"><time datetime=\"2025-08-04\">4 Aug</time></span>")
-    );
+    // Rows from the newest row's year drop the year; older ones keep it.
+    assert!(html
+        .contains("<li><span class=\"when\"><time datetime=\"2026-08-11\">11 Aug</time></span>"));
+    assert!(html.contains(
+        "<li><span class=\"when\"><time datetime=\"2025-08-04\">4 Aug 2025</time></span>"
+    ));
     assert!(html.contains(">Referred to Federation Chamber</span></li>"));
     assert!(html.contains("title=\"Referred to Federation Chamber (House of Representatives)"));
 
@@ -385,7 +608,7 @@ fn home_lists_bill_activity_newest_first() {
 #[test]
 fn home_folds_a_days_divisions_on_one_matter_into_a_series() {
     let data = sample_data();
-    let html = render(&data, &pages::home(&data));
+    let html = render(&data, &pages::federal_page(&data));
     let section = html
         .split("Latest divisions")
         .nth(1)
@@ -1048,10 +1271,24 @@ fn bills_index_labels_its_columns_and_keys_the_dots_before_the_rows() {
             .count(),
         data.bills.len()
     );
-    // The home page keeps its key under the activity list.
+    // The federal page keeps its key under the activity list; the home page,
+    // whose rows mix parliaments of one and two chambers, explains the dots
+    // in words instead.
+    let federal = render(&data, &pages::federal_page(&data));
+    let activity = federal
+        .find("class=\"bill-list activity\"")
+        .expect("activity");
+    assert!(activity < federal.find("class=\"dots-legend\"").expect("legend"));
     let home = render(&data, &pages::home(&data));
-    let activity = home.find("class=\"bill-list activity\"").expect("activity");
-    assert!(activity < home.find("class=\"dots-legend\"").expect("home legend"));
+    let activity = home
+        .find("class=\"bill-list activity everywhere\"")
+        .expect("activity");
+    assert!(
+        activity
+            < home
+                .find("Dots show how far each bill has come")
+                .expect("key")
+    );
 }
 
 #[test]
@@ -1498,6 +1735,10 @@ fn search_facets_are_each_record_s_type_and_chamber() {
         let (_, main) = html
             .split_once("<main class=\"wrap\" id=\"main\">")
             .expect("main");
+        let main = match main.strip_prefix("<nav class=\"parliament-bar\"") {
+            Some(rest) => &rest[rest.find("</nav>").expect("tabs end") + 6..],
+            None => main,
+        };
         main[..=main.find('>').expect("first tag ends")].to_string()
     };
     let facets = |kind: &str, chamber: Option<&str>| {
@@ -2346,6 +2587,11 @@ fn every_page_opens_with_a_masthead_or_a_record_head() {
         let (_, main) = html
             .split_once("<main class=\"wrap\" id=\"main\">")
             .expect("main");
+        // A parliament's tabs come first on its pages; the page starts after.
+        let main = match main.strip_prefix("<nav class=\"parliament-bar\"") {
+            Some(rest) => &rest[rest.find("</nav>").expect("tabs end") + 6..],
+            None => main,
+        };
         // A record page opens its indexed article first, filters and all.
         let top = match main.strip_prefix("<article data-pagefind-body") {
             Some(rest) => &rest[rest.find('>').expect("article tag ends") + 1..],
@@ -2510,10 +2756,10 @@ fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
         .nth(1)
         .expect("a state section");
     assert!(states.contains(
-        "<td><a href=\"https://www.parliament.act.gov.au\">Legislative Assembly for the Australian Capital Territory</a></td><td><a href=\"https://example.org/members/act\">Legislative Assembly</a></td><td>CC BY-NC-ND 4.0, Legislative Assembly for the ACT</td><td class=\"num\">14 Aug 2026</td>"
+        "<td><a href=\"https://www.parliament.act.gov.au\">Legislative Assembly for the Australian Capital Territory</a></td><td><a href=\"https://example.org/members/act\">Legislative Assembly</a><br>Bills: <a href=\"https://example.org/act/bills\">ACT Legislation Register</a></td><td>CC BY-NC-ND 4.0, Legislative Assembly for the ACT<br>Bills: ACT Legislation Register: CC BY 4.0, \u{a9} Australian Capital Territory</td><td class=\"num\">14 Aug 2026<br>not yet</td>"
     ));
     assert!(states.contains("turns away automated readers"));
-    assert!(states.contains("Legislative Council</a> (downloaded by hand)</td><td>Downloaded by hand; the facts of membership reproduced with acknowledgement</td>"));
+    assert!(states.contains("Legislative Council</a> (downloaded by hand)<br>Bills: <a href=\"https://example.org/nsw/bills\">Parliament of New South Wales</a></td><td>Downloaded by hand; the facts of membership reproduced with acknowledgement<br>Bills: No licence stated; the facts of each bill reproduced with acknowledgement</td>"));
     assert!(states.contains("<td>Not read</td><td class=\"num\">not yet</td>"));
 }
 
@@ -3329,6 +3575,10 @@ fn the_states_index_lists_every_parliament_and_says_which_have_no_list_yet() {
             &text[..text.find("</h2>").expect("heading closes")]
         })
         .collect();
+    // Every parliament's name links to its page, read or not.
+    assert!(headings[0].starts_with("<a href=\"/states/nsw/\">"));
+    assert!(headings[3].starts_with("<a href=\"/states/wa/\">"));
+    let headings: Vec<String> = headings.iter().map(|h| plain(h)).collect();
     assert_eq!(
         headings,
         [
@@ -3343,7 +3593,7 @@ fn the_states_index_lists_every_parliament_and_says_which_have_no_list_yet() {
         ],
         "every state and territory, in the usual order"
     );
-    assert!(html.contains("<a href=\"/states/nsw/\">All 8 members \u{2192}</a>"));
+    assert!(html.contains("<a href=\"/states/nsw/members/\">All 8 members \u{2192}</a>"));
     assert!(html.contains("Premier: <a href=\"/states/nsw/riley-okafor/\">Riley Okafor</a>"));
     assert!(html
         .contains("Chief Minister: <a href=\"/states/act/sasha-whitfield/\">Sasha Whitfield</a>"));
@@ -3357,13 +3607,16 @@ fn the_states_index_lists_every_parliament_and_says_which_have_no_list_yet() {
     };
     assert!(section("vic").contains("No member list loaded yet."));
     // One that cannot be read gives the reason and sends the reader to the
-    // parliament's own list, and has no page of its own.
+    // parliament's own list; its page says the same.
     let wa = section("wa");
     assert!(wa.contains("turns away automated readers"), "{wa}");
     assert!(wa.contains(
         "Its members are listed at <a href=\"https://www.parliament.wa.gov.au\">parliament.wa.gov.au</a>."
     ));
-    assert!(!all_pages(&data).iter().any(|p| p.path == "/states/wa/"));
+    assert!(all_pages(&data).iter().any(|p| p.path == "/states/wa/"));
+    assert!(!all_pages(&data)
+        .iter()
+        .any(|p| p.path == "/states/wa/members/"));
     // Three bars: two NSW chambers and the one ACT chamber.
     assert_eq!(html.matches("<div class=\"seat-bar\">").count(), 3);
 }
@@ -3395,6 +3648,7 @@ fn a_state_chamber_s_majority_counts_its_empty_seats() {
         "{bar}"
     );
     assert!(bar.contains("<span>Demonstration Party 1</span>"), "{bar}");
+    let html = render(&data, &pages::state_members_page(&data, nsw));
     assert!(html.contains("5 members of 6 seats. One seat was vacant at the last listing."));
     assert!(html.contains("3 members of 3 seats. Members are elected by the whole state."));
     // The Council is elected state-wide, so its table has no seat column.
@@ -3403,6 +3657,8 @@ fn a_state_chamber_s_majority_counts_its_empty_seats() {
         .nth(1)
         .expect("Council");
     assert!(!council.contains("<th scope=\"col\">Electorate</th>"));
+    // The overview carries the facts.
+    let html = render(&data, &pages::state_page(&data, nsw));
     assert!(html.contains(
         "<tr><th class=\"label\" scope=\"row\">Premier</th><td><a href=\"/states/nsw/riley-okafor/\">Riley Okafor</a>, Member for Harbourside</td></tr>"
     ));
@@ -3527,9 +3783,9 @@ fn a_party_page_counts_its_seats_in_each_state_chamber() {
         .nth(1)
         .expect("a state section");
     for row in [
-        "<a href=\"/states/nsw/#legislative-assembly\">NSW Legislative Assembly</a></td><td class=\"num\">2</td><td class=\"num\">6</td>",
-        "<a href=\"/states/nsw/#legislative-council\">NSW Legislative Council</a></td><td class=\"num\">1</td><td class=\"num\">3</td>",
-        "<a href=\"/states/act/#legislative-assembly\">ACT Legislative Assembly</a></td><td class=\"num\">2</td><td class=\"num\">3</td>",
+        "<a href=\"/states/nsw/members/#legislative-assembly\">NSW Legislative Assembly</a></td><td class=\"num\">2</td><td class=\"num\">6</td>",
+        "<a href=\"/states/nsw/members/#legislative-council\">NSW Legislative Council</a></td><td class=\"num\">1</td><td class=\"num\">3</td>",
+        "<a href=\"/states/act/members/#legislative-assembly\">ACT Legislative Assembly</a></td><td class=\"num\">2</td><td class=\"num\">3</td>",
     ] {
         assert!(section.contains(row), "{row}");
     }

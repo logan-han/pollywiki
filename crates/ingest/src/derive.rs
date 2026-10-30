@@ -5,6 +5,7 @@ use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
 use crate::sources::ipea::{IpeaParliamentarian, IpeaQuarter};
 use crate::sources::legislation::ACTS_KEY;
+use crate::sources::states::bills::BillRoll;
 use crate::sources::states::photos::{photos_key, StatePhoto};
 use crate::sources::states::{StateReferenceEntry, StateRoll};
 use crate::store::Store;
@@ -16,9 +17,9 @@ use pollywiki_schema::{
     CandidateFunding, Division, DonorTotal, ElectionContest, Electorate, ElectorateResult,
     ExpenseLine, ExpenseQuarter, House, JsNum, MemberFunding, Meta, Party, PartyFacts,
     PartyFunding, PartySeats, Person, PersonStats, QuickSearchEntry, SeatResult, SenateResult,
-    SenateSeat, StateChamber, StateCode, StateMember, StateParliament, StateSeatCount, SummaryKind,
-    BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES,
-    BUNDLE_PEOPLE, BUNDLE_STATES, STATES,
+    SenateSeat, StateBill, StateBillsSource, StateChamber, StateCode, StateMember, StateParliament,
+    StateSeatCount, SummaryKind, BUNDLE_BILLS, BUNDLE_DIVISIONS, BUNDLE_ELECTIONS,
+    BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE, BUNDLE_STATES, STATES,
 };
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -306,9 +307,11 @@ pub async fn derive(store: &Store) -> Result<()> {
             state_photos.insert(roll.state, photos);
         }
     }
+    let bill_rolls = crate::sources::states::bills::load_all(store).await?;
     let states = state_parliaments(
         &rolls,
         &state_photos,
+        &bill_rolls,
         &crate::sources::states::reference(),
         &reference,
     );
@@ -429,6 +432,21 @@ pub async fn derive(store: &Store) -> Result<()> {
             }
         }
     }
+    // State bills after them, under each parliament's bills.
+    for parliament in &states {
+        for bill in &parliament.bills {
+            quick_search.push(QuickSearchEntry {
+                t: "state-bill".to_string(),
+                slug: format!(
+                    "{}/bills/{}",
+                    parliament.state.as_str().to_lowercase(),
+                    bill.slug
+                ),
+                name: bill.title.clone(),
+                sub: format!("{} bill \u{b7} {}", parliament.state, bill.status),
+            });
+        }
+    }
     store
         .put_json("bundles/quick-search.json", &quick_search)
         .await?;
@@ -458,6 +476,7 @@ pub async fn derive(store: &Store) -> Result<()> {
 fn state_parliaments(
     rolls: &[StateRoll],
     photos: &HashMap<StateCode, Vec<StatePhoto>>,
+    bill_rolls: &[BillRoll],
     states: &IndexMap<String, StateReferenceEntry>,
     parties: &IndexMap<String, PartyReferenceEntry>,
 ) -> Vec<StateParliament> {
@@ -526,6 +545,7 @@ fn state_parliaments(
                 members,
             });
         }
+        let (bills, bills_source) = attach_bills(roll.state, bill_rolls, entry, &chambers);
         out.push(StateParliament {
             state: roll.state,
             name: entry.name.clone(),
@@ -535,6 +555,9 @@ fn state_parliaments(
             chambers,
             unavailable: None,
             hand_listed: entry.drop.as_ref().map(|d| d.note.clone()),
+            houses: entry.chambers.len() as u8,
+            bills,
+            bills_source,
         });
     }
     // Every parliament has a place, read or not: one with no roll yet keeps
@@ -546,6 +569,9 @@ fn state_parliaments(
         if out.iter().any(|p| p.state == state) {
             continue;
         }
+        // A parliament whose members cannot be read may still publish its
+        // bills somewhere that can be.
+        let (bills, bills_source) = attach_bills(state, bill_rolls, entry, &[]);
         out.push(StateParliament {
             state,
             name: entry.name.clone(),
@@ -555,10 +581,90 @@ fn state_parliaments(
             chambers: Vec::new(),
             unavailable: entry.unavailable.clone(),
             hand_listed: None,
+            houses: entry.chambers.len() as u8,
+            bills,
+            bills_source,
         });
     }
     out.sort_by_key(|p| STATES.iter().position(|code| *code == p.state.as_str()));
     out
+}
+
+/// A parliament's bills as the site shows them, with where they were read
+/// from: each with a slug of its own, the kind of chamber it began in, and
+/// its sponsor's page where they sit now, the most recently active first.
+fn attach_bills(
+    state: StateCode,
+    bill_rolls: &[BillRoll],
+    entry: &StateReferenceEntry,
+    chambers: &[StateChamber],
+) -> (Vec<StateBill>, Option<StateBillsSource>) {
+    let Some(roll) = bill_rolls.iter().find(|r| r.state == state) else {
+        return (Vec::new(), None);
+    };
+    let members: Vec<&StateMember> = chambers.iter().flat_map(|c| c.members.iter()).collect();
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut bills: Vec<StateBill> = Vec::with_capacity(roll.bills.len());
+    for b in &roll.bills {
+        let base = slugify(&b.title);
+        let mut slug = base.clone();
+        if !taken.insert(slug.clone()) {
+            slug = slugify(&format!(
+                "{} {}",
+                b.title,
+                b.number.as_deref().unwrap_or("")
+            ));
+            let mut n = 2;
+            while !taken.insert(slug.clone()) {
+                slug = format!("{base}-{n}");
+                n += 1;
+            }
+        }
+        let origin_kind = b.origin.as_deref().and_then(|origin| {
+            entry
+                .chambers
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(origin))
+                .map(|c| c.kind)
+        });
+        let sponsor_slug = b.sponsor.as_deref().and_then(|sponsor| {
+            let wanted = slugify(&crate::sources::states::plain_name(sponsor));
+            members
+                .iter()
+                .find(|m| slugify(&m.name) == wanted)
+                .map(|m| m.slug.clone())
+        });
+        bills.push(StateBill {
+            slug,
+            title: b.title.clone(),
+            number: b.number.clone(),
+            origin: b.origin.clone(),
+            origin_kind,
+            sponsor: b.sponsor.clone(),
+            sponsor_slug,
+            kind: b.kind.clone(),
+            status: b.status.clone(),
+            stage: b.stage,
+            stopped: b.stopped,
+            timeline: b.timeline.clone(),
+            source: b.source.clone(),
+            text: b.text.clone(),
+            explanatory: b.explanatory.clone(),
+            act: b.act.clone(),
+        });
+    }
+    bills.sort_by(|a, b| {
+        b.latest()
+            .map(|s| s.date.as_str())
+            .cmp(&a.latest().map(|s| s.date.as_str()))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    let source = StateBillsSource {
+        name: roll.publisher.clone(),
+        url: roll.source.clone(),
+        listed_at: roll.listed_at.clone(),
+    };
+    (bills, Some(source))
 }
 
 /// The reference party a parliament's label stands for: the entry it names
@@ -1933,7 +2039,8 @@ mod tests {
             )
             .expect("photos fixture"),
         )]);
-        let states = state_parliaments(&rolls, &photos, &reference, &party_reference_fixture());
+        let states =
+            state_parliaments(&rolls, &photos, &[], &reference, &party_reference_fixture());
         let codes: Vec<&str> = states.iter().map(|s| s.state.as_str()).collect();
         assert_eq!(
             codes,
@@ -1959,7 +2066,7 @@ mod tests {
             note: "Downloaded by hand each month.".to_string(),
             source: "https://example.org/lists".to_string(),
         });
-        let states = state_parliaments(&rolls, &photos, &hand, &party_reference_fixture());
+        let states = state_parliaments(&rolls, &photos, &[], &hand, &party_reference_fixture());
         assert_eq!(states[0].chambers.len(), 2);
         assert!(states[0].unavailable.is_none());
         assert_eq!(
@@ -1967,7 +2074,7 @@ mod tests {
             Some("Downloaded by hand each month.")
         );
         // With no download filed, the reason stands in its place.
-        let unread = state_parliaments(&[], &photos, &hand, &party_reference_fixture());
+        let unread = state_parliaments(&[], &photos, &[], &hand, &party_reference_fixture());
         assert!(unread[0].chambers.is_empty());
         assert!(unread[0].hand_listed.is_none());
         assert_eq!(
@@ -2026,6 +2133,88 @@ mod tests {
         let (_, leader) = nsw.leader().expect("the Premier");
         assert_eq!(leader.slug, "jane-smith");
         assert_eq!(leader.since.as_deref(), Some("2015-03-28"));
+    }
+
+    #[test]
+    fn state_bills_get_slugs_sponsor_links_and_the_newest_first() {
+        let rolls: Vec<StateRoll> = serde_json::from_str(
+            r#"[{"state":"NSW","listedAt":"2026-10-30T01:00:00.000Z","chambers":[
+                  {"slug":"legislative-assembly","source":"https://example.org/la","members":[
+                    {"name":"Jane Smith","party":"Example Party","seat":"Sampleford"}]}]}]"#,
+        )
+        .expect("rolls fixture");
+        let bill_rolls: Vec<BillRoll> = serde_json::from_str(
+            r#"[{"state":"NSW","listedAt":"2026-10-30T02:00:00.000Z","publisher":"Parliament of Example",
+                 "source":"https://example.org/bills","bills":[
+                {"title":"Roads Bill 2026","number":"12","origin":"Legislative Assembly",
+                 "sponsor":"The Hon. Jane Smith MP","status":"Assented","stage":4,
+                 "timeline":[{"date":"2026-03-01","event":"Introduced"},{"date":"2026-05-01","event":"Assent"}],
+                 "source":"https://example.org/bills/12"},
+                {"title":"Roads Bill 2026","number":"40","origin":"legislative council",
+                 "sponsor":"Someone Else","status":"Before the Legislative Council","stage":1,
+                 "timeline":[{"date":"2026-09-01","event":"Introduced"}],
+                 "source":"https://example.org/bills/40"},
+                {"title":"Undated Bill 2026","status":"Introduced","stage":1,
+                 "source":"https://example.org/bills/41"}]},
+               {"state":"WA","listedAt":"2026-10-30T02:00:00.000Z","publisher":"Example Register",
+                 "source":"https://example.net/bills","bills":[
+                {"title":"Water Bill 2026","status":"Introduced","stage":1,
+                 "source":"https://example.net/bills/1"}]}]"#,
+        )
+        .expect("bill rolls fixture");
+        let mut reference = state_reference_fixture();
+        reference.insert(
+            "WA".to_string(),
+            serde_json::from_str(
+                r#"{"name":"Parliament of Elsewhere","url":"https://example.net",
+                    "leaderTitle":"Premier","chambers":[
+                      {"slug":"legislative-assembly","name":"Legislative Assembly","kind":"lower","seats":59}],
+                    "unavailable":"Its website turns away automated readers."}"#,
+            )
+            .unwrap(),
+        );
+        let states = state_parliaments(
+            &rolls,
+            &HashMap::new(),
+            &bill_rolls,
+            &reference,
+            &party_reference_fixture(),
+        );
+        let nsw = &states[0];
+        assert_eq!(nsw.houses, 2);
+        let slugs: Vec<&str> = nsw.bills.iter().map(|b| b.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            ["roads-bill-2026-40", "roads-bill-2026", "undated-bill-2026"],
+            "newest step first, undated last; a shared title is told apart by number"
+        );
+        let first = &nsw.bills[1];
+        assert_eq!(
+            first.sponsor_slug.as_deref(),
+            Some("jane-smith"),
+            "styles dropped"
+        );
+        assert_eq!(
+            first.origin_kind,
+            Some(pollywiki_schema::ChamberKind::Lower)
+        );
+        assert_eq!(
+            nsw.bills[0].origin_kind,
+            Some(pollywiki_schema::ChamberKind::Upper),
+            "case ignored"
+        );
+        assert!(nsw.bills[0].sponsor_slug.is_none(), "not a sitting member");
+        let source = nsw.bills_source.as_ref().expect("source");
+        assert_eq!(source.name, "Parliament of Example");
+        assert_eq!(source.listed_at, "2026-10-30T02:00:00.000Z");
+        // A parliament whose members cannot be read still shows its bills.
+        let wa = states
+            .iter()
+            .find(|p| p.state == StateCode::WA)
+            .expect("WA");
+        assert!(wa.chambers.is_empty());
+        assert_eq!(wa.bills.len(), 1);
+        assert_eq!(wa.houses, 1);
     }
 
     #[tokio::test]

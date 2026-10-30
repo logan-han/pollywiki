@@ -123,6 +123,62 @@ impl Cards {
         Ok(written)
     }
 
+    /// Writes the site-wide card every page without its own shares: the
+    /// wordmark over the nine parliaments it keeps the record of.
+    pub fn write_default(&self, out_dir: &Path) -> Result<()> {
+        let png = self.rasterise(&self.default_svg())?;
+        std::fs::write(
+            out_dir.join(crate::layout::DEFAULT_OG_IMAGE.trim_start_matches('/')),
+            png,
+        )?;
+        Ok(())
+    }
+
+    fn default_svg(&self) -> String {
+        let serif = esc(&self.serif_family);
+        let mono = esc(&self.mono_family);
+        let parliaments = crate::layout::PARLIAMENTS
+            .iter()
+            .map(|(short, _, _)| *short)
+            .collect::<Vec<_>>()
+            .join("  ");
+        let mut out = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\"><rect width=\"{W}\" height=\"{H}\" fill=\"{PAPER}\"/>"
+        );
+        out.push_str(&format!(
+            "<text x=\"{MARGIN}\" y=\"96\" font-family=\"{mono}\" font-size=\"22\" letter-spacing=\"2.6\" fill=\"{FAINT}\">THE AUSTRALIAN PARLIAMENTARY RECORD</text>"
+        ));
+        out.push_str(&rule(132.0));
+        out.push_str(&format!(
+            "<text x=\"{MARGIN}\" y=\"312\" font-family=\"{serif}\" font-size=\"156\" font-weight=\"700\" letter-spacing=\"-2\" fill=\"{INK}\">pollywiki<tspan font-weight=\"400\" fill=\"{MUTED}\">.au</tspan></text>"
+        ));
+        out.push_str(&format!(
+            "<text x=\"{MARGIN}\" y=\"428\" font-family=\"{serif}\" font-size=\"48\" font-style=\"italic\" fill=\"{MUTED}\">Every parliament's record, unedited.</text>"
+        ));
+        out.push_str(&rule(500.0));
+        out.push_str(&format!(
+            "<text x=\"{MARGIN}\" y=\"556\" font-family=\"{mono}\" font-size=\"24\" xml:space=\"preserve\" fill=\"{FAINT}\">{}</text>",
+            esc(&parliaments)
+        ));
+        out.push_str("</svg>");
+        out
+    }
+
+    fn rasterise(&self, svg: &str) -> Result<Vec<u8>> {
+        let tree = usvg::Tree::from_str(svg, &self.options)
+            .map_err(|e| anyhow::anyhow!("usvg parse: {e}"))?;
+        let mut pixmap =
+            tiny_skia::Pixmap::new(W as u32, H as u32).context("allocating the card pixmap")?;
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::identity(),
+            &mut pixmap.as_mut(),
+        );
+        pixmap
+            .encode_png()
+            .map_err(|e| anyhow::anyhow!("png encode: {e}"))
+    }
+
     fn render(&self, division: &Division) -> Result<Vec<u8>> {
         let svg = self.svg(division)?;
         let tree = usvg::Tree::from_str(&svg, &self.options)

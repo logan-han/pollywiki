@@ -639,7 +639,7 @@ pub struct Division {
     pub votes: Vec<VoteCast>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineStep {
     pub date: String,
@@ -820,6 +820,83 @@ pub struct StateParliament {
     /// parliament's site turns automated readers away.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hand_listed: Option<String>,
+    /// The chambers it has in law: two, or one in Queensland and the
+    /// territories. Known whether or not its lists have been read.
+    #[serde(default)]
+    pub houses: u8,
+    /// Bills in the current parliament, the most recently active first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bills: Vec<StateBill>,
+    /// Where the bills were read from, and when.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bills_source: Option<StateBillsSource>,
+}
+
+/// A bill in a state or territory parliament's current term, as the
+/// parliament or its legislation register records it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateBill {
+    /// Unique within the parliament: the title, slugged, told apart by its
+    /// number where two bills share a title.
+    pub slug: String,
+    pub title: String,
+    /// The parliament's own number for it, where it gives one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    /// The chamber it began in, as the parliament names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_kind: Option<ChamberKind>,
+    /// Who brought it in, as the parliament names them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sponsor: Option<String>,
+    /// Their page here, when they sit in the parliament now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sponsor_slug: Option<String>,
+    /// "Government" or "Private member's", where the parliament says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Where it stands, in the parliament's own words.
+    pub status: String,
+    /// How far it has come: 1 introduced, 2 passed the chamber it began in,
+    /// 3 passed both, 4 assented. A one-chamber parliament's bill goes from
+    /// 2 straight to 4.
+    pub stage: u8,
+    /// It went no further: lapsed, withdrawn, negatived or discharged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
+    /// Dated steps, oldest first.
+    #[serde(default)]
+    pub timeline: Vec<TimelineStep>,
+    /// The bill's own page on the official site it was read from.
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Its explanatory memorandum, notes or statement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanatory: Option<String>,
+    /// The Act it became, numbered as the register numbers it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub act: Option<String>,
+}
+
+impl StateBill {
+    /// The newest dated step, where the record dates any.
+    pub fn latest(&self) -> Option<&TimelineStep> {
+        self.timeline.iter().max_by(|a, b| a.date.cmp(&b.date))
+    }
+}
+
+/// The official list a parliament's bills were read from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateBillsSource {
+    /// Who publishes it: the parliament, or its legislation register.
+    pub name: String,
+    pub url: String,
+    pub listed_at: String,
 }
 
 impl StateParliament {

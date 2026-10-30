@@ -22,7 +22,7 @@ const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [option
   --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec,
                          legislation,ipea,aec-disclosures,boundaries, states
                          (every parliament) or one of nsw-parliament ... nt-parliament,
-                         and state-photos
+                         state-bills or one of nsw-bills ... nt-bills, and state-photos
   --event <ids>          AEC event id(s), comma-separated, or all (default 31496)
   --rebuild              tvfy only: re-normalise from cached raw, no API calls
   --export <dir>         summarise only: write every prompt input, no model calls
@@ -309,6 +309,38 @@ async fn sync(
             }
         }
     }
+    // "state-bills" reads every parliament's bills; each is recorded, and can
+    // be run, alone.
+    for code in pollywiki_schema::STATES {
+        let Some(state) = pollywiki_schema::StateCode::parse(code) else {
+            continue;
+        };
+        let name = sources::states::bills::source_name(state);
+        if has("state-bills") || has(&name) {
+            let reference = state_reference.get_or_insert_with(sources::states::reference);
+            match sources::states::bills::sync_state_bills(
+                store,
+                state,
+                reference.get(code),
+                endpoints,
+            )
+            .await
+            {
+                Ok(true) => {
+                    record_sync(store, &name, true, None).await?;
+                    println!("{name}: ok");
+                }
+                // No reader for this parliament yet: nothing claims a read.
+                Ok(false) => {}
+                Err(err) => {
+                    failures += 1;
+                    let note = err.to_string();
+                    record_sync(store, &name, false, Some(&note)).await?;
+                    eprintln!("{name}: FAILED - {note}");
+                }
+            }
+        }
+    }
     // After the parliaments, so a run that reads both finds today's members.
     if has("state-photos") {
         let reference = state_reference.get_or_insert_with(sources::states::reference);
@@ -388,7 +420,7 @@ mod orchestration_tests {
     use crate::test_http::{Response, TestServer};
     use std::path::PathBuf;
 
-    const ALL_SOURCES: [&str; 11] = [
+    const ALL_SOURCES: [&str; 12] = [
         "wikidata",
         "aec",
         "aph",
@@ -400,6 +432,7 @@ mod orchestration_tests {
         "aec-profiles",
         "tvfy",
         "states",
+        "state-bills",
     ];
 
     fn new_store(name: &str) -> Store {
@@ -462,10 +495,11 @@ mod orchestration_tests {
         )
         .await
         .expect("a source failure is not a run failure");
-        // "states" is eight sources, one per parliament.
+        // "states" and "state-bills" are eight sources each, one per
+        // parliament.
         assert_eq!(
             failures,
-            ALL_SOURCES.len() - 1 + pollywiki_schema::STATES.len(),
+            ALL_SOURCES.len() - 2 + 2 * pollywiki_schema::STATES.len(),
             "one per source"
         );
 
@@ -475,6 +509,7 @@ mod orchestration_tests {
         assert_eq!(
             names,
             vec![
+                "act-bills",
                 "act-parliament",
                 "aec",
                 "aec-disclosures",
@@ -484,13 +519,20 @@ mod orchestration_tests {
                 "handbook",
                 "ipea",
                 "legislation",
+                "nsw-bills",
                 "nsw-parliament",
+                "nt-bills",
                 "nt-parliament",
+                "qld-bills",
                 "qld-parliament",
+                "sa-bills",
                 "sa-parliament",
+                "tas-bills",
                 "tas-parliament",
                 "tvfy",
+                "vic-bills",
                 "vic-parliament",
+                "wa-bills",
                 "wa-parliament",
                 "wikidata"
             ],

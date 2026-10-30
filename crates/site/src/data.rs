@@ -184,6 +184,18 @@ impl SiteData {
         out
     }
 
+    /// The sitting Prime Minister, by the office the Handbook records them
+    /// holding with no end date.
+    pub fn prime_minister(&self) -> Option<&Person> {
+        self.sitting().find(|p| {
+            p.positions
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|pos| pos.role.eq_ignore_ascii_case("prime minister") && pos.to.is_none())
+        })
+    }
+
     /// Members who hold a seat right now. Former members keep their page, but
     /// stay out of anything describing the parliament as it stands.
     pub fn sitting(&self) -> impl Iterator<Item = &Person> {
@@ -432,6 +444,21 @@ pub fn state_path(state: StateCode) -> String {
 /// A state member's page, under their parliament's.
 pub fn state_member_path(state: StateCode, slug: &str) -> String {
     format!("{}{slug}/", state_path(state))
+}
+
+/// A state or territory parliament's members, chamber by chamber.
+pub fn state_members_path(state: StateCode) -> String {
+    format!("{}members/", state_path(state))
+}
+
+/// A state or territory parliament's bills.
+pub fn state_bills_path(state: StateCode) -> String {
+    format!("{}bills/", state_path(state))
+}
+
+/// One state bill's page, under its parliament's bills.
+pub fn state_bill_path(state: StateCode, slug: &str) -> String {
+    format!("{}{slug}/", state_bills_path(state))
 }
 
 pub fn escape_html(s: &str) -> String {

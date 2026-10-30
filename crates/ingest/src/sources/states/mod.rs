@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 mod act;
+pub mod bills;
 mod drop;
 mod nsw;
 pub mod photos;
@@ -30,6 +31,11 @@ pub const PREFIX: &str = "canonical/states/";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateReferenceEntry {
+    /// The day the current parliament was elected. Bills introduced since
+    /// are its own; anything older lapsed with the last one. It moves on at
+    /// each election, as the seat counts do.
+    #[serde(default)]
+    pub bills_since: Option<String>,
     pub name: String,
     pub url: String,
     pub leader_title: String,

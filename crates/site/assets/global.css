@@ -333,6 +333,79 @@ p {
   }
 }
 
+/* Inside a parliament: its name and its sections, the same tabs for every
+   parliament, so a state's members and bills sit as near to hand as the
+   federal ones. The current tab is underlined into the rule below. */
+.parliament-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 1.4rem;
+  padding-top: 0.95rem;
+  border-bottom: 1px solid var(--hair);
+}
+
+.parliament-bar .house-name {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 1.0625rem;
+  text-decoration: none;
+  padding-bottom: 0.6rem;
+}
+
+.parliament-bar .tabs {
+  display: flex;
+  gap: 1.15rem;
+  font-size: 0.875rem;
+}
+
+.parliament-bar .tabs a {
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+  padding-bottom: 0.6rem;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.parliament-bar .tabs a:hover {
+  color: var(--ink);
+}
+
+.parliament-bar .tabs a[aria-current] {
+  color: var(--ink);
+  font-weight: 500;
+  border-bottom-color: var(--ink);
+}
+
+/* The page under the bar starts nearer it than under the header alone. */
+.parliament-bar + .masthead,
+.parliament-bar + article > .masthead:first-child {
+  padding-top: 1.9rem;
+}
+
+@media (max-width: 40rem) {
+  /* The federal tabs outrun a phone: one swipeable row, edge to edge, as
+     the header's own row is. */
+  .parliament-bar .tabs {
+    width: calc(100% + 3rem);
+    margin: 0 -1.5rem;
+    padding: 4px 1.5rem 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 1rem;
+  }
+
+  .parliament-bar .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .parliament-bar .house-name {
+    padding-bottom: 0.2rem;
+  }
+}
+
 .quick-search input {
   width: 100%;
   font: inherit;
@@ -1146,6 +1219,265 @@ td.date {
   );
 }
 
+/* The nine parliaments as a map: the federal parliament across the top, over
+   all of them, and each state and territory roughly where it lies, with the
+   ocean left empty. Each tile is one link, its name. */
+.federation {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-areas:
+    'fed fed fed fed'
+    'wa  nt  qld .'
+    'wa  sa  nsw act'
+    '.   .   vic .'
+    '.   .   tas .';
+  gap: 0.5rem;
+}
+
+.federation.states-only {
+  grid-template-areas:
+    'wa nt qld .'
+    'wa sa nsw act'
+    '.  .  vic .'
+    '.  .  tas .';
+}
+
+.federation .fed { grid-area: fed; }
+.federation .nsw { grid-area: nsw; }
+.federation .vic { grid-area: vic; }
+.federation .qld { grid-area: qld; }
+.federation .wa { grid-area: wa; }
+.federation .sa { grid-area: sa; }
+.federation .tas { grid-area: tas; }
+.federation .act { grid-area: act; }
+.federation .nt { grid-area: nt; }
+
+.federation .tile {
+  position: relative;
+  padding: 0.75rem 0.85rem 0.8rem;
+  background: var(--card);
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+}
+
+.federation .tile:hover {
+  border-color: var(--hair-strong);
+}
+
+/* The name's link covers the tile, so the tile shows the focus. */
+.federation .tile:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.federation h3 {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.1;
+}
+
+.federation h3 a {
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  outline: none;
+}
+
+.federation h3 a::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+/* The Style Manual's short forms carry the map: set large, in the serif, the
+   way a state is lettered on a printed map. */
+.federation .short {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 1.75rem;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+.federation .name {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.federation h3 a:hover .short {
+  color: var(--accent);
+}
+
+.federation .leader {
+  margin: 0.6rem 0 0.45rem;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.federation .unread .leader,
+.federation .leader:only-of-type:last-child {
+  color: var(--muted);
+}
+
+.federation .seats {
+  margin: 0.35rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--muted);
+}
+
+/* The federal tile reads across: its name and leader, then a bar for each
+   chamber with its leading party's seats. */
+.federation .fed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr);
+  column-gap: 1.4rem;
+  align-items: start;
+}
+
+.federation .fed .houses {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.federation .fed .leader {
+  grid-column: 1;
+}
+
+.federation .houses p {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr) 6.2rem;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0.4rem 0;
+}
+
+.federation .houses .house {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.federation .houses .seats {
+  margin: 0;
+}
+
+.federation .bills {
+  margin: 0.15rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--ink);
+}
+
+.federation + .board-key {
+  margin: 0.55rem 0 0;
+  font-size: 0.78rem;
+}
+
+/* A chamber's seats in a thin bar, marked at a majority. */
+.mini-bar {
+  position: relative;
+  display: flex;
+  gap: 1px;
+  height: 8px;
+}
+
+.mini-bar > span {
+  display: block;
+  min-width: 1px;
+}
+
+.mini-bar .tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink);
+}
+
+.mini-bar .vacant,
+.mini-bar.empty {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--hair-strong) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+/* Tablets and phones: the map gives way to two columns in the Style
+   Manual's order, the federal tile across both. */
+@media (max-width: 46rem) {
+  .federation {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      'fed fed'
+      'nsw vic'
+      'qld wa'
+      'sa  tas'
+      'act nt';
+  }
+
+  .federation.states-only {
+    grid-template-areas:
+      'nsw vic'
+      'qld wa'
+      'sa  tas'
+      'act nt';
+  }
+
+  .federation .fed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .federation .fed .houses {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .federation .houses p {
+    grid-template-columns: 3.2rem minmax(0, 1fr) auto;
+  }
+}
+
+/* A state bill's documents on the official site. */
+.doc-links {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.doc-links li {
+  margin: 0.25rem 0;
+}
+
+/* A parliament's chambers, each a link to its members. */
+.chamber-links {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.chamber-links li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.2rem 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.chamber-links .note {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
 /* Tables */
 table {
   width: 100%;
@@ -1410,6 +1742,31 @@ th[scope='rowgroup'] {
   font-family: var(--mono);
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+/* Across parliaments, each bill is tagged with its own: the Style Manual's
+   short form, linked to that parliament's bills. */
+.bill-list .jur {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+/* The tag keeps a column of its own, so a long title wraps clear of it. */
+.bill-list.everywhere .what {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.bill-list.everywhere .jur {
+  flex: none;
+  width: 3.1rem;
+}
+
+.bill-list .jur:hover {
+  color: var(--accent);
 }
 
 /* Phones: the title on its own line; date, chamber, dots and status share
@@ -2408,8 +2765,13 @@ img.avatar.large {
     box-shadow: inset 0 0 0 1px CanvasText;
   }
 
-  .seat-bar .bar {
+  .seat-bar .bar,
+  .mini-bar {
     forced-color-adjust: none;
+  }
+
+  .mini-bar .tick {
+    background: CanvasText;
   }
 
   .segmented button[aria-pressed='true'],

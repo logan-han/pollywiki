@@ -601,6 +601,15 @@ pub fn person_card(data: &SiteData, person: &Person) -> String {
 }
 
 pub fn seat_bar(data: &SiteData, house: House) -> String {
+    let chamber = match house {
+        House::Senate => "Senate",
+        House::Representatives => "House of Representatives",
+    };
+    composition_bar(chamber, &federal_segments(data, house), 0)
+}
+
+/// A federal chamber's parties by seats held, largest first.
+pub fn federal_segments(data: &SiteData, house: House) -> Vec<BarSegment<'_>> {
     let mut rows: Vec<(&pollywiki_schema::Party, i64)> = data
         .parties
         .iter()
@@ -608,12 +617,7 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
         .filter(|(_, seats)| *seats > 0)
         .collect();
     rows.sort_by_key(|(_, seats)| std::cmp::Reverse(*seats));
-    let chamber = match house {
-        House::Senate => "Senate",
-        House::Representatives => "House of Representatives",
-    };
-    let segments: Vec<BarSegment> = rows
-        .iter()
+    rows.iter()
         .map(|(p, seats)| BarSegment {
             name: &p.name,
             code: p.code.as_deref().unwrap_or(&p.name),
@@ -621,8 +625,50 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
             seats: *seats,
             href: Some(format!("/parties/{}/", p.slug)),
         })
-        .collect();
-    composition_bar(chamber, &segments, 0)
+        .collect()
+}
+
+/// A chamber's seats as a thin bar with a mark at a majority, for the map of
+/// the parliaments. The full bar, with its key, is on each parliament's page.
+pub fn mini_bar(chamber: &str, segments: &[BarSegment], vacant: i64) -> String {
+    let total: i64 = segments.iter().map(|s| s.seats).sum::<i64>() + vacant;
+    let mut aria = segments
+        .iter()
+        .map(|s| format!("{} {}", s.code, s.seats))
+        .collect::<Vec<_>>();
+    if vacant > 0 {
+        aria.push(format!("vacant {vacant}"));
+    }
+    let majority = total / 2 + 1;
+    let width = |seats: i64| js_float(seats as f64 / total.max(1) as f64 * 100.0);
+    let mut out = format!(
+        "<span class=\"mini-bar\" role=\"img\" aria-label=\"{}\">",
+        esc_attr(&format!(
+            "{chamber}, {total} seats, majority {majority}: {}",
+            aria.join(", ")
+        ))
+    );
+    for segment in segments {
+        out.push_str(&format!(
+            "<span style=\"width:{}%;background:{}\"></span>",
+            width(segment.seats),
+            segment.colour
+        ));
+    }
+    if vacant > 0 {
+        out.push_str(&format!(
+            "<span class=\"vacant\" style=\"width:{}%\"></span>",
+            width(vacant)
+        ));
+    }
+    if total > 0 {
+        out.push_str(&format!(
+            "<i class=\"tick\" style=\"left:{}%\"></i>",
+            js_float((majority - 1).max(0) as f64 / total as f64 * 100.0)
+        ));
+    }
+    out.push_str("</span>");
+    out
 }
 
 /// One party's share of a chamber in a composition bar.

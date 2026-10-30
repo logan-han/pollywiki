@@ -1,14 +1,15 @@
-use crate::data::{format_date, SiteData};
+use crate::data::{format_date, state_name, SiteData};
 use crate::html::{esc, esc_attr};
 use crate::strip::js_without_comment_lines;
+use pollywiki_schema::StateCode;
 use std::sync::LazyLock;
 
-pub const DEFAULT_DESCRIPTION: &str = "The Australian federal record, unedited. Parliamentarians, divisions, bills and election results generated from official sources.";
+pub const DEFAULT_DESCRIPTION: &str = "The record of Australia's nine parliaments, unedited: members, bills, votes and election results, federal, state and territory, generated from official sources.";
 
 /// Site-wide share card, shipped as a static asset (assets/public/og-default.png).
 pub const DEFAULT_OG_IMAGE: &str = "/og-default.png";
 
-pub const DEFAULT_OG_IMAGE_ALT: &str = "pollywiki: the Australian federal record";
+pub const DEFAULT_OG_IMAGE_ALT: &str = "pollywiki: the record of Australia's nine parliaments";
 
 /// What an indexable page asks crawlers for. Pages that opt out set their own.
 pub const INDEXED_ROBOTS: &str = "index, follow, max-image-preview:large";
@@ -31,16 +32,47 @@ const PRELOAD_FONTS: [&str; 2] = [
     "/_assets/fonts/ibm-plex-sans-latin-400-normal.woff2",
 ];
 
-// No link to /search/: the quick search beside the links reaches it on
-// Enter, and a seventh link no longer leaves room for the box on one row.
-const NAV: [(&str, &str); 6] = [
+/// Australia's nine parliaments, federal first and then the states and
+/// territories in the order the Style Manual lists them, each under the
+/// short form the Style Manual gives it. Every one is a peer in the header.
+pub(crate) const PARLIAMENTS: [(&str, &str, &str); 9] = [
+    ("Federal", "Parliament of Australia", "/federal/"),
+    ("NSW", "New South Wales", "/states/nsw/"),
+    ("Vic", "Victoria", "/states/vic/"),
+    ("Qld", "Queensland", "/states/qld/"),
+    ("WA", "Western Australia", "/states/wa/"),
+    ("SA", "South Australia", "/states/sa/"),
+    ("Tas", "Tasmania", "/states/tas/"),
+    ("ACT", "Australian Capital Territory", "/states/act/"),
+    ("NT", "Northern Territory", "/states/nt/"),
+];
+
+/// The federal parliament's sections. Their paths predate the other
+/// parliaments, so they sit at the top level rather than under /federal/.
+pub(crate) const FEDERAL_SECTIONS: [(&str, &str); 6] = [
+    ("Overview", "/federal/"),
     ("People", "/people/"),
     ("Divisions", "/divisions/"),
     ("Bills", "/bills/"),
     ("Electorates", "/electorates/"),
     ("Parties", "/parties/"),
-    ("States", "/states/"),
 ];
+
+/// The parliament a page belongs to, as its link in the header: none for the
+/// pages about the whole site, or about all the states at once.
+pub(crate) fn parliament_of(path: &str) -> Option<&'static str> {
+    if FEDERAL_SECTIONS
+        .iter()
+        .any(|(_, href)| path.starts_with(href))
+    {
+        return Some("/federal/");
+    }
+    PARLIAMENTS
+        .iter()
+        .skip(1)
+        .map(|(_, _, href)| *href)
+        .find(|href| path.starts_with(href))
+}
 
 /// How a nav link relates to the page it sits on: its own index is the page,
 /// and anything under it is inside the section, which is not the same thing
@@ -76,6 +108,14 @@ fn source_label(name: &str) -> &str {
         "act-parliament" => "ACT Assembly",
         "nt-parliament" => "NT Assembly",
         "state-photos" => "State member photos",
+        "nsw-bills" => "NSW bills",
+        "vic-bills" => "Victorian bills",
+        "qld-bills" => "Queensland bills",
+        "wa-bills" => "WA bills",
+        "sa-bills" => "SA bills",
+        "tas-bills" => "Tasmanian bills",
+        "act-bills" => "ACT bills",
+        "nt-bills" => "NT bills",
         other => other,
     }
 }
@@ -119,6 +159,64 @@ fn freshness(data: &SiteData) -> String {
         ));
     }
     out
+}
+
+/// The sections of the parliament a page belongs to, at the top of the page:
+/// the same few tabs for every parliament, so a state's bills are as near to
+/// hand as federal ones. A state shows a tab only for what has been read.
+fn parliament_bar(data: &SiteData, path: &str) -> Option<String> {
+    let home = parliament_of(path)?;
+    let (name, sections): (String, Vec<(&str, String)>) = if home == "/federal/" {
+        (
+            "Parliament of Australia".to_string(),
+            FEDERAL_SECTIONS
+                .iter()
+                .map(|(label, href)| (*label, href.to_string()))
+                .collect(),
+        )
+    } else {
+        let code = home.trim_matches('/').rsplit('/').next()?.to_uppercase();
+        let parliament = StateCode::parse(&code).and_then(|s| data.state_parliament(s));
+        let name = match parliament {
+            Some(p) => p.name.clone(),
+            None => state_name(&code)?.to_string(),
+        };
+        let mut sections = vec![("Overview", home.to_string())];
+        if parliament.is_some_and(|p| !p.chambers.is_empty()) {
+            sections.push(("Members", format!("{home}members/")));
+        }
+        if parliament.is_some_and(|p| !p.bills.is_empty()) {
+            sections.push(("Bills", format!("{home}bills/")));
+        }
+        (name, sections)
+    };
+    let mut out = format!(
+        "<nav class=\"parliament-bar\" aria-label=\"{}\"><a class=\"house-name\" href=\"{home}\">{}</a><span class=\"tabs\">",
+        esc_attr(&name),
+        esc(&name)
+    );
+    for (label, href) in &sections {
+        // The overview is the parliament's own page, so everything else
+        // inside it is not "in" the overview. A state member's page sits
+        // under the parliament's path but belongs with its members.
+        let state = if path == href {
+            Some("page")
+        } else if href.as_str() == home {
+            None
+        } else if *label == "Members" {
+            path.strip_prefix(home)
+                .is_some_and(|rest| !rest.is_empty() && !rest.starts_with("bills/"))
+                .then_some("true")
+        } else {
+            nav_state(path, href)
+        };
+        out.push_str(&match state {
+            Some(state) => format!("<a href=\"{href}\" aria-current=\"{state}\">{label}</a>"),
+            None => format!("<a href=\"{href}\">{label}</a>"),
+        });
+    }
+    out.push_str("</span></nav>");
+    Some(out)
 }
 
 pub struct Page {
@@ -238,10 +336,25 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
         out.push_str("<div class=\"sample-banner\">Sample data only. This build is not showing the parliamentary record.</div>");
     }
 
-    out.push_str("<header class=\"site-header\"><div class=\"wrap\"><a class=\"wordmark\" href=\"/\">pollywiki<span class=\"tld\">.au</span></a><nav class=\"site-nav\" aria-label=\"Primary\">");
+    out.push_str("<header class=\"site-header\"><div class=\"wrap\"><a class=\"wordmark\" href=\"/\">pollywiki<span class=\"tld\">.au</span></a><nav class=\"site-nav\" aria-label=\"Parliaments\">");
     let current = page.path.as_str();
-    for (label, href) in NAV {
-        out.push_str(&match nav_state(current, href) {
+    let within = parliament_of(current);
+    for (short, name, href) in PARLIAMENTS {
+        // The short form is what shows; the full name is read out with it,
+        // so the link's name still starts with the words on screen.
+        let label = if short == "Federal" {
+            short.to_string()
+        } else {
+            format!("{short}<span class=\"visually-hidden\"> ({name})</span>")
+        };
+        let state = if current == href {
+            Some("page")
+        } else if within == Some(href) {
+            Some("true")
+        } else {
+            None
+        };
+        out.push_str(&match state {
             Some(state) => {
                 format!("<a href=\"{href}\" aria-current=\"{state}\">{label}</a>")
             }
@@ -252,6 +365,9 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     // the index arrives, or when no suggestion list is showing. The label
     // keeps it apart from Pagefind's own search landmark on /search/.
     out.push_str("</nav><form class=\"quick-search\" role=\"search\" aria-label=\"Quick find\" action=\"/search/\"><input type=\"search\" id=\"quick-search-input\" name=\"q\" placeholder=\"Bill, person or electorate\" autocomplete=\"off\" aria-label=\"Find a bill, person or electorate\" role=\"combobox\" aria-expanded=\"false\" aria-controls=\"quick-search-results\" aria-autocomplete=\"list\"><ul id=\"quick-search-results\" role=\"listbox\" aria-label=\"Suggestions\" tabindex=\"-1\" hidden></ul><p id=\"quick-search-status\" class=\"visually-hidden\" role=\"status\"></p></form></div></header><main class=\"wrap\" id=\"main\">");
+    if let Some(bar) = parliament_bar(data, current) {
+        out.push_str(&bar);
+    }
     out.push_str(&page.body);
     if let Some(script) = page.page_script {
         out.push_str("<script type=\"module\">");

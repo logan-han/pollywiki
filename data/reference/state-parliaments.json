@@ -1,5 +1,6 @@
 {
   "NSW": {
+    "billsSince": "2023-03-25",
     "name": "Parliament of New South Wales",
     "url": "https://www.parliament.nsw.gov.au",
     "leaderTitle": "Premier",
@@ -14,6 +15,7 @@
     ]
   },
   "VIC": {
+    "billsSince": "2022-11-26",
     "name": "Parliament of Victoria",
     "url": "https://www.parliament.vic.gov.au",
     "leaderTitle": "Premier",
@@ -23,6 +25,7 @@
     ]
   },
   "QLD": {
+    "billsSince": "2024-10-26",
     "name": "Parliament of Queensland",
     "url": "https://www.parliament.qld.gov.au",
     "leaderTitle": "Premier",
@@ -31,6 +34,7 @@
     ]
   },
   "WA": {
+    "billsSince": "2025-03-08",
     "name": "Parliament of Western Australia",
     "url": "https://www.parliament.wa.gov.au",
     "leaderTitle": "Premier",
@@ -45,6 +49,7 @@
     ]
   },
   "SA": {
+    "billsSince": "2026-03-21",
     "name": "Parliament of South Australia",
     "url": "https://www.parliament.sa.gov.au",
     "leaderTitle": "Premier",
@@ -54,6 +59,7 @@
     ]
   },
   "TAS": {
+    "billsSince": "2025-07-19",
     "name": "Parliament of Tasmania",
     "url": "https://www.parliament.tas.gov.au",
     "leaderTitle": "Premier",
@@ -63,6 +69,7 @@
     ]
   },
   "ACT": {
+    "billsSince": "2024-10-19",
     "name": "Legislative Assembly for the Australian Capital Territory",
     "url": "https://www.parliament.act.gov.au",
     "leaderTitle": "Chief Minister",
@@ -71,6 +78,7 @@
     ]
   },
   "NT": {
+    "billsSince": "2024-08-24",
     "name": "Legislative Assembly of the Northern Territory",
     "url": "https://parliament.nt.gov.au",
     "leaderTitle": "Chief Minister",
