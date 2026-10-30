@@ -62,9 +62,13 @@ BUNDLES_DIR=$PWD/.store/bundles cargo run -p pollywiki-site -- --out dist
 State and territory parliaments sync with `--sources states` (all eight) or
 one at a time, e.g. `--sources vic-parliament`; each reads that parliament's
 own member list. New South Wales, Western Australia and the Northern
-Territory answer automated readers with a browser challenge, so they are
-marked unavailable in `data/reference/state-parliaments.json` and skipped
-until they publish a list that can be read.
+Territory answer automated readers with a browser challenge, so their lists
+are downloaded by hand about once a month from the pages named under `drop`
+in `data/reference/state-parliaments.json`, and filed as
+`data/reference/state-drops/<state>/<yyyy-mm-dd>-<name>.<ext>`. The newest
+day's files are read and that day is shown as when the members were listed;
+the sync warns once a download is more than 45 days old. With nothing filed,
+the parliament stays marked unavailable.
 
 AI text can also be written outside the nightly Gemini run. `summarise
 --export <dir>` writes every prompt input, pending or not, with the

@@ -4,7 +4,7 @@
 //! party, kept current by the Parliament. A member with two electorate
 //! offices is listed once per office.
 
-use super::{RollChamber, RollMember};
+use super::{split_offices, RollChamber, RollMember};
 use crate::endpoints::Endpoints;
 use crate::http::fetch_bytes;
 use crate::store::Store;
@@ -67,7 +67,7 @@ pub async fn read(store: &Store, endpoints: &Endpoints) -> Result<Vec<RollChambe
             party: cell(row, party),
             seat: Some(seat).filter(|s| !s.is_empty()),
             since: None,
-            offices: offices(&cell(row, portfolio)),
+            offices: split_offices(&cell(row, portfolio)),
             profile: None,
         });
     }
@@ -76,35 +76,6 @@ pub async fn read(store: &Store, endpoints: &Endpoints) -> Result<Vec<RollChambe
         source,
         members,
     }])
-}
-
-/// A portfolio cell holds every office a member has, run together:
-/// "Premier and Minister for Veterans", "Deputy Premier, Minister for State
-/// Development, Infrastructure and Planning and Minister for Industrial
-/// Relations". It is cut wherever ", " or " and " is followed by the start of
-/// another office, so a single portfolio with commas of its own stays whole.
-fn offices(portfolio: &str) -> Vec<String> {
-    static BREAK: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"(?:, | and )(?:Minister|Shadow|Assistant|Leader|Deputy|Manager|Parliamentary|Government Whip|Opposition Whip|Chair|Speaker|Treasurer|Attorney-General|Premier)\b",
-        )
-        .unwrap()
-    });
-    let mut out = Vec::new();
-    let mut start = 0;
-    for found in BREAK.find_iter(portfolio) {
-        out.push(portfolio[start..found.start()].trim().to_string());
-        // The office begins after the separator, not at it.
-        let separator = if found.as_str().starts_with(", ") {
-            2
-        } else {
-            5
-        };
-        start = found.start() + separator;
-    }
-    out.push(portfolio[start..].trim().to_string());
-    out.retain(|o| !o.is_empty());
-    out
 }
 
 /// The rows of a Word document's tables, each row as its cells' text.
@@ -183,35 +154,6 @@ mod tests {
             zip.finish().expect("finish");
         }
         out.into_inner()
-    }
-
-    #[test]
-    fn a_portfolio_splits_into_its_offices_and_no_further() {
-        assert_eq!(
-            offices("Premier and Minister for Veterans"),
-            ["Premier", "Minister for Veterans"]
-        );
-        assert_eq!(
-            offices("Deputy Premier, Minister for State Development, Infrastructure and Planning and Minister for Industrial Relations"),
-            [
-                "Deputy Premier",
-                "Minister for State Development, Infrastructure and Planning",
-                "Minister for Industrial Relations"
-            ]
-        );
-        assert_eq!(
-            offices("Minister for Finance, Trade, Employment and Training"),
-            ["Minister for Finance, Trade, Employment and Training"],
-            "one portfolio with commas of its own"
-        );
-        assert_eq!(
-            offices("Assistant Minister to the Premier on Matters of State and New Citizens, Leader of the House"),
-            [
-                "Assistant Minister to the Premier on Matters of State and New Citizens",
-                "Leader of the House"
-            ]
-        );
-        assert!(offices("").is_empty());
     }
 
     #[tokio::test]

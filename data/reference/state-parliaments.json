@@ -4,6 +4,10 @@
     "url": "https://www.parliament.nsw.gov.au",
     "leaderTitle": "Premier",
     "unavailable": "The Parliament of New South Wales turns away automated readers of its website, so its member list cannot be read here yet.",
+    "drop": {
+      "note": "The Parliament of New South Wales turns away automated readers of its website, so its member lists are downloaded by hand from its downloadable lists page about once a month.",
+      "source": "https://www.parliament.nsw.gov.au/members-and-electorates/members-and-ministers/downloadable-lists"
+    },
     "chambers": [
       { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate" },
       { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 42 }
@@ -31,6 +35,10 @@
     "url": "https://www.parliament.wa.gov.au",
     "leaderTitle": "Premier",
     "unavailable": "The Parliament of Western Australia turns away automated readers of its website, so its member list cannot be read here yet.",
+    "drop": {
+      "note": "The Parliament of Western Australia turns away automated readers of its website, so its member lists are downloaded by hand from its mailing lists page about once a month.",
+      "source": "https://www.parliament.wa.gov.au/webcms/webcms.nsf/content/members-mailing-labels---current-members-of-parliament"
+    },
     "chambers": [
       { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 59, "seatLabel": "District" },
       { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 37 }
@@ -67,6 +75,10 @@
     "url": "https://parliament.nt.gov.au",
     "leaderTitle": "Chief Minister",
     "unavailable": "The Legislative Assembly of the Northern Territory turns away automated readers of its website, so its member list cannot be read here yet.",
+    "drop": {
+      "note": "The Legislative Assembly of the Northern Territory turns away automated readers of its website, so its List of Members is downloaded by hand about once a month.",
+      "source": "https://parliament.nt.gov.au/members"
+    },
     "chambers": [
       { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate" }
     ]

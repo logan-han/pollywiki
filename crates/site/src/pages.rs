@@ -2629,6 +2629,12 @@ pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
         ));
     }
     body.push_str("</tbody></table></div>");
+    if let Some(note) = &parliament.hand_listed {
+        body.push_str(&format!(
+            "<p class=\"procedure-note\"><strong>Downloaded by hand:</strong> {}</p>",
+            esc(note)
+        ));
+    }
 
     body.push_str("<h2 id=\"composition\">Composition</h2>");
     for chamber in &parliament.chambers {
@@ -2899,8 +2905,11 @@ pub fn about_index(data: &SiteData) -> Page {
 
 /// The terms a state or territory parliament publishes its member list
 /// under, as its own site states them.
-fn state_licence(state: StateCode) -> &'static str {
-    match state {
+fn state_licence(parliament: &StateParliament) -> &'static str {
+    if parliament.chambers.is_empty() {
+        return "Not read";
+    }
+    match parliament.state {
         StateCode::VIC => {
             "All rights reserved; the facts of membership reproduced with acknowledgement"
         }
@@ -2908,7 +2917,9 @@ fn state_licence(state: StateCode) -> &'static str {
         StateCode::QLD | StateCode::SA | StateCode::TAS => {
             "No licence stated; the facts of membership reproduced with acknowledgement"
         }
-        StateCode::NSW | StateCode::WA | StateCode::NT => "Not read",
+        StateCode::NSW | StateCode::WA | StateCode::NT => {
+            "Downloaded by hand; the facts of membership reproduced with acknowledgement"
+        }
     }
 }
 
@@ -3018,18 +3029,22 @@ pub fn data_sources(data: &SiteData) -> Page {
             let read_from = if parliament.chambers.is_empty() {
                 esc(parliament.unavailable.as_deref().unwrap_or("Not read yet."))
             } else {
-                parliament
+                let lists = parliament
                     .chambers
                     .iter()
                     .map(|c| format!("<a href=\"{}\">{}</a>", esc_attr(&c.source), esc(&c.name)))
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(", ");
+                match parliament.hand_listed {
+                    Some(_) => format!("{lists} (downloaded by hand)"),
+                    None => lists,
+                }
             };
             body.push_str(&format!(
                 "<tr><td><a href=\"{}\">{}</a></td><td>{read_from}</td><td>{}</td><td class=\"num\">{}</td></tr>",
                 esc_attr(&parliament.url),
                 esc(&parliament.name),
-                state_licence(parliament.state),
+                state_licence(parliament),
                 last_synced(&format!(
                     "{}-parliament",
                     parliament.state.as_str().to_lowercase()
@@ -3091,7 +3106,7 @@ pub fn methodology(data: &SiteData) -> Page {
         "<h2 id=\"states\">State and territory parliaments</h2>",
         "<p>Each state and territory parliament's members are read from the member list that parliament publishes, and nothing else: who sits in which chamber, for which party, for which seat, and the offices the list gives them. A member who leaves drops off at the next reading, and a seat the list leaves empty is shown as vacant.</p>",
         "<p>Seats are counted by the party each parliament lists a member under, with a state branch counted as its party. A chamber's majority is more than half of all its seats, vacancies included, so a party can hold most of the members sitting today and still lack a majority. The Premier or Chief Minister is the member the parliament's list gives that office.</p>",
-        "<p>Where a parliament's website turns away automated readers, its member list is not read at all; its place on the site says so and links to the parliament's own list.</p>",
+        "<p>Where a parliament's website turns away automated readers, its member list is downloaded by hand from that site about once a month, and its page says so and dates the list by the day it was downloaded. Until a download is filed, its place on the site says why the list cannot be read and links to the parliament's own list.</p>",
         "<p>For the states and territories there are no voting records, bills or election results yet: only federal parliament has a source that records every vote in a form this site can read.</p>",
         "<h2>Maps</h2>",
         "<p>Electorate maps draw the ABS's approximation of each division, built from mesh blocks, simplified to what the map can show. The AEC's own maps show the legal boundary.</p>",
