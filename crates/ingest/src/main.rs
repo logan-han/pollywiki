@@ -291,10 +291,21 @@ async fn sync(
         let name = sources::states::source_name(state);
         if has("states") || has(&name) {
             let reference = state_reference.get_or_insert_with(sources::states::reference);
-            run_source!(
-                name.as_str(),
-                sources::states::sync_state(store, state, reference.get(code), endpoints)
-            );
+            match sources::states::sync_state(store, state, reference.get(code), endpoints).await {
+                Ok(true) => {
+                    record_sync(store, &name, true, None).await?;
+                    println!("{name}: ok");
+                }
+                // A parliament that cannot be read leaves no sync record, so
+                // nothing claims its list was read.
+                Ok(false) => {}
+                Err(err) => {
+                    failures += 1;
+                    let note = err.to_string();
+                    record_sync(store, &name, false, Some(&note)).await?;
+                    eprintln!("{name}: FAILED - {note}");
+                }
+            }
         }
     }
     if has("tvfy") {

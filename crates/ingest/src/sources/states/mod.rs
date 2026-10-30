@@ -181,15 +181,16 @@ pub fn source_name(state: StateCode) -> String {
     format!("{}-parliament", state.as_str().to_lowercase())
 }
 
-/// Reads one parliament's member lists and stores them as its roll. A
-/// reading that does not look like its chambers leaves the last good roll
-/// where it is.
+/// Reads one parliament's member lists and stores them as its roll, and
+/// says whether it did: a parliament that cannot be read is skipped, and has
+/// no sync to record. A reading that does not look like its chambers leaves
+/// the last good roll where it is.
 pub async fn sync_state(
     store: &Store,
     state: StateCode,
     reference: Option<&StateReferenceEntry>,
     endpoints: &Endpoints,
-) -> Result<()> {
+) -> Result<bool> {
     let reference =
         reference.ok_or_else(|| anyhow!("no entry for {state} in state-parliaments.json"))?;
     let filed = match &reference.drop {
@@ -219,7 +220,7 @@ pub async fn sync_state(
         _ => {
             if let Some(reason) = &reference.unavailable {
                 println!("{}: skipped ({reason})", source_name(state));
-                return Ok(());
+                return Ok(false);
             }
             StateRoll {
                 state,
@@ -239,7 +240,7 @@ pub async fn sync_state(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    Ok(())
+    Ok(true)
 }
 
 async fn read(store: &Store, state: StateCode, endpoints: &Endpoints) -> Result<Vec<RollChamber>> {
@@ -356,7 +357,7 @@ mod tests {
             .join("../../target/states-tests/unavailable");
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::Local(crate::store::LocalStore::new(dir));
-        sync_state(
+        let read = sync_state(
             &store,
             StateCode::WA,
             Some(&reference),
@@ -364,6 +365,7 @@ mod tests {
         )
         .await
         .expect("a skip is not a failure");
+        assert!(!read, "nothing was read, so nothing is recorded as synced");
         assert!(store
             .get_json::<StateRoll>(&roll_key(StateCode::WA))
             .await
