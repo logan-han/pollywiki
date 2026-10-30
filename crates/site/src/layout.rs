@@ -31,14 +31,15 @@ const PRELOAD_FONTS: [&str; 2] = [
     "/_assets/fonts/ibm-plex-sans-latin-400-normal.woff2",
 ];
 
-const NAV: [(&str, &str); 7] = [
+// No link to /search/: the quick search beside the links reaches it on
+// Enter, and a seventh link no longer leaves room for the box on one row.
+const NAV: [(&str, &str); 6] = [
     ("People", "/people/"),
     ("Divisions", "/divisions/"),
     ("Bills", "/bills/"),
     ("Electorates", "/electorates/"),
     ("Parties", "/parties/"),
     ("States", "/states/"),
-    ("Search", "/search/"),
 ];
 
 /// How a nav link relates to the page it sits on: its own index is the page,

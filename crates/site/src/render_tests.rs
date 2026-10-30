@@ -326,9 +326,13 @@ fn a_nav_link_is_the_current_page_only_on_its_own_index() {
     assert!(!profile.contains("aria-current=\"page\""));
     assert_eq!(profile.matches("aria-current").count(), 1);
 
-    // Pages outside the seven sections mark nothing.
+    // Pages outside the six sections mark nothing, the search page among
+    // them: the quick search reaches it, not a link of its own.
     let about = nav(&render(&data, &pages::about_index(&data)));
     assert!(!about.contains("aria-current"));
+    let search = nav(&render(&data, &pages::search_page()));
+    assert!(!search.contains("aria-current"));
+    assert!(!search.contains("href=\"/search/\""));
 
     assert_eq!(layout::nav_state("/bills/", "/bills/"), Some("page"));
     assert_eq!(
