@@ -31,12 +31,13 @@ const PRELOAD_FONTS: [&str; 2] = [
     "/_assets/fonts/ibm-plex-sans-latin-400-normal.woff2",
 ];
 
-const NAV: [(&str, &str); 6] = [
+const NAV: [(&str, &str); 7] = [
     ("People", "/people/"),
     ("Divisions", "/divisions/"),
     ("Bills", "/bills/"),
     ("Electorates", "/electorates/"),
     ("Parties", "/parties/"),
+    ("States", "/states/"),
     ("Search", "/search/"),
 ];
 
@@ -65,6 +66,14 @@ fn source_label(name: &str) -> &str {
         "ipea" => "IPEA expenses",
         "aec-disclosures" => "AEC disclosures",
         "boundaries" => "ABS boundaries",
+        "nsw-parliament" => "NSW Parliament",
+        "vic-parliament" => "Victorian Parliament",
+        "qld-parliament" => "Queensland Parliament",
+        "wa-parliament" => "WA Parliament",
+        "sa-parliament" => "SA Parliament",
+        "tas-parliament" => "Tasmanian Parliament",
+        "act-parliament" => "ACT Assembly",
+        "nt-parliament" => "NT Assembly",
         other => other,
     }
 }

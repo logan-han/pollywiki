@@ -1131,8 +1131,19 @@ td.date {
   color: var(--muted);
 }
 
-.seat-bar .key a {
+.seat-bar .key a,
+.seat-bar .key span {
   white-space: nowrap;
+}
+
+/* An empty seat shows the ground through a hairline, so it reads as no one
+   rather than as one more party's colour. */
+.seat-bar .bar .vacant {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--hair-strong) 0 2px,
+    transparent 2px 5px
+  );
 }
 
 /* Tables */

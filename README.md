@@ -4,8 +4,9 @@
 [![codecov](https://codecov.io/gh/logan-han/pollywiki/branch/main/graph/badge.svg)](https://codecov.io/gh/logan-han/pollywiki)
 
 The Australian federal record, unedited. A public register of federal
-parliamentarians, division votes, bills and election results, generated
-automatically from official sources with no editorial layer.
+parliamentarians, division votes, bills and election results, plus who sits
+in the state and territory parliaments, generated automatically from official
+sources with no editorial layer.
 
 **This service does not evaluate politicians or laws.** No scores, no rankings,
 no opinions. Official records plus arithmetic, always linked to the source.
@@ -14,7 +15,7 @@ no opinions. Official records plus arithmetic, always linked to the source.
 
 ```
 Wikidata  TVFY API  APH bills + Handbook  AEC results + disclosures
-Legislation Register  IPEA expenses  ABS boundaries
+Legislation Register  IPEA expenses  ABS boundaries  state member lists
     └──────────┴──────────┴──────────┘
                   ▼
    [GitHub Actions: ingest, nightly]
@@ -30,7 +31,8 @@ Everything is Rust, one Cargo workspace:
 - `crates/schema`: entity types, the single source of truth
 - `crates/ingest`: source syncs, normalisation, derived bundles
 - `crates/site`: static site generator; reads bundles, never computes
-- `data/reference`: hand-curated party colours, AEC party names and parliament dates
+- `data/reference`: hand-curated party colours and aliases, AEC party names,
+  parliament dates, and each state and territory parliament's chambers and sizes
 - `data/sample`: fictional bundles so the site builds without credentials
 - `infra`: Terraform for S3, CloudFront and the GitHub OIDC deploy roles
 - `tools`: one-off asset generators (the default social card)
@@ -56,6 +58,20 @@ cargo run -p pollywiki-ingest -- sync --sources aec --event all              # e
 cargo run -p pollywiki-ingest -- derive
 BUNDLES_DIR=$PWD/.store/bundles cargo run -p pollywiki-site -- --out dist
 ```
+
+State and territory parliaments sync with `--sources states` (all eight) or
+one at a time, e.g. `--sources vic-parliament`; each reads that parliament's
+own member list. New South Wales, Western Australia and the Northern
+Territory answer automated readers with a browser challenge, so they are
+marked unavailable in `data/reference/state-parliaments.json` and skipped
+until they publish a list that can be read.
+
+AI text can also be written outside the nightly Gemini run. `summarise
+--export <dir>` writes every prompt input, pending or not, with the
+instructions each kind is written to; `summarise --import <file> --model
+<name>` stores text written for them (one `{"kind","id","text"}` line each)
+after the same checks a model's reply gets, at the current prompt versions,
+so the nightly run leaves it until the record moves on.
 
 They Vote For You divisions need `TVFY_API_KEY`
 ([sign up](https://theyvoteforyou.org.au/help/data), free for low-volume
@@ -112,3 +128,6 @@ project's migration page.
 - Electorate boundaries © Commonwealth of Australia (ABS), CC BY 4.0
 - Parliamentary material reproduced fairly and accurately with acknowledgement
 - People data from Wikidata (CC0); photos from Wikimedia Commons, credited per page
+- State and territory members: facts of membership from each parliament's own
+  list, with acknowledgement (ACT: CC BY-NC-ND 4.0; Victoria: all rights
+  reserved; Queensland, South Australia and Tasmania state no licence)

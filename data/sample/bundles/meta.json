@@ -11,6 +11,8 @@
     "ipea": { "lastSync": "2026-08-14T01:13:00.000Z", "ok": true },
     "aec-disclosures": { "lastSync": "2026-08-14T01:14:00.000Z", "ok": true },
     "boundaries": { "lastSync": "2026-08-14T01:15:00.000Z", "ok": true },
+    "nsw-parliament": { "lastSync": "2026-08-14T01:20:00.000Z", "ok": true },
+    "act-parliament": { "lastSync": "2026-08-14T01:21:00.000Z", "ok": true },
     "aec-profiles": { "lastSync": "2026-08-01T01:14:00.000Z", "ok": false, "note": "sample failure, shown as stale" }
   }
 }

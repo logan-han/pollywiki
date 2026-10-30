@@ -6,5 +6,6 @@ pub mod boundaries;
 pub mod handbook;
 pub mod ipea;
 pub mod legislation;
+pub mod states;
 pub mod tvfy;
 pub mod wikidata;

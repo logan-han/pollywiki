@@ -52,7 +52,9 @@ jobs:
           retention-days: 1
 
   # They Vote For You refuses traffic from non-Australian datacentre ranges,
-  # so its sync runs on a CodeBuild-hosted runner in ap-southeast-2.
+  # so its sync runs on a CodeBuild-hosted runner in ap-southeast-2. The state
+  # and territory parliaments' sites sit behind CDNs that have only answered
+  # Australian traffic in testing, so they run here too.
   au-sources:
     needs: build-au-binary
     runs-on:
@@ -63,6 +65,12 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # The state syncs read each parliament's chambers and sizes from the
+      # reference data; nothing else in the repository is needed here.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: data/reference
+
       - uses: actions/download-artifact@v7
         with:
           name: pollywiki-ingest-al2023-arm64
@@ -81,7 +89,7 @@ jobs:
           chmod +x ./pollywiki-ingest
           ./pollywiki-ingest sync \
             --store s3 \
-            --sources tvfy,handbook,aph,legislation
+            --sources tvfy,handbook,aph,legislation,states
 
   ingest:
     needs: au-sources

@@ -29,24 +29,26 @@ pub fn avatar(person: &Person, large: bool) -> String {
                 size = if large { 102 } else { 48 },
             )
         }
-        None => {
-            let initials: String = person
-                .name
-                .split_whitespace()
-                .filter_map(|part| part.chars().next())
-                .take(2)
-                .collect();
-            format!(
-                "<span class=\"{class}\" aria-hidden=\"true\" data-pagefind-ignore>{initials}</span>",
-                class = if large {
-                    "avatar initials large"
-                } else {
-                    "avatar initials"
-                },
-                initials = esc(&initials),
-            )
-        }
+        None => initials_avatar(&person.name, large),
     }
+}
+
+/// The stand-in for a portrait: the first letters of the first two names.
+pub fn initials_avatar(name: &str, large: bool) -> String {
+    let initials: String = name
+        .split_whitespace()
+        .filter_map(|part| part.chars().next())
+        .take(2)
+        .collect();
+    format!(
+        "<span class=\"{class}\" aria-hidden=\"true\" data-pagefind-ignore>{initials}</span>",
+        class = if large {
+            "avatar initials large"
+        } else {
+            "avatar initials"
+        },
+        initials = esc(&initials),
+    )
 }
 
 pub fn chamber_chip(house: House) -> String {
@@ -601,16 +603,48 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
         .filter(|(_, seats)| *seats > 0)
         .collect();
     rows.sort_by_key(|(_, seats)| std::cmp::Reverse(*seats));
-    let total: i64 = rows.iter().map(|(_, seats)| seats).sum();
     let chamber = match house {
         House::Senate => "Senate",
         House::Representatives => "House of Representatives",
     };
-    let aria = rows
+    let segments: Vec<BarSegment> = rows
         .iter()
-        .map(|(p, seats)| format!("{} {seats}", p.name))
-        .collect::<Vec<_>>()
-        .join(", ");
+        .map(|(p, seats)| BarSegment {
+            name: &p.name,
+            code: p.code.as_deref().unwrap_or(&p.name),
+            colour: p.colour.as_deref().unwrap_or(GROUP_FALLBACK_COLOUR),
+            seats: *seats,
+            href: Some(format!("/parties/{}/", p.slug)),
+        })
+        .collect();
+    composition_bar(chamber, &segments, 0)
+}
+
+/// One party's share of a chamber in a composition bar.
+pub struct BarSegment<'a> {
+    pub name: &'a str,
+    /// What the key calls the party: its code, or its name where it has none.
+    pub code: &'a str,
+    pub colour: &'a str,
+    pub seats: i64,
+    /// The party's page, where it has one.
+    pub href: Option<String>,
+}
+
+/// A chamber's seats by party as one bar, largest party first as the caller
+/// orders them, with the majority marked. Empty seats sit at the end in a
+/// segment of their own and count towards the majority: a chamber's majority
+/// is of its seats, not of whoever holds one today.
+pub fn composition_bar(chamber: &str, segments: &[BarSegment], vacant: i64) -> String {
+    let total: i64 = segments.iter().map(|s| s.seats).sum::<i64>() + vacant;
+    let mut aria = segments
+        .iter()
+        .map(|s| format!("{} {}", s.name, s.seats))
+        .collect::<Vec<_>>();
+    if vacant > 0 {
+        aria.push(format!("vacant {vacant}"));
+    }
+    let aria = aria.join(", ");
     // The threshold sits on the boundary between the last minority seat and
     // the first majority one, so a segment crossing the tick holds a majority.
     let majority = total / 2 + 1;
@@ -634,17 +668,25 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
     }
     // One picture with one text alternative. The segments are not links: a
     // one-seat party is a few pixels wide, too narrow to tap or to show a
-    // focus ring, and the key underneath links every party anyway.
+    // focus ring, and the key underneath names every party, linking each
+    // one that has a page.
     out.push_str(&format!(
         "<div class=\"bar\" role=\"img\" aria-label=\"{}\">",
         esc_attr(&format!("{chamber} composition: {aria}")),
     ));
-    for (party, seats) in &rows {
+    let width = |seats: i64| js_float(seats as f64 / total.max(1) as f64 * 100.0);
+    for segment in segments {
         out.push_str(&format!(
-            "<span style=\"width:{width}%;background:{colour}\" title=\"{title}\"></span>",
-            width = js_float(*seats as f64 / total.max(1) as f64 * 100.0),
-            colour = party.colour.as_deref().unwrap_or(GROUP_FALLBACK_COLOUR),
-            title = esc_attr(&format!("{}: {seats}", party.name)),
+            "<span style=\"width:{}%;background:{}\" title=\"{}\"></span>",
+            width(segment.seats),
+            segment.colour,
+            esc_attr(&format!("{}: {}", segment.name, segment.seats)),
+        ));
+    }
+    if vacant > 0 {
+        out.push_str(&format!(
+            "<span class=\"vacant\" style=\"width:{}%\" title=\"Vacant: {vacant}\"></span>",
+            width(vacant)
         ));
     }
     out.push_str("</div>");
@@ -657,19 +699,17 @@ pub fn seat_bar(data: &SiteData, house: House) -> String {
     // left dangling at the start of a wrapped line. The plain space between
     // links only keeps copied or extracted text apart; the layout drops it.
     out.push_str("</div><div class=\"key\">");
-    out.push_str(
-        &rows
-            .iter()
-            .map(|(p, seats)| {
-                format!(
-                    "<a href=\"/parties/{}/\">{} {seats}</a>",
-                    p.slug,
-                    esc(p.code.as_deref().unwrap_or(&p.name))
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    );
+    let mut key: Vec<String> = segments
+        .iter()
+        .map(|s| match &s.href {
+            Some(href) => format!("<a href=\"{href}\">{} {}</a>", esc(s.code), s.seats),
+            None => format!("<span>{} {}</span>", esc(s.code), s.seats),
+        })
+        .collect();
+    if vacant > 0 {
+        key.push(format!("<span>Vacant {vacant}</span>"));
+    }
+    out.push_str(&key.join(" "));
     out.push_str("</div></div>");
     out
 }

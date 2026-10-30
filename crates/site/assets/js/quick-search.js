@@ -1,5 +1,5 @@
-// Header quick search: a combobox over the build-time index of bills, people
-// and electorates. Progressive enhancement: the box is a real search form, so
+// Header quick search: a combobox over the build-time index of bills, people,
+// electorates and state members. Progressive enhancement: the box is a real search form, so
 // with no JS (or before the index arrives) Enter still goes to /search/?q=.
 const input = document.getElementById('quick-search-input')
 const form = input?.form
@@ -9,10 +9,12 @@ const LIMIT = 8
 // Every group with a hit gets this many rows before any group gets more.
 const FLOOR = 2
 // Groups are shown closest match first; on a tie they keep this order.
+// A state member's slug carries their parliament: 'nsw/jane-smith'.
 const GROUPS = [
   { t: 'bill', label: 'Bills', prefix: '/bills/' },
   { t: 'person', label: 'People', prefix: '/people/' },
   { t: 'electorate', label: 'Electorates', prefix: '/electorates/' },
+  { t: 'state', label: 'State members', prefix: '/states/' },
 ]
 
 let pending = null
@@ -144,7 +146,7 @@ async function render() {
     const label = `qs-group-${group.t}`
     html += `<li role="none"><div role="group" aria-labelledby="${label}"><span class="group" id="${label}" aria-hidden="true">${group.label}</span>`
     for (const { e } of group.hits.slice(0, quota[i])) {
-      const href = `${group.prefix}${encodeURIComponent(e.slug)}/`
+      const href = `${group.prefix}${e.slug.split('/').map(encodeURIComponent).join('/')}/`
       html += option(`qs-opt-${n}`, href, esc(e.name), esc(e.sub))
       n += 1
     }
