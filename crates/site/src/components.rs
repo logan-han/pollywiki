@@ -3,10 +3,15 @@ use crate::data::{
     DivisionSeries, SiteData,
 };
 use crate::html::{esc, esc_attr};
-use pollywiki_schema::{Bill, Division, DivisionResult, House, Person, SummaryKind};
+use pollywiki_schema::{Bill, Division, DivisionResult, House, Person, Photo, SummaryKind};
 
 pub fn avatar(person: &Person, large: bool) -> String {
-    match &person.photo {
+    portrait(&person.name, person.photo.as_ref(), large)
+}
+
+/// A member's photo, or their initials when there is none.
+pub fn portrait(name: &str, photo: Option<&Photo>, large: bool) -> String {
+    match photo {
         Some(photo) => {
             let src = if large {
                 photo.thumb_large.as_deref().unwrap_or(&photo.url)
@@ -21,7 +26,7 @@ pub fn avatar(person: &Person, large: bool) -> String {
                 class = if large { "avatar large" } else { "avatar" },
                 src = esc_attr(src),
                 alt = if large {
-                    format!("Portrait of {}", esc_attr(&person.name))
+                    format!("Portrait of {}", esc_attr(name))
                 } else {
                     String::new()
                 },
@@ -29,7 +34,7 @@ pub fn avatar(person: &Person, large: bool) -> String {
                 size = if large { 102 } else { 48 },
             )
         }
-        None => initials_avatar(&person.name, large),
+        None => initials_avatar(name, large),
     }
 }
 

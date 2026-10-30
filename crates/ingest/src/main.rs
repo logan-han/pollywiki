@@ -20,8 +20,9 @@ use store::{LocalStore, S3Store, Store};
 const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [options]
   --store local|s3       default local (.store/); s3 needs POLLYWIKI_DATA_BUCKET
   --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec,
-                         legislation,ipea,aec-disclosures,boundaries, and states
-                         (every parliament) or one of nsw-parliament ... nt-parliament
+                         legislation,ipea,aec-disclosures,boundaries, states
+                         (every parliament) or one of nsw-parliament ... nt-parliament,
+                         and state-photos
   --event <ids>          AEC event id(s), comma-separated, or all (default 31496)
   --rebuild              tvfy only: re-normalise from cached raw, no API calls
   --export <dir>         summarise only: write every prompt input, no model calls
@@ -307,6 +308,14 @@ async fn sync(
                 }
             }
         }
+    }
+    // After the parliaments, so a run that reads both finds today's members.
+    if has("state-photos") {
+        let reference = state_reference.get_or_insert_with(sources::states::reference);
+        run_source!(
+            "state-photos",
+            sources::states::photos::sync_state_photos(store, reference, endpoints)
+        );
     }
     if has("tvfy") {
         if std::env::var("TVFY_API_KEY").is_ok() || rebuild {

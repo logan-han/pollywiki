@@ -9,8 +9,8 @@
       "source": "https://www.parliament.nsw.gov.au/members-and-electorates/members-and-ministers/downloadable-lists"
     },
     "chambers": [
-      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate" },
-      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 42 }
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate", "wikidata": "Q19202748" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 42, "wikidata": "Q18810377" }
     ]
   },
   "VIC": {
@@ -18,8 +18,8 @@
     "url": "https://www.parliament.vic.gov.au",
     "leaderTitle": "Premier",
     "chambers": [
-      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 88, "seatLabel": "District" },
-      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 40, "seatLabel": "Region" }
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 88, "seatLabel": "District", "wikidata": "Q18534408" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 40, "seatLabel": "Region", "wikidata": "Q19185341" }
     ]
   },
   "QLD": {
@@ -27,7 +27,7 @@
     "url": "https://www.parliament.qld.gov.au",
     "leaderTitle": "Premier",
     "chambers": [
-      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate" }
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 93, "seatLabel": "Electorate", "wikidata": "Q18526194" }
     ]
   },
   "WA": {
@@ -40,8 +40,8 @@
       "source": "https://www.parliament.wa.gov.au/webcms/webcms.nsf/content/members-mailing-labels---current-members-of-parliament"
     },
     "chambers": [
-      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 59, "seatLabel": "District" },
-      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 37 }
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 59, "seatLabel": "District", "wikidata": "Q20165902" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 37, "wikidata": "Q19627913" }
     ]
   },
   "SA": {
@@ -49,8 +49,8 @@
     "url": "https://www.parliament.sa.gov.au",
     "leaderTitle": "Premier",
     "chambers": [
-      { "slug": "house-of-assembly", "name": "House of Assembly", "kind": "lower", "seats": 47, "seatLabel": "District" },
-      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 22 }
+      { "slug": "house-of-assembly", "name": "House of Assembly", "kind": "lower", "seats": 47, "seatLabel": "District", "wikidata": "Q18220900" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 22, "wikidata": "Q18662245" }
     ]
   },
   "TAS": {
@@ -58,8 +58,8 @@
     "url": "https://www.parliament.tas.gov.au",
     "leaderTitle": "Premier",
     "chambers": [
-      { "slug": "house-of-assembly", "name": "House of Assembly", "kind": "lower", "seats": 35, "seatLabel": "Division" },
-      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 15, "seatLabel": "Division" }
+      { "slug": "house-of-assembly", "name": "House of Assembly", "kind": "lower", "seats": 35, "seatLabel": "Division", "wikidata": "Q19007285" },
+      { "slug": "legislative-council", "name": "Legislative Council", "kind": "upper", "seats": 15, "seatLabel": "Division", "wikidata": "Q19299542" }
     ]
   },
   "ACT": {
@@ -67,7 +67,7 @@
     "url": "https://www.parliament.act.gov.au",
     "leaderTitle": "Chief Minister",
     "chambers": [
-      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate" }
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate", "wikidata": "Q6814365" }
     ]
   },
   "NT": {
@@ -80,7 +80,7 @@
       "source": "https://parliament.nt.gov.au/members"
     },
     "chambers": [
-      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate" }
+      { "slug": "legislative-assembly", "name": "Legislative Assembly", "kind": "lower", "seats": 25, "seatLabel": "Electorate", "wikidata": "Q26998278" }
     ]
   }
 }

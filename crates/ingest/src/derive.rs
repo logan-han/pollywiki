@@ -5,6 +5,7 @@ use crate::sources::aec_profiles::ElectorateProfile;
 use crate::sources::handbook::{HandbookElectorates, HandbookProfile, ELECTORATES_KEY};
 use crate::sources::ipea::{IpeaParliamentarian, IpeaQuarter};
 use crate::sources::legislation::ACTS_KEY;
+use crate::sources::states::photos::{photos_key, StatePhoto};
 use crate::sources::states::{StateReferenceEntry, StateRoll};
 use crate::store::Store;
 use crate::summarise::{ai_key, bill_note_key, is_transcript, note_key, AiPersonNote, AiSummary};
@@ -299,7 +300,18 @@ pub async fn derive(store: &Store) -> Result<()> {
     }
     attach_person_funding(&mut people, &slug_to_index, &disclosures);
     let rolls = load_all::<StateRoll>(store, crate::sources::states::PREFIX).await?;
-    let states = state_parliaments(&rolls, &crate::sources::states::reference(), &reference);
+    let mut state_photos: HashMap<StateCode, Vec<StatePhoto>> = HashMap::new();
+    for roll in &rolls {
+        if let Some(photos) = store.get_json(&photos_key(roll.state)).await? {
+            state_photos.insert(roll.state, photos);
+        }
+    }
+    let states = state_parliaments(
+        &rolls,
+        &state_photos,
+        &crate::sources::states::reference(),
+        &reference,
+    );
 
     // Each current electorate shows its own most recent contest, so a seat
     // decided at a by-election displays that result, not the older general.
@@ -445,6 +457,7 @@ pub async fn derive(store: &Store) -> Result<()> {
 /// parliament, and their parties matched to the reference and counted.
 fn state_parliaments(
     rolls: &[StateRoll],
+    photos: &HashMap<StateCode, Vec<StatePhoto>>,
     states: &IndexMap<String, StateReferenceEntry>,
     parties: &IndexMap<String, PartyReferenceEntry>,
 ) -> Vec<StateParliament> {
@@ -491,6 +504,14 @@ fn state_parliaments(
                         since: m.since.clone(),
                         offices: m.offices.clone(),
                         profile: m.profile.clone(),
+                        photo: photos
+                            .get(&roll.state)
+                            .and_then(|filed| {
+                                filed
+                                    .iter()
+                                    .find(|p| p.chamber == reference.slug && p.name == m.name)
+                            })
+                            .map(|p| p.photo.clone()),
                     }
                 })
                 .collect();
@@ -1902,7 +1923,17 @@ mod tests {
             )
             .unwrap(),
         );
-        let states = state_parliaments(&rolls, &reference, &party_reference_fixture());
+        let photos: HashMap<StateCode, Vec<StatePhoto>> = HashMap::from([(
+            StateCode::NSW,
+            serde_json::from_str(
+                r#"[{"chamber":"legislative-council","name":"Jane Smith","wikidata":"Q1",
+                     "photo":{"commonsFile":"Jane.jpg","url":"https://example.org/Jane.jpg",
+                              "licence":"CC BY 4.0","attribution":"A Photographer",
+                              "thumb":"/img/states/Q1-96.jpg"}}]"#,
+            )
+            .expect("photos fixture"),
+        )]);
+        let states = state_parliaments(&rolls, &photos, &reference, &party_reference_fixture());
         let codes: Vec<&str> = states.iter().map(|s| s.state.as_str()).collect();
         assert_eq!(
             codes,
@@ -1928,7 +1959,7 @@ mod tests {
             note: "Downloaded by hand each month.".to_string(),
             source: "https://example.org/lists".to_string(),
         });
-        let states = state_parliaments(&rolls, &hand, &party_reference_fixture());
+        let states = state_parliaments(&rolls, &photos, &hand, &party_reference_fixture());
         assert_eq!(states[0].chambers.len(), 2);
         assert!(states[0].unavailable.is_none());
         assert_eq!(
@@ -1936,7 +1967,7 @@ mod tests {
             Some("Downloaded by hand each month.")
         );
         // With no download filed, the reason stands in its place.
-        let unread = state_parliaments(&[], &hand, &party_reference_fixture());
+        let unread = state_parliaments(&[], &photos, &hand, &party_reference_fixture());
         assert!(unread[0].chambers.is_empty());
         assert!(unread[0].hand_listed.is_none());
         assert_eq!(
@@ -1987,6 +2018,11 @@ mod tests {
             nsw.chambers[1].members[0].slug,
             "jane-smith-legislative-council"
         );
+        // A photo is filed under chamber and name, so it finds the member of
+        // the chamber it was matched in and not their namesake.
+        let photo = nsw.chambers[1].members[0].photo.as_ref().expect("photo");
+        assert_eq!(photo.thumb.as_deref(), Some("/img/states/Q1-96.jpg"));
+        assert!(la.members[0].photo.is_none());
         let (_, leader) = nsw.leader().expect("the Premier");
         assert_eq!(leader.slug, "jane-smith");
         assert_eq!(leader.since.as_deref(), Some("2015-03-28"));

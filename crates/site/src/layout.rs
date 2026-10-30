@@ -75,6 +75,7 @@ fn source_label(name: &str) -> &str {
         "tas-parliament" => "Tasmanian Parliament",
         "act-parliament" => "ACT Assembly",
         "nt-parliament" => "NT Assembly",
+        "state-photos" => "State member photos",
         other => other,
     }
 }

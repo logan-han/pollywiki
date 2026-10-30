@@ -3469,6 +3469,55 @@ fn a_state_member_page_names_the_seat_the_chamber_and_the_party() {
 }
 
 #[test]
+fn a_state_member_with_a_free_photo_shows_it_and_credits_the_photographer() {
+    let data = sample_data();
+    let sample = data
+        .state_parliament(pollywiki_schema::StateCode::NSW)
+        .expect("sample NSW");
+    let mut nsw = sample.clone();
+    let riley = nsw
+        .chambers
+        .iter_mut()
+        .flat_map(|c| c.members.iter_mut())
+        .find(|m| m.slug == "riley-okafor")
+        .expect("sample member");
+    riley.photo = Some(pollywiki_schema::Photo {
+        commons_file: "Riley Okafor 2024.jpg".to_string(),
+        url: "https://commons.wikimedia.org/wiki/Special:FilePath/Riley%20Okafor%202024.jpg?width=400"
+            .to_string(),
+        licence: "CC BY-SA 4.0".to_string(),
+        attribution: "A Photographer".to_string(),
+        thumb: Some("/img/states/Q1-96.jpg".to_string()),
+        thumb_large: Some("/img/states/Q1-320.jpg".to_string()),
+    });
+    let (chamber, member) = nsw.member_by_slug("riley-okafor").expect("sample member");
+    let html = render(
+        &data,
+        &pages::state_member_page(&data, &nsw, chamber, member),
+    );
+    assert!(html.contains(
+        "<img class=\"avatar large\" src=\"/img/states/Q1-320.jpg\" alt=\"Portrait of Riley Okafor\""
+    ));
+    assert!(html.contains(
+        "<p class=\"attribution\">Photo: A Photographer (CC BY-SA 4.0), via Wikimedia Commons.</p>"
+    ));
+    assert!(html.contains(
+        "\"image\":\"https://commons.wikimedia.org/wiki/Special:FilePath/Riley%20Okafor%202024.jpg?width=400\""
+    ));
+
+    // Without one, the initials stand in and nothing is credited.
+    let (chamber, member) = sample
+        .member_by_slug("riley-okafor")
+        .expect("sample member");
+    let html = render(
+        &data,
+        &pages::state_member_page(&data, sample, chamber, member),
+    );
+    assert!(html.contains("<span class=\"avatar initials large\" aria-hidden=\"true\""));
+    assert!(!html.contains("Photo: "));
+}
+
+#[test]
 fn a_party_page_counts_its_seats_in_each_state_chamber() {
     let data = sample_data();
     let party = data.party_by_slug("example-party").expect("sample party");

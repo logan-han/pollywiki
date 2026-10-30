@@ -897,6 +897,9 @@ pub struct StateMember {
     /// The member's page on the parliament's own site.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// A freely licensed photo from Wikimedia Commons, where there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<Photo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

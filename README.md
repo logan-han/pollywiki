@@ -68,7 +68,10 @@ in `data/reference/state-parliaments.json`, and filed as
 `data/reference/state-drops/<state>/<yyyy-mm-dd>-<name>.<ext>`. The newest
 day's files are read and that day is shown as when the members were listed;
 the sync warns once a download is more than 45 days old. With nothing filed,
-the parliament stays marked unavailable.
+the parliament stays marked unavailable. `--sources state-photos` then finds
+each sitting member on Wikidata, by the chamber's position and their name
+and seat, and mirrors any freely licensed Commons photo; the parliaments'
+own portraits are not licensed for reuse.
 
 AI text can also be written outside the nightly Gemini run. `summarise
 --export <dir>` writes every prompt input, pending or not, with the
@@ -131,7 +134,8 @@ project's migration page.
 - Parliamentary expenses © Independent Parliamentary Expenses Authority, CC BY 3.0 AU
 - Electorate boundaries © Commonwealth of Australia (ABS), CC BY 4.0
 - Parliamentary material reproduced fairly and accurately with acknowledgement
-- People data from Wikidata (CC0); photos from Wikimedia Commons, credited per page
+- People data from Wikidata (CC0); photos of federal and state members from
+  Wikimedia Commons, credited per page
 - State and territory members: facts of membership from each parliament's own
   list, with acknowledgement (ACT: CC BY-NC-ND 4.0; Victoria: all rights
   reserved; Queensland, South Australia and Tasmania state no licence)

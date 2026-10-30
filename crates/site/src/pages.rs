@@ -4,9 +4,9 @@
 
 use crate::components::{
     avatar, bill_dots, chamber_chip, composition_bar, group_chip, group_chip_labelled,
-    initials_avatar, ledger_month, ledger_row_labelled, month_jump, month_label, person_card,
-    result_chip, result_word, seat_bar, series_row, series_row_in_month, sitting_day_row, vote_bar,
-    BarSegment, BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
+    ledger_month, ledger_row_labelled, month_jump, month_label, person_card, portrait, result_chip,
+    result_word, seat_bar, series_row, series_row_in_month, sitting_day_row, vote_bar, BarSegment,
+    BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
 };
 use crate::data::{
     self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
@@ -2759,7 +2759,7 @@ pub fn state_member_page(
     let mut body = String::new();
     body.push_str(&record_article("Person", None));
     body.push_str("<div class=\"profile-head\">");
-    body.push_str(&initials_avatar(&member.name, true));
+    body.push_str(&portrait(&member.name, member.photo.as_ref(), true));
     body.push_str("<div><div class=\"meta-row\"><span class=\"ids\">");
     body.push_str(&state_chamber_chip(state, chamber));
     body.push_str(&format!(" <span class=\"seat\">{}</span>", esc(&seat)));
@@ -2809,6 +2809,13 @@ pub fn state_member_page(
         counted(chamber.members.len(), "member"),
         esc(&house),
     ));
+    if let Some(photo) = &member.photo {
+        body.push_str(&format!(
+            "<p class=\"attribution\">Photo: {} ({}), via Wikimedia Commons.</p>",
+            esc(&photo.attribution),
+            esc(&photo.licence)
+        ));
+    }
     body.push_str(&format!(
         "<p class=\"attribution\">Source: {}, <a href=\"{}\">{} member list</a>. Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
         esc(&parliament.name),
@@ -2837,6 +2844,9 @@ pub fn state_member_page(
     });
     if let Some(profile) = &member.profile {
         person_ld["sameAs"] = serde_json::json!(profile);
+    }
+    if let Some(photo) = &member.photo {
+        person_ld["image"] = serde_json::json!(photo.url);
     }
     let mut page = Page::new(member.name.clone(), Some(description), path.clone(), body);
     page.og_type = "profile";
@@ -2935,7 +2945,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         Source {
             key: "wikidata",
             name: "Wikidata & Wikimedia Commons",
-            what: "Current members of both chambers, parliamentary groups, seats, photos.",
+            what: "Federal members of both chambers, parliamentary groups, seats and photos; state and territory members' photos.",
             licence: "CC0 (data); photos individually licensed and credited on each page",
             link: "https://www.wikidata.org",
         },
@@ -3022,7 +3032,7 @@ pub fn data_sources(data: &SiteData) -> Page {
     body.push_str("</tbody></table></div>");
 
     if !data.states.is_empty() {
-        body.push_str("<h2 id=\"states\">State and territory parliaments</h2><p>Each parliament's members, parties, seats and offices are read from the member list that parliament publishes. Only those facts are reproduced: no photos, biographies or other material from the parliaments' sites.</p>");
+        body.push_str("<h2 id=\"states\">State and territory parliaments</h2><p>Each parliament's members, parties, seats and offices are read from the member list that parliament publishes. Only those facts are reproduced: no photos, biographies or other material from the parliaments' sites. Members' photos, where shown, come from Wikimedia Commons under free licences, found through Wikidata as federal members' are.</p>");
         body.push_str(&table_scroll("State and territory sources"));
         body.push_str("<table><thead><tr><th scope=\"col\">Parliament</th><th scope=\"col\">Read from</th><th scope=\"col\">Licence</th><th scope=\"col\">Last synced</th></tr></thead><tbody>");
         for parliament in &data.states {

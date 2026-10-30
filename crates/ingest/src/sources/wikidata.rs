@@ -56,11 +56,11 @@ pub struct RawMember {
     pub wikipedia: Option<String>,
 }
 
-static FREE_LICENCES: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static FREE_LICENCES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(cc0|cc.by(.sa)?.\d|public domain|pd|no restrictions|attribution)").unwrap()
 });
 
-fn binding_value<'a>(binding: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn binding_value<'a>(binding: &'a Value, key: &str) -> Option<&'a str> {
     binding.get(key)?.get("value")?.as_str()
 }
 
@@ -110,8 +110,8 @@ pub async fn sync_wikidata(store: &Store, endpoints: &Endpoints) -> Result<Vec<P
     let mut people = people_from_members(endpoints, &members, &licences);
 
     for person in &mut people {
-        if person.photo.is_some() {
-            mirror_photo(store, person, endpoints).await?;
+        if let Some(photo) = person.photo.as_mut() {
+            mirror_photo(store, photo, &format!("people/{}", person.slug), endpoints).await?;
         }
         // Other sources enrich people (e.g. the TVFY id crosswalk); merge rather
         // than clobber what this source does not own.
@@ -347,16 +347,7 @@ pub fn dedupe(bindings: &[Value]) -> Vec<RawMember> {
                 continue;
             }
         }
-        let commons_file = binding_value(b, "img").map(|img| {
-            let after = img
-                .split("/Special:FilePath/")
-                .last()
-                .unwrap_or("")
-                .to_string();
-            percent_encoding::percent_decode_str(&after)
-                .decode_utf8_lossy()
-                .into_owned()
-        });
+        let commons_file = binding_value(b, "img").map(commons_file);
         by_id.insert(
             uri.to_string(),
             Entry {
@@ -379,6 +370,15 @@ pub fn dedupe(bindings: &[Value]) -> Vec<RawMember> {
     by_id.into_values().map(|e| e.member).collect()
 }
 
+/// The Commons file name in a P18 value, which the query service hands back
+/// as a percent-encoded Special:FilePath URL.
+pub(crate) fn commons_file(img: &str) -> String {
+    let after = img.split("/Special:FilePath/").last().unwrap_or("");
+    percent_encoding::percent_decode_str(after)
+        .decode_utf8_lossy()
+        .into_owned()
+}
+
 fn as_state(label: Option<&str>) -> Option<StateCode> {
     let label = label?;
     let code = match label.to_lowercase().as_str() {
@@ -395,7 +395,7 @@ fn as_state(label: Option<&str>) -> Option<StateCode> {
     code.or_else(|| StateCode::parse(label))
 }
 
-fn thumb_url(endpoints: &Endpoints, file: &str, width: u32) -> String {
+pub(crate) fn thumb_url(endpoints: &Endpoints, file: &str, width: u32) -> String {
     format!(
         "{}/wiki/Special:FilePath/{}?width={width}",
         endpoints.commons_files,
@@ -403,7 +403,7 @@ fn thumb_url(endpoints: &Endpoints, file: &str, width: u32) -> String {
     )
 }
 
-const THUMB_SIZES: [u32; 2] = [96, 320];
+pub(crate) const THUMB_SIZES: [u32; 2] = [96, 320];
 
 #[derive(Deserialize)]
 struct PhotoMarker {
@@ -414,11 +414,14 @@ struct PhotoMarker {
 /// Mirrors Commons thumbnails into the store so CloudFront serves them
 /// same-origin (the deploy job copies derived/img/ to the site prefix).
 /// Hotlinking Commons meant a redirect chain per avatar and no edge caching.
-async fn mirror_photo(store: &Store, person: &mut Person, endpoints: &Endpoints) -> Result<()> {
-    let Some(photo) = person.photo.as_mut() else {
-        return Ok(());
-    };
-    let marker_key = format!("derived/img/people/{}.src.json", person.slug);
+/// `name` is the thumbnails' path under img/, e.g. "people/jane-smith".
+pub(crate) async fn mirror_photo(
+    store: &Store,
+    photo: &mut Photo,
+    name: &str,
+    endpoints: &Endpoints,
+) -> Result<()> {
+    let marker_key = format!("derived/img/{name}.src.json");
     let marker: Option<PhotoMarker> = store.get_json(&marker_key).await?;
 
     if marker.map(|m| m.commons_file) != Some(photo.commons_file.clone()) {
@@ -432,14 +435,11 @@ async fn mirror_photo(store: &Store, person: &mut Person, endpoints: &Endpoints)
             {
                 Ok(bytes) => {
                     store
-                        .put_raw(
-                            &format!("derived/img/people/{}-{size}.jpg", person.slug),
-                            &bytes,
-                        )
+                        .put_raw(&format!("derived/img/{name}-{size}.jpg"), &bytes)
                         .await?;
                 }
                 Err(err) => {
-                    eprintln!("wikidata: photo mirror failed for {}: {err}", person.slug);
+                    eprintln!("photo mirror failed for {name}: {err}");
                     ok = false;
                     break;
                 }
@@ -455,8 +455,8 @@ async fn mirror_photo(store: &Store, person: &mut Person, endpoints: &Endpoints)
             )
             .await?;
     }
-    photo.thumb = Some(format!("/img/people/{}-96.jpg", person.slug));
-    photo.thumb_large = Some(format!("/img/people/{}-320.jpg", person.slug));
+    photo.thumb = Some(format!("/img/{name}-96.jpg"));
+    photo.thumb_large = Some(format!("/img/{name}-320.jpg"));
     Ok(())
 }
 
@@ -465,7 +465,7 @@ pub struct CommonsLicence {
     pub attribution: String,
 }
 
-async fn fetch_commons_licences(
+pub(crate) async fn fetch_commons_licences(
     files: &[String],
     endpoints: &Endpoints,
 ) -> Result<IndexMap<String, CommonsLicence>> {

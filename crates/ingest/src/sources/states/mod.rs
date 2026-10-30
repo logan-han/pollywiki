@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 mod act;
 mod drop;
 mod nsw;
+pub mod photos;
 mod qld;
 mod sa;
 mod tas;
@@ -61,6 +62,10 @@ pub struct StateReferenceChamber {
     pub kind: ChamberKind,
     pub seats: i64,
     pub seat_label: Option<String>,
+    /// The Wikidata position its members hold, which is how their photos
+    /// are found.
+    #[serde(default)]
+    pub wikidata: Option<String>,
 }
 
 /// Each parliament's fixed facts by state code, from
