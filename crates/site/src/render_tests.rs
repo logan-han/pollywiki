@@ -216,11 +216,16 @@ fn every_page_carries_the_shared_head_and_landmarks() {
 
         // Both theme colours, the feed links and the font preloads.
         assert!(
-            html.contains("name=\"theme-color\" content=\"#fafaf7\""),
+            html.contains("name=\"theme-color\" content=\"#f6f3ec\""),
             "{where_}"
         );
         assert!(
-            html.contains("content=\"#191d1b\" media=\"(prefers-color-scheme: dark)\""),
+            html.contains("content=\"#161513\" media=\"(prefers-color-scheme: dark)\""),
+            "{where_}"
+        );
+        // The strip above the masthead row says what the site is.
+        assert!(
+            html.contains("<header class=\"site-header\"><div class=\"top-strip\"><div class=\"wrap\"><p>The record of Australia's nine parliaments, unedited</p>"),
             "{where_}"
         );
         assert!(html.contains("href=\"/divisions/feed.xml\""), "{where_}");
@@ -429,7 +434,10 @@ fn a_nav_link_is_the_current_page_only_on_its_own_index() {
 fn home_lists_all_nine_parliaments_as_peers() {
     let data = sample_data();
     let html = render(&data, &pages::home(&data));
-    assert!(html.contains("<h1>What Australia's parliaments actually did.</h1>"));
+    assert!(html.contains("<div class=\"masthead front\"><h1>What Australia's parliaments actually did.</h1><div class=\"standfirst\"><p class=\"lede\">"));
+    assert!(html.contains(
+        "<p class=\"tenets\">No scores \u{b7} No rankings \u{b7} Linked to source</p></div></div>"
+    ));
     let ledger = html
         .split("<div class=\"parliaments\">")
         .nth(1)
@@ -475,12 +483,18 @@ fn home_lists_all_nine_parliaments_as_peers() {
     };
     let wa = row("/states/wa/");
     assert!(wa.starts_with("<li class=\"unread\">"));
-    assert!(wa.contains("<span class=\"house\">Member list not readable yet</span>"));
+    assert!(wa.contains(
+        "<span class=\"house\"></span> <span class=\"why\">Member list not readable yet</span>"
+    ));
     assert!(row("/states/vic/").contains("Member list not read yet"));
     assert!(row("/states/vic/").contains("<span class=\"open none\">Not read</span>"));
-    // The states index has the same ledger, without the federal row.
+    // The grid has a heading of its own, with the key to its bars beside it.
+    assert!(html.contains("<div class=\"parliaments\"><div class=\"section-head\"><h2>The nine parliaments</h2><p class=\"key\">Seats by party in the house government is formed in \u{b7} tick marks a majority</p></div>"));
+    // The states index has the same grid, without the federal tile.
     let index = render(&data, &pages::states_index(&data));
-    assert!(index.contains("<div class=\"parliaments\">"));
+    assert!(index.contains(
+        "<div class=\"parliaments\"><div class=\"section-head\"><h2>The eight parliaments</h2>"
+    ));
     assert!(!index.contains("<a class=\"name\" href=\"/federal/\""));
 }
 
@@ -562,7 +576,7 @@ fn a_state_s_bills_are_listed_and_each_has_a_page() {
     assert!(unread.contains("<a href=\"/states/wa/\" aria-current=\"page\">Overview</a><a href=\"/states/wa/bills/\">Bills</a></span>"));
     // The ledger counts the bills still before each parliament.
     let home = render(&data, &pages::home(&data));
-    assert!(home.contains("<span class=\"open\"><a href=\"/states/nsw/bills/\">1</a><span class=\"unit\"> bill before it</span></span>"));
+    assert!(home.contains("<a class=\"open\" href=\"/states/nsw/bills/\">1 bill before it</a>"));
 }
 
 #[test]
@@ -575,10 +589,12 @@ fn home_lists_bill_activity_newest_first() {
     assert!(html.contains("class=\"bill-list activity everywhere\""));
 
     // Every parliament's bills share the list, each tagged with its own.
+    assert!(html
+        .contains("<h2>Latest bill activity</h2><a href=\"/bills/\">All bills \u{2192}</a></div>"));
     assert!(html.contains(
-        "<span class=\"what\"><a class=\"jur\" href=\"/bills/\">Federal</a> <a href=\"/bills/"
+        "<a class=\"jur\" href=\"/bills/\">Federal</a> <span class=\"what\"><a href=\"/bills/"
     ));
-    assert!(html.contains("<span class=\"what\"><a class=\"jur\" href=\"/states/nsw/bills/\">NSW</a> <a href=\"/states/nsw/bills/demonstration-planning-bill-2026/\">Demonstration Planning Bill 2026</a></span>"));
+    assert!(html.contains("<a class=\"jur\" href=\"/states/nsw/bills/\">NSW</a> <span class=\"what\"><a href=\"/states/nsw/bills/demonstration-planning-bill-2026/\">Demonstration Planning Bill 2026</a> <span class=\"event\""));
     // A single-chamber parliament's bill has three stages, not four.
     assert!(html.contains("aria-label=\"Stage 2 of 3: passed\""));
     // A parliament whose members cannot be read can still list its bills.
@@ -605,7 +621,7 @@ fn home_lists_bill_activity_newest_first() {
     assert!(html.contains(
         "<li><span class=\"when\"><time datetime=\"2025-08-04\">4 Aug 2025</time></span>"
     ));
-    assert!(html.contains(">Referred to Federation Chamber</span></li>"));
+    assert!(html.contains(">Referred to Federation Chamber</span></span><span class=\"dots\">"));
     assert!(html.contains("title=\"Referred to Federation Chamber (House of Representatives)"));
 
     // WebSite + SearchAction, per finding 11.
@@ -1333,6 +1349,74 @@ fn division_pages_state_the_outcome_and_link_their_card() {
             )
         );
     }
+}
+
+#[test]
+fn division_pages_box_their_tables_beside_the_record() {
+    let data = sample_data();
+    let mut related = 0;
+    for division in &data.divisions {
+        let html = render(&data, &pages::division_page(&data, division));
+        let at = |needle: &str| {
+            html.find(needle)
+                .unwrap_or_else(|| panic!("{needle} missing on {}", division.id))
+        };
+        // The head, then the boxed tables, then the body: a narrow screen
+        // reads the party split straight after the result.
+        assert!(at("class=\"result-line") < at("<div class=\"record-side\">"));
+        assert!(
+            at("<div class=\"record-side\"><div class=\"side-box\"><h2>By party</h2>")
+                < at("<div class=\"record-body\">")
+        );
+        assert!(at("<div class=\"record-body\">") < at("<h2>Every vote</h2>"));
+        let outcome = match division.result {
+            DivisionResult::Passed => "<div class=\"result-line carried\"><strong>Carried</strong>",
+            DivisionResult::Rejected => {
+                "<div class=\"result-line negatived\"><strong>Negatived</strong>"
+            }
+        };
+        assert!(html.contains(outcome), "{}", division.id);
+
+        // Each related bill sits in a box of its own, with how far it has come.
+        let bills: Vec<_> = division
+            .bill_ids
+            .iter()
+            .filter_map(|id| data.bill_by_id(id))
+            .collect();
+        if bills.is_empty() {
+            assert!(!html.contains("<ul class=\"related\">"));
+            continue;
+        }
+        related += 1;
+        let heading = if bills.len() == 1 {
+            "Related bill"
+        } else {
+            "Related bills"
+        };
+        let side = &html[at("<div class=\"record-side\">")..at("<div class=\"record-body\">")];
+        assert!(side.contains(&format!("<h2>{heading}</h2><ul class=\"related\">")));
+        for bill in bills {
+            assert!(side.contains(&format!(
+                "<li><a href=\"/bills/{}/\">{}</a> <span class=\"bill-dots\"",
+                bill.id, bill.title
+            )));
+        }
+    }
+    assert!(related > 0, "the sample should relate a division to a bill");
+
+    // A bill still before a chamber says how far it got, then where it is;
+    // one that has finished says only how.
+    let open = data.bill_by_id("sample-1").expect("sample bill");
+    assert_eq!(open.status, "Before Senate");
+    let html = render(
+        &data,
+        &pages::division_page(
+            &data,
+            data.division_by_id(&open.division_ids[0])
+                .expect("a division on the bill"),
+        ),
+    );
+    assert!(html.contains("<span class=\"status\">Passed 1st house \u{b7} Before Senate</span>"));
 }
 
 #[test]
@@ -2225,7 +2309,7 @@ fn a_full_build_emits_every_artefact() {
         "fonts.css not concatenated"
     );
     assert!(out
-        .join("_assets/fonts/newsreader-latin-wght-italic.woff2")
+        .join("_assets/fonts/source-serif-4-latin-wght-italic.woff2")
         .is_file());
     assert!(out.join("favicon.svg").is_file());
     assert!(out.join("robots.txt").is_file());
@@ -2253,6 +2337,19 @@ fn a_full_build_emits_every_artefact() {
         .expect("css name");
     let home = std::fs::read_to_string(out.join("index.html")).expect("home");
     assert!(home.contains(&format!("href=\"/_assets/{name}\"")));
+    // Every font the pages preload is one the build wrote.
+    let preloads: Vec<&str> = home
+        .split("<link rel=\"preload\" href=\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert_eq!(preloads.len(), 3, "serif, sans and mono");
+    for font in preloads {
+        assert!(
+            out.join(font.trim_start_matches('/')).is_file(),
+            "{font} preloaded but not written"
+        );
+    }
 
     std::fs::remove_dir_all(&out).ok();
 }
@@ -2614,8 +2711,9 @@ fn every_page_opens_with_a_masthead_or_a_record_head() {
         assert!(
             [
                 "<div class=\"masthead\"><h1",
+                "<div class=\"masthead front\"><h1",
                 "<div class=\"profile-head\">",
-                "<div class=\"meta-row\">"
+                "<div class=\"record\"><div class=\"record-head\"><div class=\"meta-row\">"
             ]
             .iter()
             .any(|opener| top.starts_with(opener)),
@@ -2749,7 +2847,16 @@ fn the_freshness_line_labels_every_source_and_flags_stale_ones() {
     // says so in words, not by the colour of its mark alone.
     assert!(line.contains("class=\"stale\">AEC profiles · 1 Aug 2026 · sync failed</span>"));
     assert_eq!(line.matches("sync failed").count(), 1);
-    assert!(line.contains("built "));
+    // The build date closes the licence line; the strip above the header
+    // carries the freshness line's lead alone.
+    assert!(html.contains("credited per page. Built 14 Aug 2026.</p><div class=\"freshness\">"));
+    assert!(html.contains(
+        "<p class=\"synced\"><a href=\"/about/data-sources/\">10 sources</a> synced 14 Aug 2026</p>"
+    ));
+    assert!(
+        !html[..start].contains("sync failed"),
+        "the strip names no failure"
+    );
 
     // The data-sources page names every source with its own sync time.
     let sources_page = render(&data, &pages::data_sources(&data));
@@ -3012,7 +3119,7 @@ fn every_vote_groups_names_as_the_by_party_table_counts_them() {
     );
     // A label heads its group's own list; it is never an item among the names.
     assert!(!section.contains("</li><li class=\"vote-group\"><a"));
-    assert!(section.contains("<li><a href=\"/people/alex-paterson/\">Alex Paterson</a><span class=\"note\"> · crossed</span></li>"));
+    assert!(section.contains("<li><a href=\"/people/alex-paterson/\">Alex Paterson</a><span class=\"note\"> ·\u{a0}crossed</span></li>"));
 }
 
 #[test]

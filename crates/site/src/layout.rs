@@ -26,10 +26,12 @@ static QUICK_SEARCH_JS: LazyLock<String> =
 static TABLE_SCROLL_JS: LazyLock<String> =
     LazyLock::new(|| js_without_comment_lines(include_str!("../assets/js/table-scroll.js")));
 
-/// The two latin subsets every page renders text with; the rest load on demand.
-const PRELOAD_FONTS: [&str; 2] = [
-    "/_assets/fonts/newsreader-latin-wght-normal.woff2",
-    "/_assets/fonts/ibm-plex-sans-latin-400-normal.woff2",
+/// The three latin subsets every page renders text with, the strip above the
+/// header's mono among them; the rest load on demand.
+const PRELOAD_FONTS: [&str; 3] = [
+    "/_assets/fonts/source-serif-4-latin-opsz-normal.woff2",
+    "/_assets/fonts/public-sans-latin-wght-normal.woff2",
+    "/_assets/fonts/spline-sans-mono-latin-wght-normal.woff2",
 ];
 
 /// Australia's nine parliaments, federal first and then the states and
@@ -120,22 +122,32 @@ fn source_label(name: &str) -> &str {
     }
 }
 
-/// How current the data is, in as few words as the syncs allow: the date
-/// most sources last synced as one count, then by name only the sources that
-/// synced on another day. A failed run is always named and says so in words
-/// as well as in its hollow mark, so the state never rests on colour alone.
-fn freshness(data: &SiteData) -> String {
-    let day = |iso: &str| iso.chars().take(10).collect::<String>();
+/// The date part of an ISO timestamp.
+fn sync_day(iso: &str) -> String {
+    iso.chars().take(10).collect()
+}
+
+/// The days the sources last synced without failing, each with the sources
+/// that synced on it. The commonest day leads; a tie goes to the newer.
+fn sync_days(data: &SiteData) -> Vec<(String, Vec<&str>)> {
     let mut days: Vec<(String, Vec<&str>)> = Vec::new();
     for (name, status) in data.meta.sources.iter().filter(|(_, s)| s.ok) {
-        let date = day(&status.last_sync);
+        let date = sync_day(&status.last_sync);
         match days.iter_mut().find(|(d, _)| *d == date) {
             Some((_, names)) => names.push(source_label(name)),
             None => days.push((date, vec![source_label(name)])),
         }
     }
-    // The commonest day leads; a tie goes to the newer.
     days.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| b.0.cmp(&a.0)));
+    days
+}
+
+/// How current the data is, in as few words as the syncs allow: the date
+/// most sources last synced as one count, then by name only the sources that
+/// synced on another day. A failed run is always named and says so in words
+/// as well as in its hollow mark, so the state never rests on colour alone.
+fn freshness(data: &SiteData) -> String {
+    let days = sync_days(data);
     let mut out = String::new();
     for (i, (date, names)) in days.iter().enumerate() {
         let when = esc(&format_date(date));
@@ -155,10 +167,25 @@ fn freshness(data: &SiteData) -> String {
         out.push_str(&format!(
             "<span class=\"stale\">{} · {} · sync failed</span>",
             esc(source_label(name)),
-            esc(&format_date(&day(&status.last_sync)))
+            esc(&format_date(&sync_day(&status.last_sync)))
         ));
     }
     out
+}
+
+/// The freshness line's lead alone, for the strip above the header: the day
+/// most sources last synced. The footer keeps the whole line, failures and all.
+fn freshness_short(data: &SiteData) -> Option<String> {
+    let days = sync_days(data);
+    let (date, names) = days.first()?;
+    let what = match names.as_slice() {
+        [one] => esc(one),
+        _ => format!("{} sources", names.len()),
+    };
+    Some(format!(
+        "<a href=\"/about/data-sources/\">{what}</a> synced {}",
+        esc(&format_date(date))
+    ))
 }
 
 /// The sections of the parliament a page belongs to, at the top of the page:
@@ -296,7 +323,7 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     // result rather than a thumbnail.
     let robots = page.robots.unwrap_or(INDEXED_ROBOTS);
     out.push_str(&format!("<meta name=\"robots\" content=\"{robots}\">"));
-    out.push_str("<meta name=\"theme-color\" content=\"#fafaf7\"><meta name=\"theme-color\" content=\"#191d1b\" media=\"(prefers-color-scheme: dark)\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">");
+    out.push_str("<meta name=\"theme-color\" content=\"#f6f3ec\"><meta name=\"theme-color\" content=\"#161513\" media=\"(prefers-color-scheme: dark)\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">");
     // The analytics tag is the only third-party origin on the page; opening
     // the connection alongside the fonts keeps it off the critical path.
     out.push_str("<link rel=\"preconnect\" href=\"https://www.googletagmanager.com\" crossorigin>");
@@ -336,7 +363,12 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
         out.push_str("<div class=\"sample-banner\">Sample data only. This build is not showing the parliamentary record.</div>");
     }
 
-    out.push_str("<header class=\"site-header\"><div class=\"wrap\"><a class=\"wordmark\" href=\"/\">pollywiki<span class=\"tld\">.au</span></a><nav class=\"site-nav\" aria-label=\"Parliaments\">");
+    // A strip over the masthead row: what the site is, and how fresh it is.
+    out.push_str("<header class=\"site-header\"><div class=\"top-strip\"><div class=\"wrap\"><p>The record of Australia's nine parliaments, unedited</p>");
+    if let Some(synced) = freshness_short(data) {
+        out.push_str(&format!("<p class=\"synced\">{synced}</p>"));
+    }
+    out.push_str("</div></div><div class=\"wrap\"><a class=\"wordmark\" href=\"/\">pollywiki<span class=\"tld\">.au</span></a><nav class=\"site-nav\" aria-label=\"Parliaments\">");
     let current = page.path.as_str();
     let within = parliament_of(current);
     for (short, name, href) in PARLIAMENTS {
@@ -374,19 +406,23 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
         out.push_str(script);
         out.push_str("</script>");
     }
-    out.push_str("</main><footer class=\"site-footer\"><div class=\"wrap\">");
+    // The disclaimer stands on its own; beside it, the page's own sources,
+    // the site's links, the licences and how fresh the record is.
+    out.push_str("</main><footer class=\"site-footer\"><div class=\"wrap\"><p class=\"disclaimer\">This service does not evaluate politicians or laws. Every page reproduces official records, linked to their source; machine-written summaries are labelled \u{201C}AI-generated\u{201D} and are never part of the record.</p><div class=\"colophon\">");
     if let Some(note) = &page.footer_note {
         out.push_str(note);
     }
-    out.push_str("<p class=\"disclaimer\">This service does not evaluate politicians or laws. Every page reproduces official records, linked to their source; machine-written summaries are labelled \u{201C}AI-generated\u{201D} and are never part of the record.</p><div class=\"freshness\">");
-    out.push_str(&freshness(data));
+    out.push_str("<nav aria-label=\"About\"><a href=\"/about/\">About</a><a href=\"/about/data-sources/\">Data sources</a><a href=\"/about/methodology/\">Methodology</a><a href=\"/about/corrections/\">Corrections</a><a href=\"/divisions/feed.xml\">Divisions feed</a><a href=\"/bills/feed.xml\">Bills feed</a><a href=\"https://github.com/logan-han/pollywiki\">Source code</a><a href=\"https://han.life/coffee\" target=\"_blank\" rel=\"noopener\">\u{2615} Buy me a coffee</a></nav><p class=\"legal\">Voting data © <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> (ODbL). Election data © AEC (CC BY 4.0). Photos via Wikimedia Commons, credited per page.");
     out.push_str(&format!(
-        "<span>built {}</span>",
-        esc(&format_date(
-            &data.meta.generated_at.chars().take(10).collect::<String>()
-        ))
+        " Built {}.",
+        esc(&format_date(&sync_day(&data.meta.generated_at)))
     ));
-    out.push_str("</div><nav aria-label=\"About\"><a href=\"/about/\">About</a><a href=\"/about/data-sources/\">Data sources</a><a href=\"/about/methodology/\">Methodology</a><a href=\"/about/corrections/\">Corrections</a><a href=\"/divisions/feed.xml\">Divisions feed</a><a href=\"/bills/feed.xml\">Bills feed</a><a href=\"https://github.com/logan-han/pollywiki\">Source code</a><a href=\"https://han.life/coffee\" target=\"_blank\" rel=\"noopener\">\u{2615} Buy me a coffee</a></nav><p class=\"legal\">Voting data © <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> (ODbL). Election data © AEC (CC BY 4.0). Photos via Wikimedia Commons, credited per page.</p></div></footer><script type=\"module\">");
+    out.push_str("</p>");
+    let fresh = freshness(data);
+    if !fresh.is_empty() {
+        out.push_str(&format!("<div class=\"freshness\">{fresh}</div>"));
+    }
+    out.push_str("</div></div></footer><script type=\"module\">");
     out.push_str(&QUICK_SEARCH_JS);
     out.push_str("</script>");
     if page.body.contains("<div class=\"table-scroll\"") {

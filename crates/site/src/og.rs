@@ -1,7 +1,7 @@
 //! Per-division share cards, rasterised at build time.
 //!
-//! One 1200x630 PNG per division: chamber chip and date, the question in
-//! Newsreader, the outcome, the tally and a proportion bar, over the wordmark.
+//! One 1200x630 PNG per division: chamber and date, the question in Source
+//! Serif, the outcome, the tally and a proportion bar, over the wordmark.
 //! Everything is drawn from the same tokens and vendored fonts the pages use.
 //!
 //! The cards are best-effort. If the fonts cannot be decoded the renderer
@@ -24,18 +24,23 @@ const MARGIN: f64 = 84.0;
 const INNER: f64 = W - 2.0 * MARGIN;
 
 // global.css :root, light scheme.
-const PAPER: &str = "#fafaf7";
-const INK: &str = "#1c2321";
-const MUTED: &str = "#5b655f";
-const FAINT: &str = "#6f6e65";
-const HAIR_STRONG: &str = "#c9ccbf";
+const PAPER: &str = "#f6f3ec";
+const INK: &str = "#161513";
+const MUTED: &str = "#4d4a43";
+const FAINT: &str = "#6b675e";
+const HAIR: &str = "#d6d0c2";
 const AYE: &str = "#2f6b4c";
 const NO: &str = "#8c3b31";
+const HOUSE: &str = "#47664f";
+const SENATE: &str = "#99473c";
 
-/// The subsets the cards draw with. Both are already served to browsers.
-const SERIF_WOFF2: &str = "fonts/newsreader-latin-wght-normal.woff2";
-const SERIF_ITALIC_WOFF2: &str = "fonts/newsreader-latin-wght-italic.woff2";
-const MONO_WOFF2: &str = "fonts/ibm-plex-mono-latin-400-normal.woff2";
+/// The weight the pages set headlines in.
+const TITLE_WEIGHT: f32 = 600.0;
+
+/// The subsets the cards draw with. All are already served to browsers.
+const SERIF_WOFF2: &str = "fonts/source-serif-4-latin-opsz-normal.woff2";
+const SERIF_ITALIC_WOFF2: &str = "fonts/source-serif-4-latin-wght-italic.woff2";
+const MONO_WOFF2: &str = "fonts/spline-sans-mono-latin-wght-normal.woff2";
 
 const WGHT: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"wght");
 
@@ -53,12 +58,11 @@ pub struct Cards {
     serif_family: String,
     mono_family: String,
     serif_data: Vec<u8>,
-    mono_data: Vec<u8>,
 }
 
-/// The woff2 subsets carry their own internal family names ("Newsreader 16pt
-/// 16pt" and so on), so they are read back from the database rather than
-/// assumed.
+/// The woff2 subsets carry their own internal family names, which need not
+/// match the names the stylesheet gives them, so they are read back from the
+/// database rather than assumed.
 fn family_of(db: &usvg::fontdb::Database, id: usvg::fontdb::ID) -> Option<String> {
     db.face(id)?
         .families
@@ -87,7 +91,7 @@ impl Cards {
         let mut db = usvg::fontdb::Database::new();
         let serif_id = load_one(&mut db, serif_data.clone())?;
         load_one(&mut db, serif_italic)?;
-        let mono_id = load_one(&mut db, mono_data.clone())?;
+        let mono_id = load_one(&mut db, mono_data)?;
         let serif_family = family_of(&db, serif_id).context("serif family name missing")?;
         let mono_family = family_of(&db, mono_id).context("mono family name missing")?;
 
@@ -102,7 +106,6 @@ impl Cards {
             serif_family,
             mono_family,
             serif_data,
-            mono_data,
         })
     }
 
@@ -150,12 +153,12 @@ impl Cards {
         ));
         out.push_str(&rule(132.0));
         out.push_str(&format!(
-            "<text x=\"{MARGIN}\" y=\"312\" font-family=\"{serif}\" font-size=\"156\" font-weight=\"700\" letter-spacing=\"-2\" fill=\"{INK}\">pollywiki<tspan font-weight=\"400\" fill=\"{MUTED}\">.au</tspan></text>"
+            "<text x=\"{MARGIN}\" y=\"312\" font-family=\"{serif}\" font-size=\"156\" font-weight=\"700\" letter-spacing=\"-3\" fill=\"{INK}\">pollywiki<tspan font-weight=\"400\" fill=\"{FAINT}\">.au</tspan></text>"
         ));
         out.push_str(&format!(
             "<text x=\"{MARGIN}\" y=\"428\" font-family=\"{serif}\" font-size=\"48\" font-style=\"italic\" fill=\"{MUTED}\">Every parliament's record, unedited.</text>"
         ));
-        out.push_str(&rule(500.0));
+        out.push_str(&double_rule(500.0));
         out.push_str(&format!(
             "<text x=\"{MARGIN}\" y=\"556\" font-family=\"{mono}\" font-size=\"24\" xml:space=\"preserve\" fill=\"{FAINT}\">{}</text>",
             esc(&parliaments)
@@ -198,13 +201,11 @@ impl Cards {
     fn svg(&self, division: &Division) -> Result<String> {
         let mut serif = ttf_parser::Face::parse(&self.serif_data, 0)
             .map_err(|e| anyhow::anyhow!("serif face: {e}"))?;
-        serif.set_variation(WGHT, 700.0);
-        let mono = ttf_parser::Face::parse(&self.mono_data, 0)
-            .map_err(|e| anyhow::anyhow!("mono face: {e}"))?;
+        serif.set_variation(WGHT, TITLE_WEIGHT);
 
-        let (chamber, chip_ink, chip_tint) = match division.house {
-            House::Representatives => ("House", "#47664f", "#e8efe8"),
-            House::Senate => ("Senate", "#99473c", "#f4e9e5"),
+        let (chamber, chamber_ink) = match division.house {
+            House::Representatives => ("House of Representatives", HOUSE),
+            House::Senate => ("Senate", SENATE),
         };
         let (outcome, outcome_ink) = match division.result {
             DivisionResult::Passed => ("Carried", AYE),
@@ -230,26 +231,19 @@ impl Cards {
             "<rect width=\"{W}\" height=\"{H}\" fill=\"{PAPER}\"/>"
         ));
 
-        // Chamber chip, sized to its own label like the CSS chip does.
-        let chip_label = chamber.to_uppercase();
-        let chip_text = measure(&mono, &chip_label, 20.0) + 0.08 * 20.0 * chip_label.len() as f64;
-        let chip_w = chip_text + 28.0;
+        // The chamber in its own colour, as the page's meta line sets it, with
+        // the division number and date right-aligned on the same line.
         out.push_str(&format!(
-            "<rect x=\"{MARGIN}\" y=\"62\" width=\"{chip_w:.1}\" height=\"38\" rx=\"6\" fill=\"{chip_tint}\" stroke=\"{chip_ink}\" stroke-opacity=\"0.3\"/>"
-        ));
-        out.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"88\" font-family=\"{}\" font-size=\"20\" font-weight=\"600\" letter-spacing=\"{:.2}\" fill=\"{chip_ink}\">{}</text>",
-            MARGIN + 14.0,
+            "<text x=\"{MARGIN}\" y=\"88\" font-family=\"{}\" font-size=\"22\" font-weight=\"500\" letter-spacing=\"{:.2}\" fill=\"{chamber_ink}\">{}</text>",
             esc(&self.mono_family),
-            0.08 * 20.0,
-            esc(&chip_label),
+            0.06 * 22.0,
+            esc(&chamber.to_uppercase()),
         ));
-
-        // Division number and date, right-aligned on the same line.
         out.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"88\" text-anchor=\"end\" font-family=\"{}\" font-size=\"22\" fill=\"{FAINT}\">{}</text>",
+            "<text x=\"{:.1}\" y=\"88\" text-anchor=\"end\" font-family=\"{}\" font-size=\"22\" letter-spacing=\"{:.2}\" fill=\"{FAINT}\">{}</text>",
             W - MARGIN,
             esc(&self.mono_family),
+            0.06 * 22.0,
             esc(&format!(
                 "DIVISION {} \u{b7} {}",
                 division.number,
@@ -259,12 +253,13 @@ impl Cards {
         out.push_str(&rule(132.0));
 
         // The question, wrapped to the measure.
-        let line_height = title_size * 1.16;
+        let line_height = title_size * 1.1;
         let mut baseline = 196.0 + title_size * 0.76;
         for line in &lines {
             out.push_str(&format!(
-                "<text x=\"{MARGIN}\" y=\"{baseline:.1}\" font-family=\"{}\" font-size=\"{title_size}\" font-weight=\"700\" fill=\"{INK}\">{}</text>",
+                "<text x=\"{MARGIN}\" y=\"{baseline:.1}\" font-family=\"{}\" font-size=\"{title_size}\" font-weight=\"{TITLE_WEIGHT}\" letter-spacing=\"{:.2}\" fill=\"{INK}\">{}</text>",
                 esc(&self.serif_family),
+                -0.02 * title_size,
                 esc(line),
             ));
             baseline += line_height;
@@ -272,7 +267,7 @@ impl Cards {
 
         // Outcome and tally, then the proportion bar.
         out.push_str(&format!(
-            "<text x=\"{MARGIN}\" y=\"452\" font-family=\"{}\" font-size=\"46\" font-weight=\"700\" fill=\"{outcome_ink}\">{}</text>",
+            "<text x=\"{MARGIN}\" y=\"452\" font-family=\"{}\" font-size=\"46\" font-weight=\"{TITLE_WEIGHT}\" fill=\"{outcome_ink}\">{}</text>",
             esc(&self.serif_family),
             esc(outcome),
         ));
@@ -286,18 +281,18 @@ impl Cards {
             )),
         ));
         out.push_str(&format!(
-            "<rect x=\"{MARGIN}\" y=\"480\" width=\"{INNER}\" height=\"12\" rx=\"3\" fill=\"{HAIR_STRONG}\"/>"
+            "<rect x=\"{MARGIN}\" y=\"480\" width=\"{INNER}\" height=\"12\" fill=\"{HAIR}\"/>"
         ));
         if aye_width > 0.0 {
             out.push_str(&format!(
-                "<rect x=\"{MARGIN}\" y=\"480\" width=\"{aye_width:.1}\" height=\"12\" rx=\"3\" fill=\"{INK}\"/>"
+                "<rect x=\"{MARGIN}\" y=\"480\" width=\"{aye_width:.1}\" height=\"12\" fill=\"{INK}\"/>"
             ));
         }
-        out.push_str(&rule(536.0));
+        out.push_str(&double_rule(536.0));
 
         // Wordmark and motto, matching the default card.
         out.push_str(&format!(
-            "<text x=\"{MARGIN}\" y=\"584\" font-family=\"{}\" font-size=\"30\" font-weight=\"700\" fill=\"{INK}\">pollywiki<tspan font-weight=\"400\" fill=\"{MUTED}\">.au</tspan></text>",
+            "<text x=\"{MARGIN}\" y=\"584\" font-family=\"{}\" font-size=\"30\" font-weight=\"700\" letter-spacing=\"-0.6\" fill=\"{INK}\">pollywiki<tspan font-weight=\"400\" fill=\"{FAINT}\">.au</tspan></text>",
             esc(&self.serif_family),
         ));
         out.push_str(&format!(
@@ -310,9 +305,16 @@ impl Cards {
     }
 }
 
+/// A section rule, full ink as the pages draw theirs.
 fn rule(y: f64) -> String {
+    format!("<rect x=\"{MARGIN}\" y=\"{y}\" width=\"{INNER}\" height=\"1.5\" fill=\"{INK}\"/>")
+}
+
+/// The header and footer's double rule, scaled up for the card.
+fn double_rule(y: f64) -> String {
     format!(
-        "<rect x=\"{MARGIN}\" y=\"{y}\" width=\"{INNER}\" height=\"1\" fill=\"{HAIR_STRONG}\"/>"
+        "<rect x=\"{MARGIN}\" y=\"{y}\" width=\"{INNER}\" height=\"1.5\" fill=\"{INK}\"/><rect x=\"{MARGIN}\" y=\"{}\" width=\"{INNER}\" height=\"1.5\" fill=\"{INK}\"/>",
+        y + 4.0
     )
 }
 
@@ -419,7 +421,7 @@ mod tests {
         assert!(long.starts_with(b"\x89PNG"));
 
         let mut serif = ttf_parser::Face::parse(&cards.serif_data, 0).unwrap();
-        serif.set_variation(WGHT, 700.0);
+        serif.set_variation(WGHT, TITLE_WEIGHT);
         let lines = wrap(&serif, &long_name, 44.0, INNER, 4);
         assert_eq!(lines.len(), 4);
         assert!(lines[3].ends_with('\u{2026}'));

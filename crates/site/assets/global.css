@@ -1,40 +1,51 @@
 /* pollywiki design tokens.
    Chamber colours follow the two federal chambers: eucalypt green for the
-   House of Representatives, ochre red for the Senate. The ledger aesthetic
-   (hairlines, mono figures, serif motion text) echoes the printed record.
-   Layout and type scale follow the 2026-08 design revision: 780px column,
-   length-tiered headlines, small-print disclaimer, dense mono metadata. */
+   House of Representatives, ochre red for the Senate. The broadsheet look
+   (double rules at head and foot, ink section rules, serif headlines, mono
+   figures) echoes the printed record. Layout and type follow the 2026-11
+   "Hansard" revision: a 1280px page with 64px gutters, most sections on a
+   7:5 column grid, length-tiered headlines, no radius but on tags and no
+   shadows. */
 :root {
   color-scheme: light dark;
-  --paper: #fafaf7;
-  --panel: #f2f2ec;
-  --card: #fffefb;
-  --ink: #1c2321;
-  --muted: #5b655f;
-  --faint: #6f6e65;
-  --hair: #e0e2d8;
-  --hair-strong: #c9ccbf;
+  --paper: #f6f3ec;
+  --panel: #efebe1;
+  --card: #fbf9f4;
+  --ink: #161513;
+  --muted: #4d4a43;
+  --faint: #6b675e;
+  --hair: #d6d0c2;
+  /* The rule between the rows of a ledger or a table: --hair in the light
+     scheme, a step quieter in the dark. */
+  --hair-row: #d6d0c2;
+  /* Section rules and column heads: full ink in the light scheme. */
+  --hair-strong: #161513;
+  /* Stripes for what is not there: an unread member list, an empty seat. */
+  --hatch: #cfc8b8;
   --house: #47664f;
-  --house-tint: #e8efe8;
+  --house-tint: #e3e8de;
   --senate: #99473c;
-  --senate-tint: #f4e9e5;
-  --accent: #99473c;
   --aye: #2f6b4c;
-  --aye-tint: #e4efe6;
   --no: #8c3b31;
-  --no-tint: #f3e5e1;
   --focus: #1c4f9c;
-  /* Input surface: white on paper, one step off the panel in the dark scheme. */
-  --field: #fff;
+  /* Input surface, one step off the paper. */
+  --field: #fbf9f4;
   --banner: #fff4d6;
   --banner-hair: #e5d9a8;
   --banner-ink: #6b5a12;
-  /* Lift for the one floating surface, the quick-search dropdown. */
-  --shadow: 0 6px 18px rgba(28, 35, 33, 0.12);
-  --serif: 'Newsreader Variable', 'Iowan Old Style', Georgia, serif;
-  --sans: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
-  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  --measure: 48.75rem;
+  --serif: 'Source Serif 4', Georgia, serif;
+  --sans: 'Public Sans', 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'Spline Sans Mono', ui-monospace, monospace;
+  --measure: 80rem;
+  --gutter: 4rem;
+  /* The gap between the two columns of a 7:5 grid. */
+  --col-gap: 3.5rem;
+}
+
+@media (max-width: 40rem) {
+  :root {
+    --gutter: 1.5rem;
+  }
 }
 
 * {
@@ -62,12 +73,7 @@
 
 html {
   -webkit-text-size-adjust: 100%;
-  /* Plex ships at 400 and 500 only, so never fake a 600 or 700 from them.
-     Newsreader is variable and has every weight it is asked for. */
-  font-synthesis-weight: none;
-  /* A short page's canvas continues the footer panel instead of leaving a
-     band of bare paper under it. */
-  background: var(--panel);
+  background: var(--paper);
 }
 
 body {
@@ -79,22 +85,26 @@ body {
   line-height: 1.55;
 }
 
+/* A link in running text keeps a quiet underline in its own colour; the
+   pointer brings it to ink. A list of titles drops the underline until then,
+   since every line of it is a link. */
 a {
   color: inherit;
   text-decoration: underline;
-  text-decoration-color: var(--hair-strong);
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
   text-underline-offset: 3px;
 }
 
-/* Emphasis in Plex is its real 500 face, not the UA's synthesised bold. */
 strong,
 b {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 a:hover {
-  color: var(--accent);
-  text-decoration-color: var(--accent);
+  color: var(--ink);
+  text-decoration-line: underline;
+  text-decoration-color: currentColor;
 }
 
 :focus-visible {
@@ -106,56 +116,88 @@ h1,
 h2,
 h3 {
   font-family: var(--serif);
+  font-weight: 600;
   line-height: 1.15;
   margin: 0 0 0.5rem;
   text-wrap: balance;
 }
 
-/* Headline tiers: length decides the tier at build time. */
+/* Headline tiers: length decides the tier at build time. A record's own
+   headline is the full size; the longer tiers take three quarters and three
+   fifths of it. */
 h1 {
-  font-weight: 700;
-  font-size: clamp(2.125rem, 5.5vw, 2.5rem);
+  font-size: clamp(2.125rem, 6vw, 3.25rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+h1.title-m {
+  font-size: clamp(1.75rem, 4.5vw, 2.4375rem);
+  line-height: 1.1;
+  letter-spacing: -0.018em;
+}
+
+h1.title-s {
+  font-size: clamp(1.5rem, 3.6vw, 1.95rem);
   line-height: 1.15;
   letter-spacing: -0.015em;
 }
 
-h1.title-m {
-  font-size: clamp(1.625rem, 4.5vw, 1.875rem);
-  line-height: 1.22;
-  letter-spacing: -0.012em;
-}
-
-h1.title-s {
-  font-size: clamp(1.35rem, 3.8vw, 1.5rem);
-  line-height: 1.3;
-  letter-spacing: -0.008em;
-}
-
 h2 {
-  font-weight: 600;
-  font-size: 1.25rem;
-  margin-top: 2.5rem;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  margin-top: 3rem;
+}
+
+/* A section opens on a full ink rule under its heading, as a column of
+   print does. A heading with a link beside it draws the rule under both; a
+   heading in a box, or a month divider, draws none. */
+main :where(h2) {
+  margin-bottom: 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--ink);
+}
+
+:is(main h2, .section-head) + :is(p, ul:not([class]), ol:not([class])) {
+  margin-top: 0.75rem;
 }
 
 /* The sub-heading tier, for a table that belongs to a section. */
 h3 {
-  font-size: 0.95rem;
-  margin-top: 1.2rem;
+  font-size: 1.0625rem;
+  margin-top: 1.5rem;
 }
 
 p {
   margin: 0.4rem 0;
 }
 
+/* Prose keeps to a reading measure, however wide the page. */
+main p {
+  max-width: 46rem;
+}
+
 .lede {
-  font-size: 1.0625rem;
-  line-height: 1.65;
+  font-family: var(--serif);
+  font-size: 1.1875rem;
+  line-height: 1.55;
+  text-wrap: pretty;
 }
 
 .wrap {
   max-width: var(--measure);
   margin: 0 auto;
-  padding: 0 1.5rem;
+  padding: 0 var(--gutter);
+}
+
+/* Rules that run to both edges of the screen from inside the page's column:
+   a parliament's tabs and the front page's masthead. The image overhangs the
+   box sideways, which draws without adding anything to scroll; the border
+   under it is what shows where border images are not drawn. */
+.parliament-bar,
+.masthead.front {
+  border-bottom: 1px solid var(--rule);
+  border-image: linear-gradient(var(--rule) 0 0) 0 0 1 / 0 0 1px / 0 100vw;
 }
 
 /* Skip link: off-canvas until focused, then a card above the masthead. */
@@ -172,86 +214,138 @@ p {
   padding: 0.4rem 0.8rem;
   background: var(--card);
   border: 1px solid var(--hair-strong);
-  border-radius: 4px;
   font-size: 0.875rem;
   text-decoration: none;
 }
 
-/* Header */
+/* Header: a strip saying what the site is and how fresh it is, then the
+   masthead row over a double rule. */
 .site-header {
-  border-bottom: 1px solid var(--hair-strong);
+  border-bottom: 3px double var(--ink);
   background: var(--paper);
 }
 
-.site-header .wrap {
+.top-strip {
+  border-bottom: 1px solid var(--ink);
+  font-family: var(--mono);
+  font-size: 0.71875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.top-strip .wrap {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.4rem 1.4rem;
-  padding-top: 0.95rem;
-  padding-bottom: 0.85rem;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+.top-strip p {
+  margin: 0;
+}
+
+.top-strip a {
+  text-decoration: none;
+}
+
+.top-strip a:hover {
+  text-decoration: underline;
+}
+
+.site-header > .wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem 2.5rem;
+  padding-top: 1.375rem;
+  padding-bottom: 1.125rem;
 }
 
 .wordmark {
   font-family: var(--serif);
   font-weight: 700;
-  font-size: 1.0625rem;
+  font-size: 1.875rem;
+  line-height: 1.1;
   text-decoration: none;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 
 .wordmark:hover {
   color: inherit;
+  text-decoration: none;
 }
 
 .wordmark .tld {
-  color: var(--muted);
+  color: var(--faint);
   font-weight: 400;
 }
 
+/* Each parliament is set off from the next by a hairline. The nav holds
+   the visually hidden full names it positions, so on a phone, where it
+   scrolls, they stay inside it rather than widen the page. */
 .site-nav {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.15rem 1.05rem;
-  font-size: 0.875rem;
+  font-size: 0.90625rem;
   margin-left: auto;
 }
 
 .site-nav a {
+  padding: 4px 13px;
+  border-left: 1px solid var(--hair);
   text-decoration: none;
-  color: var(--muted);
-  padding: 0.15rem 0;
+  white-space: nowrap;
 }
 
 .site-nav a:hover {
-  color: var(--ink);
+  text-decoration: underline;
 }
 
 /* The section marker: the index itself (aria-current=page) and every page
    inside it (aria-current=true). */
 .site-nav a[aria-current] {
-  color: var(--ink);
-  font-weight: 500;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--ink);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 6px;
 }
 
 .quick-search {
   position: relative;
-  min-width: 13rem;
+  flex: none;
+  width: 15rem;
 }
 
-/* Tablets and phones: wordmark and search share the top row and the nav takes
-   the whole second row. Below 50rem the three no longer fit on one line, and
-   a plain wrap would drop the search box onto a row of its own. */
-@media (max-width: 50rem) {
-  .site-header .wrap {
+/* Below a full desktop the masthead row tightens, and below 64rem wordmark
+   and search share the top row and the nav takes the whole second row: a
+   plain wrap would drop the search onto a row of its own. */
+@media (max-width: 74rem) {
+  .site-header > .wrap {
+    column-gap: 1.75rem;
+  }
+
+  .site-nav a {
+    padding: 4px 10px;
+  }
+
+  .quick-search {
+    width: 12.5rem;
+  }
+}
+
+@media (max-width: 64rem) {
+  .site-header > .wrap {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
       'brand search'
       'nav nav';
     align-items: center;
-    row-gap: 0.55rem;
-    column-gap: 0.9rem;
+    row-gap: 0.875rem;
+    column-gap: 1.25rem;
   }
 
   .wordmark {
@@ -260,14 +354,38 @@ p {
 
   .quick-search {
     grid-area: search;
-    min-width: 0;
     justify-self: end;
-    width: min(100%, 20rem);
+    width: min(100%, 15rem);
   }
 
   .site-nav {
     grid-area: nav;
     margin-left: 0;
+  }
+
+  /* Flush with the wordmark above it. */
+  .site-nav a:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+/* Phones keep the strip's description and leave the sync to the footer. */
+@media (max-width: 40rem) {
+  .top-strip .synced {
+    display: none;
+  }
+
+  /* The wordmark gives the search room for its whole placeholder at the
+     16px a phone needs. */
+  .site-header > .wrap {
+    column-gap: 1rem;
+    padding-top: 1rem;
+    padding-bottom: 0.875rem;
+  }
+
+  .wordmark {
+    font-size: 1.25rem;
   }
 }
 
@@ -284,9 +402,6 @@ p {
     /* Keyboard focus scrolls a link clear of the gutter and the fade. */
     scroll-padding-inline: 1.5rem 2.5rem;
     flex-wrap: nowrap;
-    /* All six links fit at 390px in every section; 0.7rem leaves some a
-       pixel over. */
-    gap: 0.65rem;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
@@ -297,8 +412,7 @@ p {
   }
 
   .site-nav a {
-    white-space: nowrap;
-    padding: 0.3rem 0;
+    padding: 0.3rem 0.65rem;
   }
 }
 
@@ -337,34 +451,34 @@ p {
    parliament, so a state's members and bills sit as near to hand as the
    federal ones. The current tab is underlined into the rule below. */
 .parliament-bar {
+  --rule: var(--hair);
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 0 1.4rem;
-  padding-top: 0.95rem;
-  border-bottom: 1px solid var(--hair);
+  gap: 0 1.75rem;
+  padding-top: 0.875rem;
 }
 
 .parliament-bar .house-name {
+  margin-right: auto;
   font-family: var(--serif);
   font-weight: 600;
   font-size: 1.0625rem;
   text-decoration: none;
-  padding-bottom: 0.6rem;
+  padding-bottom: 0.75rem;
 }
 
 .parliament-bar .tabs {
   display: flex;
-  gap: 1.15rem;
+  gap: 1.75rem;
   font-size: 0.875rem;
 }
 
 .parliament-bar .tabs a {
-  color: var(--muted);
+  color: var(--faint);
   text-decoration: none;
   white-space: nowrap;
-  padding-bottom: 0.6rem;
+  padding-bottom: 0.75rem;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
@@ -375,14 +489,8 @@ p {
 
 .parliament-bar .tabs a[aria-current] {
   color: var(--ink);
-  font-weight: 500;
+  font-weight: 600;
   border-bottom-color: var(--ink);
-}
-
-/* The page under the bar starts nearer it than under the header alone. */
-.parliament-bar + .masthead,
-.parliament-bar + article > .masthead:first-child {
-  padding-top: 1.9rem;
 }
 
 @media (max-width: 40rem) {
@@ -406,15 +514,24 @@ p {
   }
 }
 
+/* No box: the field is its ink baseline. */
 .quick-search input {
   width: 100%;
   font: inherit;
-  font-size: 0.85rem;
-  padding: 0.3rem 0.6rem;
-  border: 1px solid var(--hair-strong);
-  border-radius: 4px;
-  background: var(--field);
+  font-size: 0.875rem;
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1.5px solid var(--ink);
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
   color: var(--ink);
+}
+
+.quick-search input::placeholder {
+  color: var(--faint);
+  opacity: 1;
 }
 
 /* Right-anchored and wider than the input: the grouped results and the key
@@ -431,9 +548,7 @@ p {
   padding: 0.25rem;
   list-style: none;
   background: var(--field);
-  border: 1px solid var(--hair-strong);
-  border-radius: 4px;
-  box-shadow: var(--shadow);
+  border: 1px solid var(--ink);
   max-height: 19rem;
   overflow-y: auto;
 }
@@ -442,7 +557,6 @@ p {
   display: block;
   padding: 0.35rem 0.5rem;
   text-decoration: none;
-  border-radius: 2px;
 }
 
 /* --hair differs from --field in both schemes (--panel sits one step off it
@@ -513,62 +627,117 @@ p {
 
 /* Page top */
 .masthead {
-  padding: 2.6rem 0 1.6rem;
+  padding: 3rem 0 1.75rem;
+}
+
+.masthead h1 {
+  margin: 0;
+}
+
+.masthead > .lede,
+.masthead > .motto {
+  margin: 1rem 0 0;
 }
 
 /* The first section heading sits close under its masthead: the lede has
    already made the break, so the usual section gap reads as a hole. */
 .masthead + h2 {
-  margin-top: 1.1rem;
-}
-
-/* A record's own page starts a step higher than an index, level with the
-   profile head and meta row that open person, bill and division pages. */
-article > .masthead:first-child {
-  padding-top: 2.2rem;
+  margin-top: 1rem;
 }
 
 /* A lede straight after a masthead (an electorate's name derivation) reads
    as part of it rather than as the next block. */
 .masthead + .lede {
-  margin-top: -0.4rem;
+  margin-top: -0.75rem;
+}
+
+/* The front page: the headline over seven columns, and the standfirst over
+   five, hung from a hairline and set to the foot of the headline. */
+.masthead.front {
+  --rule: var(--ink);
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 1.5rem var(--col-gap);
+  padding: 3.5rem 0 3rem;
+}
+
+.masthead.front h1 {
+  font-size: clamp(2.5rem, 7vw, 4.75rem);
+  line-height: 1;
+  letter-spacing: -0.025em;
+}
+
+.standfirst {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1.25rem;
+  padding-left: 2rem;
+  border-left: 1px solid var(--hair);
+}
+
+.standfirst p {
+  margin: 0;
+}
+
+.standfirst .tenets {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+@media (max-width: 64rem) {
+  .masthead.front {
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: 2.25rem;
+  }
+
+  .standfirst {
+    padding-left: 0;
+    border-left: 0;
+  }
 }
 
 /* Every page opens with a masthead. Should one ever not, its heading still
    clears the header rule instead of touching it. */
 main.wrap > h1:first-child {
-  margin-top: 2.6rem;
+  margin-top: 3rem;
 }
 
 .motto {
   font-family: var(--serif);
   font-style: italic;
-  font-size: 1.1rem;
+  font-size: 1.1875rem;
   color: var(--muted);
   max-width: 52ch;
   text-wrap: pretty;
 }
 
-/* Meta row above the h1: chip + mono identifiers left, status right. */
+/* Meta row above the h1: the chamber and mono identifiers left, status
+   right. */
 .meta-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem 1rem;
-  margin: 2.2rem 0 0.9rem;
+  margin: 3rem 0 1.125rem;
 }
 
 /* The identifiers wrap as whole phrases: a seat or a term of service never
-   breaks inside itself beside the chip. */
+   breaks inside itself beside the chamber. */
 .meta-row .ids {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem 0.65rem;
+  gap: 0.25rem 0.875rem;
   font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--muted);
+  font-size: 0.78125rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
 /* On a profile the term of service follows the seat after a middot. The
@@ -616,48 +785,63 @@ main.wrap > h1:first-child {
   margin-left: 0.6rem;
 }
 
-/* Result line under a division h1. */
+/* Result line under a division h1: the outcome in its colour, the figures,
+   and a bar that takes the rest of the row. */
 .result-line {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem 1rem;
-  margin: 0.7rem 0 1.4rem;
+  align-items: baseline;
+  gap: 0.5rem 1.5rem;
+  margin: 1.75rem 0 0;
+  padding: 1.25rem 0;
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--hair);
 }
 
 .result-line strong {
-  font-size: 0.9375rem;
+  font-family: var(--serif);
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.result-line.carried strong {
+  color: var(--aye);
+}
+
+.result-line.negatived strong {
+  color: var(--no);
 }
 
 .result-line .figures {
   font-family: var(--mono);
-  font-size: 0.8125rem;
+  font-size: 0.9375rem;
   color: var(--muted);
 }
 
-/* Chips */
+.result-line .vote-bar.result {
+  flex: 1 1 8rem;
+  width: auto;
+  align-self: center;
+}
+
+/* A chamber, named in its own colour: a label, not a tag. */
 .chip {
   display: inline-block;
   font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-size: inherit;
   font-weight: 500;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 3px 9px;
-  border-radius: 4px;
   white-space: nowrap;
 }
 
 .chip.house {
-  background: var(--house-tint);
   color: var(--house);
-  border: 1px solid color-mix(in srgb, var(--house) 30%, transparent);
 }
 
 .chip.senate {
-  background: var(--senate-tint);
   color: var(--senate);
-  border: 1px solid color-mix(in srgb, var(--senate) 30%, transparent);
 }
 
 .group-chip {
@@ -670,8 +854,8 @@ main.wrap > h1:first-child {
 }
 
 .group-chip .dot {
-  width: 0.62rem;
-  height: 0.62rem;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   flex: none;
 }
@@ -697,46 +881,35 @@ h1 .group-chip .dot {
   height: 0.9rem;
 }
 
-/* Filled tags carry a record value (a member's vote, a division outcome) and
-   share one ramp, so the two read as equals when they sit in the same row.
-   Outlined tags (.chip, .ai-tag, .ai-mark) carry identity or provenance and
-   take the 4px radius instead. */
+/* A record value (a member's vote, a division outcome) is a word in mono
+   caps in its own colour, so the two read as equals when they share a row.
+   Outlined tags (.ai-tag, .ai-mark, a crossed vote) carry provenance and
+   take the 3px radius. */
 .vote-chip,
 .result-chip {
   display: inline-block;
   font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-size: 0.71875rem;
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 1px 7px;
-  border-radius: 2px;
   white-space: nowrap;
 }
 
-.vote-chip.aye {
-  background: var(--aye-tint);
+.vote-chip.aye,
+.result-chip.carried {
   color: var(--aye);
 }
 
-.vote-chip.no {
-  background: var(--no-tint);
+.vote-chip.no,
+.result-chip.negatived {
   color: var(--no);
 }
 
 .vote-chip.rebel {
-  box-shadow: 0 0 0 1px currentColor;
-}
-
-/* Division outcome, in the official question terminology. */
-.result-chip.carried {
-  background: var(--aye-tint);
-  color: var(--aye);
-}
-
-.result-chip.negatived {
-  background: var(--no-tint);
-  color: var(--no);
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
 }
 
 /* Ledger rows: date · title · tally. Every row is its own grid, so the tally
@@ -749,6 +922,12 @@ h1 .group-chip .dot {
   border-top: 1px solid var(--hair-strong);
 }
 
+/* Under a section's own rule, the rows start straight away. */
+:is(main h2, .section-head) + :is(.ledger, .bill-list) {
+  margin-top: 0;
+  border-top: 0;
+}
+
 /* Direct children only: the steps nested in a series row draw their own
    dashed rule and must not pick up this one as well. */
 .ledger > li {
@@ -756,8 +935,21 @@ h1 .group-chip .dot {
   grid-template-columns: 5.75rem minmax(0, 1fr) 15rem;
   gap: 0.3rem 0.875rem;
   align-items: baseline;
-  padding: 0.7rem 0;
-  border-bottom: 1px solid var(--hair);
+  padding: 0.8125rem 0;
+  border-bottom: 1px solid var(--hair-row);
+}
+
+/* Titles in a ledger are set in the serif, and are links without an
+   underline until the pointer reaches them. */
+.ledger > li > .what,
+.ledger-series summary .what {
+  font-family: var(--serif);
+  font-size: 1.03125rem;
+  line-height: 1.3;
+}
+
+:is(.ledger .what, .bill-list .what, .vote-columns li li) > a:not(:hover) {
+  text-decoration: none;
 }
 
 /* Dates in the first column of a ledger, a bill list or a table. */
@@ -772,7 +964,6 @@ td.date {
 
 .ledger .what {
   min-width: 0;
-  font-size: 0.9375rem;
 }
 
 /* The tally's own columns: outcome, chamber, figures, bar. A series step
@@ -789,9 +980,6 @@ td.date {
   white-space: nowrap;
 }
 
-.ledger .tally .result-chip {
-  text-align: center;
-}
 
 .ledger .tally .fig {
   grid-column: 3;
@@ -811,7 +999,7 @@ td.date {
 }
 
 .ledger > li[aria-current] .what {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 /* Under a month divider the date drops its year, and the title takes the
@@ -847,6 +1035,8 @@ td.date {
    the divider's look, with the heading's serif, weight and margins undone. */
 .ledger-month .m {
   margin: 0;
+  padding: 0;
+  border: 0;
   font-family: var(--mono);
   font-size: 0.6875rem;
   font-weight: 400;
@@ -859,7 +1049,7 @@ td.date {
 
 .ledger-month .rule {
   height: 1px;
-  background: var(--hair-strong);
+  background: var(--hair);
 }
 
 .ledger-month .n,
@@ -888,6 +1078,16 @@ td.date {
    size is the whole row. */
 .ledger > li.ledger-series {
   contain-intrinsic-size: auto 5.4rem;
+}
+
+/* Stacked rows and activity rows stand in at their two-line height. */
+.ledger.stacked > li:not(.ledger-series),
+.bill-list.activity > li {
+  contain-intrinsic-size: auto 4.4rem;
+}
+
+.ledger.stacked > li.ledger-series {
+  contain-intrinsic-size: auto 6.1rem;
 }
 
 @media (max-width: 40rem) {
@@ -1044,11 +1244,15 @@ td.date {
 
 .series-steps .what {
   min-width: 0;
+  font-family: var(--serif);
+  font-size: 0.9375rem;
+  line-height: 1.35;
 }
 
 .series-steps .q {
   display: block;
   margin-top: 0.1rem;
+  font-family: var(--sans);
   font-size: 0.8125rem;
   color: var(--muted);
 }
@@ -1063,7 +1267,7 @@ td.date {
   letter-spacing: 0.06em;
   color: var(--faint);
   border: 1px solid var(--hair-strong);
-  border-radius: 4px;
+  border-radius: 3px;
   padding: 0 4px;
   vertical-align: 0.1em;
 }
@@ -1105,14 +1309,56 @@ td.date {
   }
 }
 
-/* Proportion bars: neutral ink-vs-paper, sized per context. */
+/* A ledger in a narrow column stacks every row on any screen: the title,
+   then one mono line of date, chamber, outcome, figures and bar. A folded
+   series puts its outcome strip where the bar would be. */
+.ledger.stacked > li:not(.ledger-series),
+.ledger.stacked .ledger-series summary,
+.ledger.stacked .series-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.625rem;
+}
+
+.ledger.stacked .what {
+  flex: 1 0 100%;
+  order: -1;
+}
+
+.ledger.stacked .when,
+.ledger.stacked .tally {
+  font-size: 0.71875rem;
+  color: var(--muted);
+}
+
+.ledger.stacked .tally {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.ledger.stacked .tally .ch {
+  order: -1;
+}
+
+.ledger.stacked .vote-bar {
+  width: 60px;
+}
+
+.ledger.stacked .series-bill,
+.ledger.stacked .series-steps,
+.ledger.stacked .series-credit {
+  padding-left: 0;
+}
+
+/* Proportion bars: ink on a hairline track, sized per context. */
 .vote-bar {
   display: inline-flex;
-  height: 6px;
+  height: 5px;
   width: 40px;
-  border-radius: 2px;
   overflow: hidden;
-  background: var(--hair-strong);
+  background: var(--hair);
   flex: none;
 }
 
@@ -1158,7 +1404,6 @@ td.date {
   display: flex;
   gap: 1px;
   height: 14px;
-  border-radius: 3px;
   overflow: hidden;
 }
 
@@ -1212,131 +1457,174 @@ td.date {
 /* An empty seat shows the ground through a hairline, so it reads as no one
    rather than as one more party's colour. */
 .seat-bar .bar .vacant {
-  background: repeating-linear-gradient(
-    135deg,
-    var(--hair-strong) 0 2px,
-    transparent 2px 5px
-  );
+  background: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 6px);
 }
 
-/* The nine parliaments as one ledger, every row laid out alike. The seat
-   bars share a column and a width, so the nine read as small multiples and
-   their majority marks line up down the page. */
-.parliaments {
-  margin-top: 0.4rem;
+/* The parliaments as a front page of tiles, ruled in ink. Each tile draws
+   its own outline into the 1px gap, so neighbours share one rule and a row
+   left short ends in a step rather than a block of ink. The bars share a
+   width, so their majority marks compare at a glance. */
+.parliaments .section-head {
+  margin-top: 2.5rem;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
-.parliaments ul,
-.parliaments-head {
-  --cols: 14rem minmax(0, 1fr) 7rem 7.8rem;
+.parliaments .section-head h2 {
+  font-size: 1.625rem;
 }
 
-.parliaments-head {
-  display: grid;
-  grid-template-columns: var(--cols);
-  column-gap: 1.2rem;
+.parliaments .key {
   margin: 0;
-  padding: 0 0 0.45rem;
-  border-bottom: 1px solid var(--hair-strong);
   font-family: var(--mono);
-  font-size: 0.6875rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 0.75rem;
   color: var(--faint);
-}
-
-.parliaments-head span:nth-child(2) {
-  grid-column: span 2;
-}
-
-.parliaments-head span:last-child {
   text-align: right;
 }
 
 .parliaments ul {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
   list-style: none;
-  margin: 0;
+  margin: 1rem 1px 1px;
   padding: 0;
 }
 
-.parliaments li {
-  display: grid;
-  grid-template-columns: var(--cols);
-  column-gap: 1.2rem;
-  align-items: center;
-  padding: 0.8rem 0;
-  border-bottom: 1px solid var(--hair);
+/* Eight parliaments, without the federal one, fill two rows of four. */
+.parliaments ul:has(> li:nth-child(8):last-child) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.parliaments .who {
+.parliaments li {
+  position: relative;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  gap: 0.75rem;
+  min-height: 10.625rem;
+  padding: 1.375rem 1.5rem 1.25rem;
+  outline: 1px solid var(--ink);
+  background: var(--paper);
 }
 
-/* The Style Manual's short forms carry the rows, set in the serif. */
+.parliaments li:hover {
+  background: var(--panel);
+}
+
+.parliaments .head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+/* The Style Manual's short forms head the tiles, set in the serif. The
+   name's link reaches over the whole tile; its ring is drawn inside it. */
 .parliaments .name {
   font-family: var(--serif);
   font-weight: 600;
-  font-size: 1.375rem;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
+  font-size: 2.125rem;
+  line-height: 1;
+  letter-spacing: -0.015em;
   text-decoration: none;
 }
 
-.parliaments .name:hover {
-  color: var(--accent);
+.parliaments .name::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.parliaments .name:focus-visible {
+  outline: none;
+}
+
+.parliaments .name:focus-visible::after {
+  outline: 2px solid var(--focus);
+  outline-offset: -4px;
+}
+
+/* The bills count links to the parliament's bills, over the tile's link. */
+.parliaments .open {
+  position: relative;
+  z-index: 1;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.parliaments a.open:not(:hover) {
+  text-decoration: none;
 }
 
 .parliaments .leader {
-  margin-top: 0.15rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   line-height: 1.35;
   color: var(--muted);
 }
 
-.parliaments .seats,
-.parliaments .open {
+.parliaments .house {
+  margin-top: auto;
+}
+
+.parliaments .seats {
   font-family: var(--mono);
   font-size: 0.75rem;
   color: var(--muted);
 }
 
-.parliaments .open {
-  text-align: right;
-}
-
-.parliaments .open a {
-  font-size: 0.9375rem;
-  color: var(--ink);
-}
-
-/* Said on a phone, where the column label is not shown. */
-.parliaments .open .unit {
-  display: none;
-}
-
-/* A parliament whose list is not read says so where its bar would be. */
+/* A parliament whose list is not read says so under a hatched stand-in for
+   its bar. */
 .parliaments .unread .house {
-  grid-column: span 2;
-  font-size: 0.8125rem;
+  height: 12px;
+  background: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 6px);
+}
+
+.parliaments .why {
+  font-family: var(--serif);
   font-style: italic;
-  color: var(--muted);
-}
-
-.parliaments .unread .name {
-  color: var(--muted);
-}
-
-.parliaments .none {
-  font-size: 0.6875rem;
+  font-size: 0.875rem;
   color: var(--faint);
 }
 
-.parliaments > .note {
-  margin: 0.55rem 0 0;
-  font-size: 0.78rem;
+@media (max-width: 64rem) {
+  .parliaments ul,
+  .parliaments ul:has(> li:nth-child(8):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* An odd one out takes the whole last row. */
+  .parliaments li:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 64rem) {
+  .parliaments .section-head {
+    flex-wrap: wrap;
+  }
+
+  .parliaments .key {
+    text-align: left;
+  }
+}
+
+@media (max-width: 40rem) {
+
+  .parliaments ul,
+  .parliaments ul:has(> li:nth-child(8):last-child) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .parliaments li {
+    min-height: 0;
+    padding: 1.125rem 1.25rem;
+  }
+
+  .parliaments .name {
+    font-size: 1.75rem;
+  }
 }
 
 /* A chamber's seats in a thin bar, marked at a majority. */
@@ -1344,7 +1632,7 @@ td.date {
   position: relative;
   display: flex;
   gap: 1px;
-  height: 10px;
+  height: 12px;
 }
 
 .mini-bar > span {
@@ -1354,61 +1642,15 @@ td.date {
 
 .mini-bar .tick {
   position: absolute;
-  top: -3px;
-  bottom: -3px;
+  top: -4px;
+  bottom: -4px;
   width: 2px;
   margin-left: -1px;
   background: var(--ink);
 }
 
 .mini-bar .vacant {
-  background: repeating-linear-gradient(
-    135deg,
-    var(--hair-strong) 0 2px,
-    transparent 2px 5px
-  );
-}
-
-/* Phones: each row restacks, the parliament and its bills on one line and
-   the bar under them across the full width, with the figures below it. */
-@media (max-width: 40rem) {
-  .parliaments-head {
-    display: none;
-  }
-
-  .parliaments li {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'who open'
-      'house house'
-      'seats seats';
-    row-gap: 0.45rem;
-  }
-
-  .parliaments .who {
-    grid-area: who;
-  }
-
-  .parliaments .house {
-    grid-area: house;
-  }
-
-  .parliaments .seats {
-    grid-area: seats;
-  }
-
-  .parliaments .open {
-    grid-area: open;
-    align-self: start;
-  }
-
-  .parliaments .open .unit {
-    display: inline;
-  }
-
-  .parliaments .unread .house {
-    grid-column: auto;
-  }
+  background: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 6px);
 }
 
 /* A state bill's documents on the official site. */
@@ -1465,7 +1707,7 @@ th {
 
 td {
   padding: 0.5rem 0.9rem 0.5rem 0;
-  border-bottom: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair-row);
   vertical-align: baseline;
 }
 
@@ -1657,9 +1899,16 @@ th[scope='rowgroup'] {
   grid-template-columns: 3.5rem minmax(0, 1fr) 4rem 3.5rem 6.875rem;
   gap: 0.3rem 0.875rem;
   align-items: baseline;
-  padding: 0.7rem 0;
-  border-bottom: 1px solid var(--hair);
+  padding: 0.8125rem 0;
+  border-bottom: 1px solid var(--hair-row);
   font-size: 0.9375rem;
+}
+
+/* A bill's title is set in the serif, as a ledger's are. */
+.bill-list .what > a {
+  font-family: var(--serif);
+  font-size: 1.0625rem;
+  line-height: 1.3;
 }
 
 .bill-list .chamber {
@@ -1676,7 +1925,7 @@ th[scope='rowgroup'] {
 }
 
 .bill-list .status.open {
-  font-weight: 500;
+  font-weight: 600;
   color: var(--ink);
 }
 
@@ -1695,43 +1944,49 @@ th[scope='rowgroup'] {
   justify-self: end;
 }
 
-/* Homepage activity rows, in the index's order: date, title, dots, latest
-   event. Each li is its own grid, so the event column has to be a fixed
-   width or the dots stop lining up between rows. 14.5rem holds the longest
-   common APH event, 'Introduced and read a first time', on one line. */
-.bill-list.activity li {
-  grid-template-columns: 3.5rem minmax(0, 1fr) 3.5rem 14.5rem;
+/* Activity rows: when the bill last moved, its title over what that step
+   was, and its dots. Each li is its own grid, so the dots column is sized to
+   the four dots a bill can have and they line up between rows. */
+.bill-list.activity > li {
+  grid-template-columns: 3.5rem minmax(0, 1fr) 3.5rem;
+  gap: 0 0.875rem;
+}
+
+.bill-list.activity .what {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* A row from an earlier year than the newest carries its year, which wraps
+   under the day rather than widen the column. */
+.bill-list.activity .when {
+  white-space: normal;
 }
 
 .bill-list .event {
   font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--muted);
+  font-size: 0.71875rem;
+  color: var(--faint);
+}
+
+.bill-list .dots {
+  justify-self: end;
 }
 
 /* Across parliaments, each bill is tagged with its own: the Style Manual's
-   short form, linked to that parliament's bills. */
+   short form in a column of its own, linked to that parliament's bills. */
+.bill-list.everywhere > li {
+  grid-template-columns: 3.5rem 3.25rem minmax(0, 1fr) 3.5rem;
+}
+
 .bill-list .jur {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--muted);
+  font-size: 0.78125rem;
+  font-weight: 600;
+}
+
+.bill-list .jur:not(:hover) {
   text-decoration: none;
-}
-
-/* The tag keeps a column of its own, so a long title wraps clear of it. */
-.bill-list.everywhere .what {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-}
-
-.bill-list.everywhere .jur {
-  flex: none;
-  width: 3.1rem;
-}
-
-.bill-list .jur:hover {
-  color: var(--accent);
 }
 
 /* Phones: the title on its own line; date, chamber, dots and status share
@@ -1751,7 +2006,7 @@ th[scope='rowgroup'] {
   }
 
   .bill-list .status,
-  .bill-list .event {
+  .bill-list .dots {
     margin-left: auto;
     text-align: right;
   }
@@ -1765,7 +2020,7 @@ th[scope='rowgroup'] {
 .bill-dots {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 
 .bill-dots i {
@@ -1829,13 +2084,10 @@ th[scope='rowgroup'] {
   padding-left: 1.4rem;
 }
 
-/* Segmented control + filter pills. The end buttons are rounded to fit the
-   border rather than clipped to it: clipping would also cut off the focus
-   ring, which is drawn outside each button. */
+/* Segmented control + filter pills, square like every box on the page. */
 .segmented {
   display: inline-flex;
   border: 1px solid var(--hair-strong);
-  border-radius: 6px;
 }
 
 .segmented button {
@@ -1848,16 +2100,8 @@ th[scope='rowgroup'] {
   cursor: pointer;
 }
 
-.segmented button:first-child {
-  border-radius: 5px 0 0 5px;
-}
-
-.segmented button:last-child {
-  border-radius: 0 5px 5px 0;
-}
-
 .segmented button + button {
-  border-left: 1px solid var(--hair-strong);
+  border-left: 1px solid var(--hair);
 }
 
 /* The ring paints over the neighbouring segment rather than under it. */
@@ -1882,8 +2126,7 @@ th[scope='rowgroup'] {
   font: inherit;
   font-size: 0.78125rem;
   padding: 4px 12px;
-  border: 1px solid var(--hair-strong);
-  border-radius: 999px;
+  border: 1px solid var(--hair);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -1930,7 +2173,7 @@ th[scope='rowgroup'] {
   font-size: 0.875rem;
   padding: 0.32rem 0.6rem;
   border: 1px solid var(--hair-strong);
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--field);
   color: var(--ink);
 }
@@ -1955,7 +2198,7 @@ th[scope='rowgroup'] {
   --pagefind-ui-border: var(--hair);
   --pagefind-ui-tag: var(--panel);
   --pagefind-ui-border-width: 1px;
-  --pagefind-ui-border-radius: 4px;
+  --pagefind-ui-border-radius: 0;
   --pagefind-ui-font: var(--sans);
 }
 
@@ -2031,19 +2274,19 @@ th[scope='rowgroup'] {
 }
 
 #search .pagefind-ui__result-title {
-  font-size: 0.9375rem;
-  font-weight: 500;
+  font-family: var(--serif);
+  font-size: 1.0625rem;
+  font-weight: 600;
 }
 
 #search .pagefind-ui__result-title .pagefind-ui__result-link {
-  text-decoration: underline;
-  text-decoration-color: var(--hair-strong);
-  text-underline-offset: 3px;
+  text-decoration: none;
 }
 
 #search .pagefind-ui__result-title .pagefind-ui__result-link:hover {
-  color: var(--accent);
-  text-decoration-color: var(--accent);
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 #search .pagefind-ui__result-excerpt {
@@ -2063,7 +2306,7 @@ th[scope='rowgroup'] {
   font-size: 0.8125rem;
   font-weight: 400;
   border-color: var(--hair-strong);
-  border-radius: 999px;
+  border-radius: 0;
   height: auto;
   padding: 5px 14px;
   width: auto;
@@ -2089,7 +2332,6 @@ th[scope='rowgroup'] {
   margin: 1.6rem 0;
   padding: 1.5rem 1.25rem;
   border: 1px solid var(--hair);
-  border-radius: 6px;
   background: var(--card);
   text-align: center;
 }
@@ -2103,7 +2345,6 @@ th[scope='rowgroup'] {
   font-size: 0.8125rem;
   padding: 5px 14px;
   border: 1px solid var(--hair-strong);
-  border-radius: 999px;
   background: transparent;
   color: var(--ink);
   cursor: pointer;
@@ -2219,57 +2460,218 @@ h2 .count {
   color: var(--faint);
 }
 
-/* Context cards: AI summaries and TVFY context */
-.context-box {
-  background: var(--card);
+/* A record page: its head over seven columns, the tables that support it
+   boxed in the other five, and its body under the head. On a narrower
+   screen everything takes one column, the boxes after the head. */
+.record {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    'head side'
+    'body side';
+  column-gap: var(--col-gap);
+  align-items: start;
+  padding-top: 3rem;
+}
+
+.record-head {
+  grid-area: head;
+}
+
+.record-side {
+  grid-area: side;
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+.record-body {
+  grid-area: body;
+}
+
+.record-head .meta-row {
+  margin-top: 0;
+}
+
+.record-head h1 {
+  margin-bottom: 0;
+}
+
+.record-head .meta-line {
+  margin-top: 1rem;
+}
+
+@media (max-width: 64rem) {
+  .record {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-template-areas:
+      'head'
+      'side'
+      'body';
+  }
+
+  .record-side {
+    margin-top: 2rem;
+  }
+}
+
+/* A parliament's overview: its make-up over seven columns, and its facts
+   boxed in the other five. The box comes first in the page, so on a narrow
+   screen the facts lead. */
+.overview {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 2rem var(--col-gap);
+  align-items: start;
+  margin-top: 1.5rem;
+}
+
+.overview > .side-box {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.overview > :not(.side-box) {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.overview > :not(.side-box) > :first-child {
+  margin-top: 0;
+}
+
+@media (max-width: 64rem) {
+  .overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overview > .side-box,
+  .overview > :not(.side-box) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+/* A supporting table's box. */
+.side-box {
+  padding: 1.5rem;
   border: 1px solid var(--hair);
-  border-radius: 6px;
-  padding: 1rem 1.25rem;
-  margin: 1.4rem 0;
+}
+
+.side-box h2 {
+  margin: 0 0 0.875rem;
+  padding-bottom: 0;
+  border-bottom: 0;
+  font-size: 1.375rem;
+}
+
+.side-box table {
+  margin: 0;
+  font-size: 0.90625rem;
+}
+
+.side-box th.num {
+  width: 3rem;
+}
+
+.side-box > p {
+  margin: 0.875rem 0 0;
+}
+
+.side-box > .attribution {
+  font-size: 0.78125rem;
+}
+
+.side-box .facts th.label {
+  width: 8.5rem;
+}
+
+/* A division's bills: each title, its dots and how far it has come. */
+.related {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.related li + li {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--hair-row);
+}
+
+.related a {
+  font-size: 0.9375rem;
+  text-decoration-color: currentColor;
+}
+
+.related .bill-dots {
+  display: flex;
+  margin-top: 0.75rem;
+}
+
+.related .status {
+  display: block;
+  margin-top: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.71875rem;
+  color: var(--faint);
+}
+
+/* Written context, AI or volunteer: no card, a rule down its left side, a
+   mono label with its provenance tag, and the text itself in the serif. */
+.context-box {
+  margin: 2rem 0 0;
+  padding-left: 1.5rem;
+  border-left: 1px solid var(--hair-strong);
 }
 
 .context-box .context-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.45rem;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 .context-box .context-head {
   font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-size: 0.71875rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--muted);
+  color: var(--faint);
 }
 
 .context-box .ai-tag,
 .series-credit .ai-tag {
+  flex: none;
   font-family: var(--mono);
   font-size: 0.6875rem;
   font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
   border: 1px solid var(--hair-strong);
-  border-radius: 4px;
-  padding: 2px 8px;
+  border-radius: 3px;
+  padding: 1px 6px;
   white-space: nowrap;
 }
 
 .context-box .context-body {
-  font-size: 0.9375rem;
-  line-height: 1.6;
+  font-family: var(--serif);
+  font-size: 1.1875rem;
+  line-height: 1.55;
 }
 
 .context-box .context-body p {
-  margin: 0.4rem 0;
+  margin: 0.6rem 0;
 }
 
 .context-box .context-body blockquote {
   margin: 0.6rem 0 0.6rem 0.2rem;
   padding-left: 0.9rem;
-  border-left: 2px solid var(--hair-strong);
+  border-left: 2px solid var(--hair);
   color: var(--muted);
 }
 
@@ -2279,24 +2681,36 @@ h2 .count {
 }
 
 .context-box .context-credit {
-  margin-top: 0.6rem;
-  font-size: 0.78125rem;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--faint);
 }
 
 /* Procedure explainer: plain paragraph outside any card. */
 .procedure-note {
-  font-size: 0.875rem;
+  margin-top: 1.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.procedure-note strong {
   color: var(--ink);
 }
 
 /* Every-vote columns: ayes beside noes. The row gap only shows where the
-   two stack, and keeps the noes' label off the last aye. */
+   two stack, and keeps the noes' label off the last aye. Each side is a
+   container, so it splits into newspaper columns only where it is wide
+   enough for two. */
 .vote-columns {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.4rem 2rem;
-  margin-top: 0.6rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.5rem 2rem;
+  margin-top: 0.75rem;
+}
+
+.vote-columns > div {
+  container-type: inline-size;
 }
 
 /* Each column label is an h3, so the noes can be reached by heading; the
@@ -2304,13 +2718,13 @@ h2 .count {
 .vote-columns .col-head {
   margin: 0;
   font-family: var(--mono);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 400;
   line-height: 1.55;
   letter-spacing: 0.08em;
   text-wrap: wrap;
   color: var(--faint);
-  border-bottom: 1px solid var(--hair-strong);
+  border-bottom: 1px solid var(--hair);
   padding-bottom: 0.4rem;
 }
 
@@ -2318,14 +2732,14 @@ h2 .count {
   list-style: none;
   margin: 0.3rem 0 0;
   padding: 0;
-  font-size: 0.875rem;
-  line-height: 2.1;
+  font-size: 0.90625rem;
+  line-height: 1.95;
 }
 
 /* Each party's names sit in a list of their own under its label: the dot of
    the By party table, the group's code and how many of its votes are here. */
 .vote-columns li.vote-group {
-  margin-top: 0.7rem;
+  margin-top: 0.875rem;
 }
 
 .vote-columns li.vote-group:first-child {
@@ -2334,9 +2748,10 @@ h2 .count {
 
 .vote-columns li.vote-group > .group-chip {
   display: flex;
+  gap: 0.5rem;
   font-family: var(--mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.08em;
+  font-size: 0.71875rem;
+  letter-spacing: 0.06em;
   color: var(--muted);
   break-after: avoid;
 }
@@ -2349,16 +2764,12 @@ h2 .count {
   margin: 0;
 }
 
-/* A wide screen gives each side two newspaper columns, halving a House list.
-   A name never splits between columns, and a party's label never ends one.
-   The space over the first label moves from its margin to the list's
+/* A side wide enough for two gets two newspaper columns, halving a House
+   list. A name never splits between columns, and a party's label never ends
+   one. The space over the first label moves from its margin to the list's
    padding: a margin is dropped at a column break, so whatever opened the
    second column would otherwise sit higher than the first. */
-@media (min-width: 48rem) {
-  .vote-columns ul {
-    line-height: 1.9;
-  }
-
+@container (min-width: 17.5rem) {
   .vote-columns > div > ul {
     columns: 2;
     column-gap: 1rem;
@@ -2392,39 +2803,40 @@ h2 .count {
   }
 }
 
-/* People cards */
+/* People cards, ruled into a grid in ink as the parliaments are: each card
+   draws its outline into the 1px gap, so neighbours share one rule. */
 .person-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.875rem;
-  margin-top: 1.2rem;
-}
-
-@media (max-width: 48rem) {
-  .person-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  gap: 1px;
+  margin: 1.25rem 1px 1px;
 }
 
 .person-card {
   display: block;
-  padding: 0.875rem;
-  border: 1px solid var(--hair);
-  border-radius: 6px;
-  background: var(--card);
+  padding: 1rem;
+  outline: 1px solid var(--ink);
+  background: var(--paper);
   text-decoration: none;
 }
 
 .person-card:hover {
-  border-color: var(--hair-strong);
+  background: var(--panel);
   color: inherit;
+}
+
+/* An electorate's member stands alone, boxed by the same rule. */
+.current-member .person-card {
+  margin: 1px;
 }
 
 .person-card .name {
   display: block;
-  font-size: 0.875rem;
-  font-weight: 500;
-  margin-top: 0.55rem;
+  font-family: var(--serif);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 0.625rem;
 }
 
 .person-card .sub {
@@ -2456,7 +2868,7 @@ h2 .count {
   font-family: var(--mono);
   font-size: 0.85rem;
   color: var(--muted);
-  border: 1px solid var(--hair-strong);
+  border: 1px solid var(--hair);
 }
 
 .avatar.large {
@@ -2492,7 +2904,7 @@ img.avatar.large {
   display: flex;
   gap: 1.4rem;
   align-items: center;
-  padding: 2.2rem 0 1.6rem;
+  padding: 3rem 0 2rem;
   flex-wrap: wrap;
 }
 
@@ -2550,8 +2962,9 @@ img.avatar.large {
 }
 
 .note {
+  font-family: var(--sans);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.875rem;
 }
 
 /* An electorate's boundary description runs long; keep it to a measure. */
@@ -2565,56 +2978,108 @@ img.avatar.large {
   margin-top: 1.6rem;
 }
 
-/* Section headings with a trailing link */
+/* Section headings with a trailing link: the section's rule runs under
+   both. */
 .section-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
-  margin-top: 2.4rem;
+  margin-top: 3rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--ink);
 }
 
 .section-head h2 {
   margin: 0;
+  padding: 0;
+  border: 0;
 }
 
-.section-head a {
-  font-size: 0.8125rem;
+.section-head > a {
+  font-size: 0.84375rem;
   color: var(--muted);
+  white-space: nowrap;
 }
 
-/* Footer */
+.section-head > a:not(:hover) {
+  text-decoration: none;
+}
+
+/* Two sections side by side, the wider first: bill activity beside the
+   latest divisions. */
+.latest {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 0 var(--col-gap);
+  align-items: start;
+}
+
+@media (max-width: 64rem) {
+  .latest {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Footer: over a double rule, the disclaimer in seven columns; beside it the
+   page's own sources, the site's links, the licences and the freshness of
+   the record. */
 .site-footer {
-  margin-top: 3.5rem;
-  border-top: 1px solid var(--hair-strong);
-  background: var(--panel);
+  margin-top: 4rem;
+  border-top: 3px double var(--ink);
 }
 
-.site-footer .wrap {
-  padding-top: 1.4rem;
-  padding-bottom: 2rem;
-}
-
-/* A page's own source note sits first in the footer, above the disclaimer. */
-.site-footer .attribution {
-  margin: 0 0 0.9rem;
+.site-footer > .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: 1.75rem var(--col-gap);
+  padding-top: 2rem;
+  padding-bottom: 2.5rem;
 }
 
 .site-footer .disclaimer {
+  margin: 0;
+  max-width: 40rem;
   font-family: var(--serif);
   font-style: italic;
-  font-size: 0.84375rem;
-  line-height: 1.6;
-  color: var(--muted);
+  font-size: 1.125rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.colophon {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.site-footer .attribution {
   margin: 0;
+}
+
+.site-footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1.125rem;
+  font-size: 0.84375rem;
+}
+
+.site-footer nav a:not(:hover) {
+  text-decoration: none;
+}
+
+.site-footer .legal {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--faint);
 }
 
 .freshness {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1.25rem;
-  margin-top: 1.125rem;
-  padding-top: 1rem;
+  gap: 0.375rem 1.25rem;
+  padding-top: 0.75rem;
   border-top: 1px solid var(--hair);
   font-family: var(--mono);
   font-size: 0.6875rem;
@@ -2637,19 +3102,10 @@ img.avatar.large {
   color: var(--no);
 }
 
-.site-footer nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.2rem 1.125rem;
-  margin-top: 0.8rem;
-  font-size: 0.8125rem;
-}
-
-.site-footer .legal {
-  font-size: 0.75rem;
-  line-height: 1.6;
-  color: var(--faint);
-  margin-top: 0.7rem;
+@media (max-width: 64rem) {
+  .site-footer > .wrap {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .sample-banner {
@@ -2681,29 +3137,26 @@ img.avatar.large {
    system scheme, since the print block below resets only the neutrals. */
 @media screen and (prefers-color-scheme: dark) {
   :root {
-    --paper: #191d1b;
-    --panel: #222723;
-    --card: #1f2421;
-    --ink: #e8e6dd;
-    --muted: #a3aaa1;
-    --faint: #8c9289;
-    --hair: #333934;
-    --hair-strong: #4a504b;
-    --house: #8fb096;
-    --house-tint: #24312a;
-    --senate: #cf8272;
-    --senate-tint: #392b27;
-    --accent: #c97f6f;
-    --aye: #6fae8a;
-    --aye-tint: #24342b;
-    --no: #cf8272;
-    --no-tint: #3a2a26;
+    --paper: #161513;
+    --panel: #1d1b18;
+    --card: #1a1916;
+    --ink: #ede9df;
+    --muted: #c9c4b7;
+    --faint: #9c978b;
+    --hair: #3a3731;
+    --hair-row: #2a2824;
+    --hair-strong: #5a564d;
+    --hatch: #46423b;
+    --house: #9cc3a4;
+    --house-tint: #1f2a22;
+    --senate: #d99a8c;
+    --aye: #9cc3a4;
+    --no: #d99a8c;
     --focus: #7ea6e0;
-    --field: #232826;
+    --field: #1d1b18;
     --banner: #2e2a17;
     --banner-hair: #4a4325;
     --banner-ink: #e3d7a6;
-    --shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
   }
 }
 
@@ -2733,6 +3186,12 @@ img.avatar.large {
   .seat-bar .bar,
   .mini-bar {
     forced-color-adjust: none;
+  }
+
+  /* A tile's hover panel and a parliament's hatching are backgrounds; the
+     rules between tiles are outlines, which forced colours keeps. */
+  .parliaments .unread .house {
+    border: 1px dashed CanvasText;
   }
 
   .mini-bar .tick {
@@ -2779,7 +3238,9 @@ img.avatar.large {
     --muted: #3f3f3f;
     --faint: #555;
     --hair: #ddd;
-    --hair-strong: #999;
+    --hair-row: #ddd;
+    --hair-strong: #111;
+    --hatch: #ccc;
   }
 
   .site-header,
@@ -2806,6 +3267,8 @@ img.avatar.large {
      default print drops. They carry the record, so they print as drawn. */
   .vote-bar,
   .seat-bar,
+  .mini-bar,
+  .parliaments .house,
   .group-chip .dot,
   .bill-dots,
   .outcome-strip {
@@ -2815,7 +3278,6 @@ img.avatar.large {
 
   .site-footer {
     margin-top: 1.5rem;
-    background: none;
   }
 
   a {
@@ -2834,6 +3296,8 @@ img.avatar.large {
   tr,
   .ledger > li,
   .bill-list > li,
+  .parliaments li,
+  .side-box,
   .context-box {
     break-inside: avoid;
   }
@@ -2893,7 +3357,7 @@ details.donations summary {
 
 .boundary-map .neighbours path {
   fill: var(--panel);
-  stroke: var(--hair-strong);
+  stroke: var(--hair);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
   stroke-linejoin: round;
