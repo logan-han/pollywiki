@@ -493,11 +493,7 @@ fn latest_activity_everywhere(data: &SiteData) -> String {
         });
     }
     for parliament in &data.states {
-        let short = crate::layout::PARLIAMENTS
-            .iter()
-            .find(|(_, _, href)| *href == state_path(parliament.state))
-            .map(|(short, _, _)| *short)
-            .unwrap_or(parliament.state.as_str());
+        let short = parliament.state.short();
         for bill in &parliament.bills {
             let (_, event) = state_bill_event(bill);
             rows.push(Row {
@@ -2253,7 +2249,7 @@ pub fn electorates_index(data: &SiteData) -> Page {
             ),
             e.slug,
             esc(&e.name),
-            e.state,
+            e.state.short(),
             match member {
                 Some(m) => format!("<a href=\"/people/{}/\">{}</a>", m.slug, esc(&m.name)),
                 None => String::new(),
@@ -2523,7 +2519,7 @@ pub fn electorate_page(data: &SiteData, electorate: &Electorate) -> Page {
     ));
     body.push_str("</article>");
 
-    let title = format!("{} ({})", electorate.name, electorate.state);
+    let title = format!("{} ({})", electorate.name, electorate.state.short());
     let description = format!(
         "Federal electorate of {}, {}: member and election results.",
         electorate.name,
@@ -2874,7 +2870,7 @@ fn state_chamber_chip(state: StateCode, chamber: &StateChamber) -> String {
             ChamberKind::Lower => "house",
             ChamberKind::Upper => "senate",
         },
-        state.as_str(),
+        state.short(),
         esc(chamber_short(chamber))
     )
 }
@@ -3628,7 +3624,7 @@ pub fn state_bill_page(data: &SiteData, parliament: &StateParliament, bill: &Sta
                 Some(ChamberKind::Upper) => "senate",
                 _ => "house",
             },
-            state.as_str(),
+            state.short(),
             esc(origin.rsplit(' ').next().unwrap_or(origin))
         ));
     }

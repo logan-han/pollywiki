@@ -3917,3 +3917,27 @@ fn a_party_page_counts_its_seats_in_each_state_chamber() {
     let html = render(&data, &pages::party_page(&data, &federal_only));
     assert!(!html.contains("<h2 id=\"states\">"));
 }
+
+#[test]
+fn states_are_named_in_the_style_manual_s_short_forms() {
+    let data = sample_data();
+    // A senator's card, an electorate's title and its row in the index name
+    // the state as the Style Manual shortens it, never by its code.
+    let people = render(&data, &pages::people_index(&data));
+    assert!(people.contains("<span class=\"sub\">Senator for Tas \u{b7} IND</span>"));
+    assert!(people.contains("<span class=\"sub\">Senator for Qld \u{b7} EXP</span>"));
+    assert!(!people.contains("Senator for TAS") && !people.contains("Senator for QLD"));
+
+    let sampleford = data.electorate_by_slug("sampleford").expect("sample seat");
+    let html = render(&data, &pages::electorate_page(&data, sampleford));
+    assert!(html.contains("<title>Sampleford (Vic) \u{b7} pollywiki</title>"));
+    let index = render(&data, &pages::electorates_index(&data));
+    assert!(index.contains(">Sampleford</a></td><td>Vic</td>"));
+
+    // The filter still answers to the code as well as the name.
+    assert!(index.contains("data-text=\"sampleford vic victoria"));
+
+    // The home page tags each bill with its parliament's short form.
+    let home = render(&data, &pages::home(&data));
+    assert!(home.contains("<a class=\"jur\" href=\"/states/nsw/bills/\">NSW</a>"));
+}

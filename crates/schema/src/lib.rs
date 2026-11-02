@@ -58,6 +58,22 @@ impl StateCode {
         }
     }
 
+    /// The short form the Australian Government Style Manual gives each state
+    /// and territory, for wherever the site names one in brief. The code
+    /// stays for data, paths and anything a machine reads.
+    pub fn short(self) -> &'static str {
+        match self {
+            StateCode::NSW => "NSW",
+            StateCode::VIC => "Vic",
+            StateCode::QLD => "Qld",
+            StateCode::WA => "WA",
+            StateCode::SA => "SA",
+            StateCode::TAS => "Tas",
+            StateCode::ACT => "ACT",
+            StateCode::NT => "NT",
+        }
+    }
+
     pub fn parse(value: &str) -> Option<StateCode> {
         match value {
             "NSW" => Some(StateCode::NSW),
@@ -1097,6 +1113,19 @@ mod tests {
         );
         assert_eq!(slugify("Zo\u{eb} Daniel"), "zoe-daniel");
         assert_eq!(slugify("O'Brien"), "obrien");
+    }
+
+    #[test]
+    fn states_read_in_the_style_manual_s_short_forms() {
+        let short: Vec<&str> = STATES
+            .iter()
+            .filter_map(|code| StateCode::parse(code))
+            .map(StateCode::short)
+            .collect();
+        assert_eq!(short, ["NSW", "Vic", "Qld", "WA", "SA", "Tas", "ACT", "NT"]);
+        // The code itself is unchanged for data and paths.
+        assert_eq!(StateCode::VIC.as_str(), "VIC");
+        assert_eq!(StateCode::VIC.to_string(), "VIC");
     }
 
     #[test]

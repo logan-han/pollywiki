@@ -576,7 +576,7 @@ pub fn person_card(data: &SiteData, person: &Person) -> String {
     let seat = match person.house {
         House::Senate => format!(
             "Senator for {}",
-            person.state.map(|s| s.as_str()).unwrap_or("")
+            person.state.map(|s| s.short()).unwrap_or("")
         ),
         House::Representatives => person
             .electorate

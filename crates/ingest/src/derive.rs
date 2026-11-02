@@ -389,7 +389,7 @@ pub async fn derive(store: &Store) -> Result<()> {
         let seat = match p.house {
             House::Senate => format!(
                 "Senator \u{b7} {}",
-                p.state.map(|s| s.as_str()).unwrap_or("")
+                p.state.map(|s| s.short()).unwrap_or("")
             ),
             House::Representatives => {
                 format!("MP \u{b7} {}", title_from_slug(p.electorate.as_deref()))
@@ -411,7 +411,7 @@ pub async fn derive(store: &Store) -> Result<()> {
             t: "electorate".to_string(),
             slug: e.slug.clone(),
             name: e.name.clone(),
-            sub: format!("Electorate \u{b7} {}", e.state),
+            sub: format!("Electorate \u{b7} {}", e.state.short()),
         });
     }
     // State members last, keyed by their path under /states/, so a name
@@ -425,8 +425,8 @@ pub async fn derive(store: &Store) -> Result<()> {
                     slug: format!("{}/{}", parliament.state.as_str().to_lowercase(), m.slug),
                     name: m.name.clone(),
                     sub: match &m.seat {
-                        Some(seat) => format!("{} {house} \u{b7} {seat}", parliament.state),
-                        None => format!("{} {house}", parliament.state),
+                        Some(seat) => format!("{} {house} \u{b7} {seat}", parliament.state.short()),
+                        None => format!("{} {house}", parliament.state.short()),
                     },
                 });
             }
@@ -443,7 +443,7 @@ pub async fn derive(store: &Store) -> Result<()> {
                     bill.slug
                 ),
                 name: bill.title.clone(),
-                sub: format!("{} bill \u{b7} {}", parliament.state, bill.status),
+                sub: format!("{} bill \u{b7} {}", parliament.state.short(), bill.status),
             });
         }
     }
@@ -1496,6 +1496,10 @@ mod tests {
             "bills are indexed by id"
         );
         assert!(quick.iter().any(|e| e.sub == "Before Senate"));
+        // States are named in the Style Manual's short forms, not their codes.
+        assert!(quick.iter().any(|e| e.sub == "Senator \u{b7} Tas"));
+        assert!(quick.iter().any(|e| e.sub == "Electorate \u{b7} Vic"));
+        assert!(quick.iter().any(|e| e.sub == "Electorate \u{b7} NSW"));
     }
 
     #[tokio::test]
