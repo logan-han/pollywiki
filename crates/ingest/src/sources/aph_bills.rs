@@ -162,24 +162,29 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoint
             // Whatever happens below, fields this source does not own survive.
             bill = merge_existing(&existing, bill);
             if existing.list_updated.as_deref() == Some(list_updated.as_str()) && timeline_present {
-                // Unchanged upstream. Self-heal newly-extracted fields from the stored
-                // raw detail when older canonical records predate them. APH
-                // types every bill, so one stored without a type predates it.
+                // Unchanged upstream, so the detail is not fetched again. Self-heal
+                // newly-extracted fields from the stored raw detail when older
+                // canonical records predate them. APH types every bill, so one
+                // stored without a type predates it.
                 let fields_missing = existing_value.get("sponsors").is_none()
                     || existing_value.get("movers").is_none()
                     || existing.bill_type.is_none();
-                if fields_missing || carries_html_entity(&existing) {
-                    if let Some(raw) = store
+                let raw = if fields_missing || carries_html_entity(&existing) {
+                    store
                         .get_json::<ParlWorkDetail>(&format!("raw/aph/bill-{id}.json"))
                         .await?
-                    {
-                        // A raw detail with nothing new leaves the record as it is.
-                        let healed = with_detail(bill, &raw);
-                        if serde_json::to_value(&healed)? != existing_value {
-                            store.put_json(&key, &healed).await?;
-                            written += 1;
-                        }
-                    }
+                } else {
+                    None
+                };
+                // APH adds a bill's summary without moving its marker, so what
+                // the list says is taken even when the detail is not.
+                let updated = match raw {
+                    Some(raw) => with_detail(bill, &raw),
+                    None => with_list_fields(existing, bill),
+                };
+                if serde_json::to_value(&updated)? != existing_value {
+                    store.put_json(&key, &updated).await?;
+                    written += 1;
                 }
                 continue;
             }
@@ -237,6 +242,18 @@ fn carries_html_entity(bill: &Bill) -> bool {
     );
     prose.extend(bill.summary.as_deref());
     prose.iter().any(|text| ENTITY.is_match(text))
+}
+
+/// A stored bill with what the list says now: its title, chamber, status and
+/// summary. What the detail and the other steps added stays as stored.
+fn with_list_fields(existing: Bill, fresh: Bill) -> Bill {
+    Bill {
+        title: fresh.title,
+        chamber: fresh.chamber,
+        summary: fresh.summary,
+        status: fresh.status,
+        ..existing
+    }
 }
 
 fn merge_existing(existing: &Bill, fresh: Bill) -> Bill {
@@ -1181,6 +1198,74 @@ mod tests {
             store.get_raw("canonical/bills/r7567.json").await.unwrap(),
             untouched,
             "a cached detail with nothing new does not rewrite the record"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_summary_added_without_moving_the_marker_is_still_taken() {
+        // The live defect: 45 bills had summaries on APH that never reached
+        // the store, because adding one does not move the list's marker.
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                return Response::json(
+                    serde_json::json!([
+                        list_item("r7537", "A Bill 2026", "2026-09-07"),
+                        list_item("r7538", "Another Bill 2026", "2026-09-07")
+                    ])
+                    .to_string(),
+                );
+            }
+            panic!("an unchanged marker needs no detail: {}", req.path);
+        });
+        let store = new_store("late-summary");
+        for (id, title, summary) in [
+            ("r7537", "A Bill 2026", None),
+            ("r7538", "Another Bill 2026", Some("Amends the Act")),
+        ] {
+            let mut stored: Bill = serde_json::from_str(&format!(
+                r#"{{"id":"{id}","title":"{title}","parliament":48,
+                    "chamber":"representatives","type":"Government","status":"Before the House",
+                    "timeline":[{{"date":"2026-09-07","event":"Introduced"}}],
+                    "listUpdated":"2026-09-07","sponsors":[],"movers":[],"divisionIds":[]}}"#
+            ))
+            .expect("stored fixture");
+            stored.summary = summary.map(str::to_string);
+            stored.links.aph = to_bill(
+                &serde_json::from_value(list_item(id, title, "2026-09-07")).unwrap(),
+                48,
+            )
+            .links
+            .aph;
+            // Compact, so a rewrite (always pretty-printed here) would show.
+            store
+                .put_raw(
+                    &format!("canonical/bills/{id}.json"),
+                    serde_json::to_string(&stored).unwrap().as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        let untouched = store.get_raw("canonical/bills/r7538.json").await.unwrap();
+
+        sync_aph_bills(&store, 48, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let updated: Bill = store
+            .get_json("canonical/bills/r7537.json")
+            .await
+            .unwrap()
+            .expect("bill");
+        assert_eq!(updated.summary.as_deref(), Some("Amends the Act"));
+        assert_eq!(updated.timeline.len(), 1, "what the detail gave is kept");
+        assert_eq!(updated.bill_type.as_deref(), Some("Government"));
+        assert_eq!(
+            store.get_raw("canonical/bills/r7538.json").await.unwrap(),
+            untouched,
+            "a list saying nothing new does not rewrite the record"
         );
     }
 
