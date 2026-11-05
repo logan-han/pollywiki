@@ -80,6 +80,12 @@ legislation register keeps, for the term that began with the election dated
 after each election. Pages that do not change once a bill is settled are
 cached in the store, and every reader keeps to its host's crawl delay.
 
+A bill APH has yet to summarise is explained from its explanatory
+memorandum meanwhile. The bills sync reads the outline of each such bill's
+memorandum from ParlInfo once, as a browser like the ParlWork reader, and
+the note written from it is replaced by one written from the official
+summary once APH publishes that.
+
 AI text can also be written outside the nightly Gemini run. `summarise
 --export <dir>` writes every prompt input, pending or not, with the
 instructions each kind is written to; `summarise --import <file> --model
@@ -111,12 +117,13 @@ once their ACM validation records are in place.
 With `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` set, every Gemini call
 in `summarise` is traced to Langfuse as one generation: prompt, reply, tokens,
 timing and failures. Traces are named by the job (`pollywiki.bill-notes`,
-`pollywiki.division-context`, `pollywiki.member-note`), versioned by the
-prompt (`v4`) and grouped into one session per workflow run. The reply is
+`pollywiki.bill-notes-memorandum`, `pollywiki.division-context`,
+`pollywiki.member-note`), versioned by the prompt (`v4`) and grouped into one
+session per workflow run. The reply is
 parsed inside the trace: a reply the job could not use is an ERROR generation
 carrying the text, and a batch reply that left items out is a WARNING naming
 them. Gemini's finish reason and model version land in the metadata. The
-three prompt templates are mirrored into Langfuse prompt management at the
+four prompt templates are mirrored into Langfuse prompt management at the
 start of each run and every generation links to the version whose text it
 ran: code is the source of truth, a template changed here becomes a new
 version there, and an edit made there is superseded the same way. Spans go

@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 /// stays polite: list pages plus detail fetches only for bills whose list
 /// timestamp moved. Endpoints are undocumented and may change; failures are
 /// reported loudly, never written.
-const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
+pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 10;
@@ -55,12 +55,50 @@ pub struct ParlWorkDetail {
 pub struct ParlWorkDetailBill {
     #[serde(rename = "ParlInfoUrl")]
     pub parl_info_url: Option<String>,
+    /// "Government" or "Private".
+    #[serde(rename = "Type")]
+    pub bill_type: Option<String>,
+    /// The portfolio a government bill comes from; none for a private bill.
+    #[serde(rename = "Portfolio")]
+    pub portfolio: Option<String>,
     #[serde(rename = "Sponsors")]
     pub sponsors: Option<Vec<ParlWorkPerson>>,
     #[serde(rename = "Movers")]
     pub movers: Option<Vec<ParlWorkPerson>>,
     #[serde(rename = "GroupedProgressStates")]
     pub grouped_progress_states: Option<Vec<ParlWorkProgressGroup>>,
+    /// Each reading's text, in the order they were made.
+    #[serde(rename = "TextOfBillReadings")]
+    pub texts: Option<Vec<ParlWorkDocument>>,
+    /// Every memorandum tabled with the bill, in the order they were tabled.
+    #[serde(rename = "ExplanatoryMemoranda")]
+    pub memoranda: Option<Vec<ParlWorkDocument>>,
+    #[serde(rename = "BillsDigest")]
+    pub digest: Option<ParlWorkDocument>,
+}
+
+/// One of a bill's documents on ParlInfo.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParlWorkDocument {
+    #[serde(rename = "DisplayName")]
+    pub display_name: Option<String>,
+    #[serde(rename = "HtmlLink")]
+    pub html_link: Option<String>,
+    #[serde(rename = "PdfLink")]
+    pub pdf_link: Option<String>,
+    #[serde(rename = "WordLink")]
+    pub word_link: Option<String>,
+}
+
+impl ParlWorkDocument {
+    /// Where a reader opens it: its ParlInfo page, else the PDF.
+    fn link(&self) -> Option<String> {
+        [&self.html_link, &self.pdf_link]
+            .into_iter()
+            .flatten()
+            .find(|u| !u.is_empty())
+            .cloned()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -125,17 +163,22 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoint
             bill = merge_existing(&existing, bill);
             if existing.list_updated.as_deref() == Some(list_updated.as_str()) && timeline_present {
                 // Unchanged upstream. Self-heal newly-extracted fields from the stored
-                // raw detail when older canonical records predate them.
+                // raw detail when older canonical records predate them. APH
+                // types every bill, so one stored without a type predates it.
                 let fields_missing = existing_value.get("sponsors").is_none()
-                    || existing_value.get("movers").is_none();
+                    || existing_value.get("movers").is_none()
+                    || existing.bill_type.is_none();
                 if fields_missing || carries_html_entity(&existing) {
                     if let Some(raw) = store
                         .get_json::<ParlWorkDetail>(&format!("raw/aph/bill-{id}.json"))
                         .await?
                     {
-                        let merged = merge_existing(&existing, bill);
-                        store.put_json(&key, &with_detail(merged, &raw)).await?;
-                        written += 1;
+                        // A raw detail with nothing new leaves the record as it is.
+                        let healed = with_detail(bill, &raw);
+                        if serde_json::to_value(&healed)? != existing_value {
+                            store.put_json(&key, &healed).await?;
+                            written += 1;
+                        }
                     }
                 }
                 continue;
@@ -165,7 +208,16 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoint
         "aph-bills: {} listed, {written} written, {detailed} detail fetches",
         items.len()
     );
-    Ok(())
+
+    // A bill APH has yet to summarise is explained from its memorandum.
+    let unsummarised: Vec<String> = items
+        .iter()
+        .filter(|item| item.title.is_some())
+        .map(|item| to_bill(item, parliament))
+        .filter(|bill| !bill.id.is_empty() && !bill.has_summary())
+        .map(|bill| bill.id)
+        .collect();
+    crate::sources::aph_memoranda::sync_memoranda(store, endpoints, &unsummarised).await
 }
 
 /// `{ ...existing, ...toBill(item) }`: fresh list fields win; only the fields
@@ -270,7 +322,26 @@ fn with_detail(bill: Bill, detail: &ParlWorkDetail) -> Bill {
     if let Some(parlinfo) = inner.parl_info_url.as_deref().filter(|u| !u.is_empty()) {
         links.parlinfo = Some(parlinfo.to_string());
     }
+    let texts = inner.texts.as_deref().unwrap_or_default();
+    if let Some(text) = texts.iter().rev().find_map(ParlWorkDocument::link) {
+        links.text = Some(text);
+    }
+    if let Some(em) = whole_memorandum(inner.memoranda.as_deref().unwrap_or_default())
+        .and_then(ParlWorkDocument::link)
+    {
+        links.em = Some(em);
+    }
+    if let Some(digest) = inner.digest.as_ref().and_then(ParlWorkDocument::link) {
+        links.digest = Some(digest);
+    }
+    let prose = |value: &Option<String>| value.as_deref().map(strip_html).filter(|v| !v.is_empty());
+    let bill_type = prose(&inner.bill_type)
+        .map(|kind| bill_kind(&kind, bill.chamber))
+        .or_else(|| bill.bill_type.clone());
+    let portfolio = prose(&inner.portfolio).or_else(|| bill.portfolio.clone());
     Bill {
+        bill_type,
+        portfolio,
         timeline,
         sponsors: inner
             .sponsors
@@ -291,6 +362,31 @@ fn with_detail(bill: Bill, detail: &ParlWorkDetail) -> Bill {
         links,
         ..bill
     }
+}
+
+/// APH types a bill "Government" or "Private"; a private bill reads as the
+/// parliament names it, by the chamber its member sits in.
+fn bill_kind(kind: &str, chamber: House) -> String {
+    match (kind, chamber) {
+        ("Private", House::Senate) => "Private senator's bill".to_string(),
+        ("Private", House::Representatives) => "Private member's bill".to_string(),
+        _ => kind.to_string(),
+    }
+}
+
+/// The memorandum that explains the whole bill: the latest one tabled, which
+/// is the revised memorandum once there is one. A supplementary memorandum,
+/// an addendum or a correction covers only part of it, so is never chosen.
+pub(crate) fn whole_memorandum(memoranda: &[ParlWorkDocument]) -> Option<&ParlWorkDocument> {
+    const PARTIAL: [&str; 3] = ["supplementary", "addendum", "correction"];
+    memoranda
+        .iter()
+        .rev()
+        .filter(|m| {
+            let name = m.display_name.as_deref().unwrap_or_default().to_lowercase();
+            !PARTIAL.iter().any(|partial| name.starts_with(partial))
+        })
+        .find(|m| m.link().is_some())
 }
 
 const HONORIFICS: [&str; 10] = [
@@ -546,6 +642,66 @@ mod tests {
     }
 
     #[test]
+    fn detail_records_name_the_type_portfolio_and_documents() {
+        let bill = with_detail(
+            to_bill(&list_bill(r#"{"Id":"r7566","Title":"A Bill 2026"}"#), 48),
+            &detail(
+                r#"{"Bill":{"Type":"Government","Portfolio":"Health, Disability and Ageing",
+                    "TextOfBillReadings":[
+                      {"DisplayName":"First reading","HtmlLink":"https://parlinfo/first"},
+                      {"DisplayName":"As passed by both Houses","HtmlLink":null,"PdfLink":"https://parlinfo/passed.pdf"}],
+                    "ExplanatoryMemoranda":[
+                      {"DisplayName":"Explanatory memorandum","HtmlLink":"https://parlinfo/em"},
+                      {"DisplayName":"Revised explanatory memorandum","HtmlLink":"https://parlinfo/rem"},
+                      {"DisplayName":"Supplementary explanatory memorandum","HtmlLink":"https://parlinfo/sem"}],
+                    "BillsDigest":{"DisplayName":"Bills Digest","HtmlLink":"","PdfLink":"https://parlinfo/digest.pdf"}}}"#,
+            ),
+        );
+        assert_eq!(bill.bill_type.as_deref(), Some("Government"));
+        assert_eq!(
+            bill.portfolio.as_deref(),
+            Some("Health, Disability and Ageing")
+        );
+        // The latest reading's text, as a PDF where it has no page of its own.
+        assert_eq!(
+            bill.links.text.as_deref(),
+            Some("https://parlinfo/passed.pdf")
+        );
+        // The revised memorandum explains the bill as amended; the
+        // supplementary one tabled after it explains only the amendments.
+        assert_eq!(bill.links.em.as_deref(), Some("https://parlinfo/rem"));
+        assert_eq!(
+            bill.links.digest.as_deref(),
+            Some("https://parlinfo/digest.pdf")
+        );
+
+        // A private bill reads as its chamber names it, with no portfolio.
+        let private = with_detail(
+            to_bill(
+                &list_bill(r#"{"Id":"s1469","FormattedOriginatingChamber":"Senate"}"#),
+                48,
+            ),
+            &detail(
+                r#"{"Bill":{"Type":"Private","Portfolio":null,"BillsDigest":null,
+                    "ExplanatoryMemoranda":[
+                      {"DisplayName":"Supplementary explanatory memorandum","HtmlLink":"https://parlinfo/sem"}]}}"#,
+            ),
+        );
+        assert_eq!(private.bill_type.as_deref(), Some("Private senator's bill"));
+        assert!(private.portfolio.is_none());
+        assert!(
+            private.links.em.is_none(),
+            "a supplementary memorandum alone does not explain the bill"
+        );
+        assert!(private.links.text.is_none() && private.links.digest.is_none());
+        let member = with_detail(
+            to_bill(&list_bill(r#"{"Id":"r1"}"#), 48),
+            &detail(r#"{"Bill":{"Type":"Private"}}"#),
+        );
+        assert_eq!(member.bill_type.as_deref(), Some("Private member's bill"));
+    }
+
+    #[test]
     fn a_detail_response_with_no_bill_leaves_the_record_alone() {
         let bill = to_bill(&list_bill(r#"{"Id":"r1","Status":"Act"}"#), 48);
         let untouched = with_detail(bill, &detail(r#"{"Bill":null}"#));
@@ -563,6 +719,7 @@ mod tests {
             text: "note".to_string(),
             model: "m".to_string(),
             generated_at: "2026-08-01T00:00:00.000Z".to_string(),
+            source: None,
         });
 
         let fresh = to_bill(&list_bill(r#"{"Id":"r1","Status":"Act"}"#), 48);
@@ -956,6 +1113,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stored_bill_without_a_type_is_given_one_from_the_cached_raw() {
+        // Every record stored before the detail's type and documents were read.
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                return Response::json(
+                    serde_json::json!([
+                        list_item("r7566", "A Bill 2026", "2026-10-29"),
+                        list_item("r7567", "Another Bill 2026", "2026-10-29")
+                    ])
+                    .to_string(),
+                );
+            }
+            panic!("the heal must not need a detail refetch: {}", req.path);
+        });
+        let store = new_store("heal-type");
+
+        // As the old code stored them: built from the detail, minus its type.
+        let untyped = detail_body("Second reading");
+        let mut typed = untyped.clone();
+        typed["Bill"]["Type"] = serde_json::json!("Government");
+        typed["Bill"]["Portfolio"] = serde_json::json!("Treasury");
+        typed["Bill"]["ExplanatoryMemoranda"] = serde_json::json!([
+            { "DisplayName": "Explanatory memorandum", "HtmlLink": "https://parlinfo/em" }
+        ]);
+        for (id, title, raw) in [
+            ("r7566", "A Bill 2026", &typed),
+            ("r7567", "Another Bill 2026", &untyped),
+        ] {
+            let item: ParlWorkBill =
+                serde_json::from_value(list_item(id, title, "2026-10-29")).unwrap();
+            let stored = with_detail(
+                to_bill(&item, 48),
+                &serde_json::from_value(untyped.clone()).unwrap(),
+            );
+            // Compact, so a rewrite (always pretty-printed here) would show.
+            store
+                .put_raw(
+                    &format!("canonical/bills/{id}.json"),
+                    serde_json::to_string(&stored).unwrap().as_bytes(),
+                )
+                .await
+                .unwrap();
+            store
+                .put_json(&format!("raw/aph/bill-{id}.json"), raw)
+                .await
+                .unwrap();
+        }
+        let untouched = store.get_raw("canonical/bills/r7567.json").await.unwrap();
+
+        sync_aph_bills(&store, 48, &Endpoints::at(&server.base))
+            .await
+            .expect("sync");
+
+        let healed: Bill = store
+            .get_json("canonical/bills/r7566.json")
+            .await
+            .unwrap()
+            .expect("bill");
+        assert_eq!(healed.bill_type.as_deref(), Some("Government"));
+        assert_eq!(healed.portfolio.as_deref(), Some("Treasury"));
+        assert_eq!(healed.links.em.as_deref(), Some("https://parlinfo/em"));
+        assert_eq!(
+            store.get_raw("canonical/bills/r7567.json").await.unwrap(),
+            untouched,
+            "a cached detail with nothing new does not rewrite the record"
+        );
+    }
+
+    #[tokio::test]
     async fn curated_fields_survive_a_resync() {
         let server = TestServer::start(|req| {
             if req.path.starts_with("/parlwork/bills?") {
@@ -973,7 +1202,8 @@ mod tests {
         let store = new_store("curated");
 
         sync_aph_bills(&store, 48, &endpoints).await.expect("first");
-        // Fields this source does not own are added by other steps.
+        // The AI note is added by another step; a type and portfolio the
+        // detail does not repeat are kept rather than blanked.
         let mut bill: Bill = store
             .get_json("canonical/bills/r7354.json")
             .await

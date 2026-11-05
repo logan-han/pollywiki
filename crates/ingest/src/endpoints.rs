@@ -15,6 +15,9 @@ pub struct Endpoints {
     pub handbook: String,
     /// ParlWork API root: the SPA behind APH's own bills list.
     pub parlwork: String,
+    /// ParlInfo, APH's document store: the host of every link ParlWork gives
+    /// to a bill's documents.
+    pub parlinfo: String,
     pub wikidata_sparql: String,
     pub commons_api: String,
     /// Commons file host, the one that serves Special:FilePath thumbnails.
@@ -70,6 +73,7 @@ impl Default for Endpoints {
             tvfy: "https://theyvoteforyou.org.au/api/v1".to_string(),
             handbook: "https://handbookapi.aph.gov.au/api".to_string(),
             parlwork: "https://parlwork.aph.gov.au/api".to_string(),
+            parlinfo: "https://parlinfo.aph.gov.au".to_string(),
             wikidata_sparql: "https://query.wikidata.org/sparql".to_string(),
             commons_api: "https://commons.wikimedia.org/w/api.php".to_string(),
             commons_files: "https://commons.wikimedia.org".to_string(),
@@ -114,6 +118,7 @@ impl Endpoints {
             tvfy: format!("{base}/tvfy"),
             handbook: format!("{base}/handbook"),
             parlwork: format!("{base}/parlwork"),
+            parlinfo: format!("{base}/parlinfo"),
             wikidata_sparql: format!("{base}/sparql"),
             commons_api: format!("{base}/commons"),
             commons_files: format!("{base}/commons-files"),

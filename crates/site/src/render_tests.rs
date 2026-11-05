@@ -1640,7 +1640,60 @@ fn bill_summaries_render_in_all_three_grammars() {
     // Every one credits the official summary rather than implying authorship.
     for html in [&grouped, &listed, &prose] {
         assert!(html.contains("Summary from the official bill homepage."));
+        assert!(!html.contains("has no summary"));
     }
+}
+
+#[test]
+fn a_bill_without_an_official_summary_says_so_and_points_at_its_documents() {
+    let data = sample_data();
+    let html_for = |id: &str| {
+        let bill = data.bills.iter().find(|b| b.id == id).expect("sample bill");
+        render(&data, &pages::bill_page(&data, bill))
+    };
+
+    // The summary's place names the memorandum that explains the bill.
+    let explained = html_for("sample-5");
+    assert!(explained.contains(
+        "<div class=\"lede bill-summary\"><p>The official bill homepage has no summary of this bill yet. \
+         The <a href=\"https://parlinfo.gov.au/sample-5/em\">explanatory memorandum</a> tabled with it explains what it does.</p></div>"
+    ));
+    assert!(explained.contains("<span>Government</span>"));
+    assert!(explained.contains("<strong>Portfolio:</strong> Example Portfolio"));
+    assert!(explained.contains(
+        "<h2>Documents</h2><ul class=\"doc-links\">\
+         <li><a href=\"https://parlinfo.gov.au/sample-5/text\">Text of the bill</a></li>\
+         <li><a href=\"https://parlinfo.gov.au/sample-5/em\">Explanatory memorandum</a></li></ul>"
+    ));
+    assert!(!explained.contains("Summary from the official bill homepage."));
+    // Its note was written from that memorandum, and says so.
+    assert!(explained.contains(
+        "<p>The bill would end two sample measures and repeal the Act that set them up.</p></div>\
+         <div class=\"context-credit\">Written by AI from the bill's explanatory memorandum while the official summary is unpublished; it says what the bill would do, not why."
+    ));
+
+    // With no documents either, it says only what is missing.
+    let bare = html_for("sample-4");
+    assert!(bare.contains(
+        "<div class=\"lede bill-summary\"><p>The official bill homepage has no summary of this bill yet.</p></div>"
+    ));
+    assert!(!bare.contains("<h2>Documents</h2>"));
+
+    // A summarised bill lists its documents after the votes on it, and its
+    // note explains the summary.
+    let summarised = html_for("sample-1");
+    assert!(summarised.contains(
+        "<div class=\"context-credit\">Written by AI to explain the official summary in plain terms;"
+    ));
+    let (_, after_votes) = summarised
+        .split_once("<h2>Divisions on this bill</h2>")
+        .expect("divisions");
+    assert!(after_votes.contains(
+        "<h2>Documents</h2><ul class=\"doc-links\">\
+         <li><a href=\"https://parlinfo.gov.au/sample-1/text\">Text of the bill</a></li>\
+         <li><a href=\"https://parlinfo.gov.au/sample-1/em\">Explanatory memorandum</a></li>\
+         <li><a href=\"https://parlinfo.gov.au/sample-1/digest\">Bills Digest</a></li></ul>"
+    ));
 }
 
 #[test]

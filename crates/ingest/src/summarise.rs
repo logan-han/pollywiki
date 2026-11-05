@@ -1,11 +1,12 @@
 use crate::http::{polite_fetch, FetchOpts};
+use crate::sources::aph_memoranda::{memorandum_key, Memorandum};
 use crate::sources::tvfy::key_for;
 use crate::store::Store;
 use crate::tally::{self, Tally, VoteRow};
 use crate::telemetry::{CallStatus, Langfuse, ModelCall, Usage};
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
-use pollywiki_schema::{Bill, Division, House, Person};
+use pollywiki_schema::{Bill, Division, House, NoteSource, Person};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -277,6 +278,9 @@ pub struct AiSummary {
     pub generated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_version: Option<i64>,
+    /// What a bill's note was written from, where not its official summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NoteSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +304,11 @@ const SUMMARY_PROMPT_VERSION: i64 = 3;
 /// Bump to regenerate every bill note after a prompt change.
 const BILL_NOTE_PROMPT_VERSION: i64 = 3;
 
+/// Bump to regenerate every bill note written from a memorandum. Kept apart
+/// from the summary prompt's version, so a change to one leaves the other's
+/// notes be.
+const MEMORANDUM_NOTE_PROMPT_VERSION: i64 = 1;
+
 /// Bump to regenerate every note after a prompt change.
 const NOTE_PROMPT_VERSION: i64 = 4;
 
@@ -317,6 +326,23 @@ For EACH bill below, decide whether an explanation adds anything, then write acc
 - If the summary is long or dense, write two to three sentences of plain-English context: what this KIND of bill does in the Australian system where that helps (for example, appropriation bills are the routine budget bills that authorise the government to spend money on its ordinary operations) — general knowledge of parliamentary practice is allowed for the mechanism — and what THIS bill specifically changes, using ONLY the official summary provided; never invent specifics.
 Never evaluate the bill or any politician; no opinions; do not restate the bill's status. Plain Australian English.
 Return JSON: an array of {"id": "<bill id>", "summary": "<text or empty string>"} covering every bill.
+
+{{items}}"#,
+};
+
+/// Plain-English context for a bill APH has yet to summarise, written from
+/// the opening of its explanatory memorandum until the summary appears. A
+/// memorandum makes its sponsor's case, so the note keeps to what the bill
+/// would do and leaves the case for it out.
+const MEMORANDUM_NOTES: Prompt = Prompt {
+    name: "pollywiki.bill-notes-memorandum",
+    version: MEMORANDUM_NOTE_PROMPT_VERSION,
+    template: r#"You explain bills before the Australian federal parliament to ordinary readers.
+The Parliament has not yet published its official summary of these bills, so each comes with the opening of its explanatory memorandum: the document tabled with the bill to explain it, written for its sponsor.
+For EACH bill below, write two to three sentences of plain English on what the bill would do: the laws it would change, create or repeal, and what those changes would provide. Write about the bill directly ("The bill would ..."); the page already says where the note comes from. Use ONLY the memorandum text given and never invent specifics; leave out dates, costs and section numbers unless they are the substance of a change. General knowledge of Australian parliamentary practice may explain a mechanism (what a consequential amendment or a legislative instrument is), nothing more.
+A memorandum makes the case for its bill. Take from it only what the bill would do. Never repeat or weigh its reasons, claims, predictions or characterisations (that something is damaging, unfair, urgent, outdated, needed or responsible), and never say what the bill is meant to achieve beyond the changes it makes.
+Never evaluate the bill or any politician; no opinions; do not restate the bill's status. Plain Australian English.
+Return JSON: an array of {"id": "<bill id>", "summary": "<text>"} covering every bill.
 
 {{items}}"#,
 };
@@ -360,7 +386,12 @@ Strictly descriptive: never praise or criticise; no evaluative adjectives (loyal
 };
 
 /// Every prompt, in the order the jobs run.
-const PROMPTS: [&Prompt; 3] = [&DIVISION_CONTEXT, &BILL_NOTES, &MEMBER_NOTE];
+const PROMPTS: [&Prompt; 4] = [
+    &DIVISION_CONTEXT,
+    &BILL_NOTES,
+    &MEMORANDUM_NOTES,
+    &MEMBER_NOTE,
+];
 
 /// TVFY's context field is a written summary for most bill votes but a raw
 /// Hansard excerpt for procedural motions. A transcript quotes speakers, so a
@@ -385,10 +416,11 @@ pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -
     let gemini = gemini.with_prompts_registered().await;
     let names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
     let (divisions, bills) = load_records(store).await?;
+    let memoranda = load_memoranda(store, &bills).await?;
 
     division_summaries(store, &gemini, &divisions, &names, &bills).await?;
     let bill_list: Vec<&Bill> = bills.values().collect();
-    bill_notes(store, &gemini, &bill_list).await?;
+    bill_notes(store, &gemini, &bill_list, &memoranda).await?;
     person_notes(store, &gemini, people, &divisions).await?;
     Ok(())
 }
@@ -410,19 +442,44 @@ async fn load_records(store: &Store) -> Result<(Vec<Division>, IndexMap<String, 
     Ok((divisions, bills))
 }
 
-/// Everything the three jobs write for, whether or not it is pending: each
-/// bill with an official summary, each division whose only context is a
+/// The opening of each memorandum read for a bill APH has yet to summarise,
+/// by bill id.
+async fn load_memoranda(
+    store: &Store,
+    bills: &IndexMap<String, Bill>,
+) -> Result<IndexMap<String, String>> {
+    let mut memoranda = IndexMap::new();
+    for bill in bills.values().filter(|b| !b.has_summary()) {
+        if let Some(memorandum) = store
+            .get_json::<Memorandum>(&memorandum_key(&bill.id))
+            .await?
+        {
+            memoranda.insert(bill.id.clone(), memorandum.outline);
+        }
+    }
+    Ok(memoranda)
+}
+
+/// Everything the jobs write for, whether or not it is pending: each bill
+/// with an official summary, each bill APH has yet to summarise whose
+/// memorandum has been read, each division whose only context is a
 /// transcript, and each member with enough votes for a note, with the input
 /// its prompt is filled with.
 struct Writable {
     bills: IndexMap<String, String>,
+    memoranda: IndexMap<String, String>,
     divisions: IndexMap<String, String>,
     /// The record a note is written from, and the votes and crossings it
     /// counts, which decide when the nightly run next rewrites it.
     members: IndexMap<String, (String, i64, i64)>,
 }
 
-fn writable(people: &[Person], divisions: &[Division], bills: &IndexMap<String, Bill>) -> Writable {
+fn writable(
+    people: &[Person],
+    divisions: &[Division],
+    bills: &IndexMap<String, Bill>,
+    memoranda: &IndexMap<String, String>,
+) -> Writable {
     let names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
     let by_day = divisions_by_day(divisions);
     let votes = votes_by_slug(divisions);
@@ -430,13 +487,16 @@ fn writable(people: &[Person], divisions: &[Division], bills: &IndexMap<String, 
     Writable {
         bills: bills
             .values()
-            .filter(|b| {
-                b.summary
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|s| !s.is_empty())
-            })
+            .filter(|b| b.has_summary())
             .map(|b| (b.id.clone(), bill_block(b)))
+            .collect(),
+        memoranda: bills
+            .values()
+            .filter(|b| !b.has_summary())
+            .filter_map(|b| {
+                let outline = memoranda.get(&b.id)?;
+                Some((b.id.clone(), memorandum_block(b, outline)))
+            })
             .collect(),
         divisions: divisions
             .iter()
@@ -487,7 +547,8 @@ pub struct ExportedItem {
 /// place its input goes; `items.jsonl` holds one item per line.
 pub async fn export(store: &Store, people: &[Person], dir: &std::path::Path) -> Result<()> {
     let (divisions, bills) = load_records(store).await?;
-    let writable = writable(people, &divisions, &bills);
+    let memoranda = load_memoranda(store, &bills).await?;
+    let writable = writable(people, &divisions, &bills, &memoranda);
     std::fs::create_dir_all(dir)?;
     let template = |prompt: &Prompt| {
         serde_json::json!({
@@ -498,6 +559,7 @@ pub async fn export(store: &Store, people: &[Person], dir: &std::path::Path) -> 
     };
     let templates = serde_json::json!({
         "bill": template(&BILL_NOTES),
+        "bill-memorandum": template(&MEMORANDUM_NOTES),
         "division": template(&DIVISION_CONTEXT),
         "member": template(&MEMBER_NOTE),
     });
@@ -510,6 +572,12 @@ pub async fn export(store: &Store, people: &[Person], dir: &std::path::Path) -> 
         .bills
         .iter()
         .map(|(id, input)| ("bill", id, input))
+        .chain(
+            writable
+                .memoranda
+                .iter()
+                .map(|(id, input)| ("bill-memorandum", id, input)),
+        )
         .chain(
             writable
                 .divisions
@@ -532,8 +600,9 @@ pub async fn export(store: &Store, people: &[Person], dir: &std::path::Path) -> 
     }
     std::fs::write(dir.join("items.jsonl"), lines)?;
     println!(
-        "summarise: exported {} bills, {} divisions and {} members to {}",
+        "summarise: exported {} bills, {} from memoranda, {} divisions and {} members to {}",
         writable.bills.len(),
+        writable.memoranda.len(),
         writable.divisions.len(),
         writable.members.len(),
         dir.display()
@@ -568,7 +637,8 @@ pub async fn import(
         ));
     }
     let (divisions, bills) = load_records(store).await?;
-    let writable = writable(people, &divisions, &bills);
+    let memoranda = load_memoranda(store, &bills).await?;
+    let writable = writable(people, &divisions, &bills, &memoranda);
     let raw = std::fs::read_to_string(file)?;
     let mut written = 0;
     let mut rejected: Vec<String> = Vec::new();
@@ -584,12 +654,25 @@ pub async fn import(
             model: model.to_string(),
             generated_at: crate::now_iso(),
             prompt_version: Some(version),
+            source: None,
         };
         match item.kind.as_str() {
             // An empty bill note is an answer: the summary is plain already.
             "bill" if writable.bills.contains_key(&item.id) => {
                 store
                     .put_json(&bill_note_key(&item.id), &summary(BILL_NOTE_PROMPT_VERSION))
+                    .await?;
+            }
+            // A bill is written from its memorandum only to say what it does.
+            "bill-memorandum" if writable.memoranda.contains_key(&item.id) && !text.is_empty() => {
+                store
+                    .put_json(
+                        &bill_note_key(&item.id),
+                        &AiSummary {
+                            source: Some(NoteSource::Memorandum),
+                            ..summary(MEMORANDUM_NOTE_PROMPT_VERSION)
+                        },
+                    )
                     .await?;
             }
             "division" if writable.divisions.contains_key(&item.id) && !text.is_empty() => {
@@ -691,36 +774,85 @@ pub fn bill_note_key(id: &str) -> String {
     format!("derived/ai-bill-notes/{id}.json")
 }
 
-async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<()> {
-    let mut pending: Vec<&Bill> = Vec::new();
-    let mut unsummarised = 0;
+/// One kind of bill note: the prompt it is written to, and what it is
+/// written from where that is not the official summary.
+struct BillNoteKind {
+    prompt: &'static Prompt,
+    source: Option<NoteSource>,
+    /// Whether an empty reply is the model's judgement that the bill needs
+    /// no note, rather than a reply that left it out.
+    empty_is_an_answer: bool,
+}
+
+const FROM_SUMMARY: BillNoteKind = BillNoteKind {
+    prompt: &BILL_NOTES,
+    source: None,
+    empty_is_an_answer: true,
+};
+
+const FROM_MEMORANDUM: BillNoteKind = BillNoteKind {
+    prompt: &MEMORANDUM_NOTES,
+    source: Some(NoteSource::Memorandum),
+    empty_is_an_answer: false,
+};
+
+async fn bill_notes(
+    store: &Store,
+    gemini: &Gemini,
+    bills: &[&Bill],
+    memoranda: &IndexMap<String, String>,
+) -> Result<()> {
+    let mut from_summary: Vec<(&Bill, String)> = Vec::new();
+    let mut from_memorandum: Vec<(&Bill, String)> = Vec::new();
+    let mut unexplained = 0;
     for bill in bills {
         let existing: Option<AiSummary> = store.get_json(&bill_note_key(&bill.id)).await?;
-        // A bill with no official summary gets no note: with only a title to
-        // go on, the model could but paraphrase it. The bill is looked at
-        // again once APH publishes a summary, and a note written from a
-        // title alone before this rule is removed.
-        if bill
-            .summary
-            .as_deref()
-            .map(str::trim)
-            .is_none_or(str::is_empty)
-        {
-            unsummarised += 1;
+        let current = |kind: &BillNoteKind| {
+            existing.as_ref().is_some_and(|note| {
+                note.source == kind.source && note.prompt_version == Some(kind.prompt.version)
+            })
+        };
+        // A note written from the memorandum gives way to one written from
+        // the summary as soon as APH publishes it.
+        if bill.has_summary() {
+            if !current(&FROM_SUMMARY) {
+                from_summary.push((bill, bill_block(bill)));
+            }
+        } else if let Some(outline) = memoranda.get(&bill.id) {
+            if !current(&FROM_MEMORANDUM) {
+                from_memorandum.push((bill, memorandum_block(bill, outline)));
+            }
+        } else {
+            // With neither a summary nor a memorandum, only a title is left,
+            // which the model could but paraphrase: no note, and any note
+            // the bill had is removed.
+            unexplained += 1;
             if existing.is_some() {
                 store.delete(&bill_note_key(&bill.id)).await?;
             }
-            continue;
-        }
-        if existing.map(|e| e.prompt_version) != Some(Some(BILL_NOTE_PROMPT_VERSION)) {
-            pending.push(bill);
         }
     }
-    if unsummarised > 0 {
-        println!("summarise: {unsummarised} bills have no official summary yet, so no note");
+    if unexplained > 0 {
+        println!("summarise: {unexplained} bills have neither an official summary nor a memorandum read, so no note");
     }
+    write_bill_notes(store, gemini, &FROM_SUMMARY, &from_summary).await?;
+    write_bill_notes(store, gemini, &FROM_MEMORANDUM, &from_memorandum).await
+}
+
+/// Writes one kind of note for each pending bill, given with the input its
+/// prompt is filled with, a batch to a request.
+async fn write_bill_notes(
+    store: &Store,
+    gemini: &Gemini,
+    kind: &BillNoteKind,
+    pending: &[(&Bill, String)],
+) -> Result<()> {
+    let what = match kind.source {
+        None => "bill notes",
+        Some(NoteSource::Memorandum) => "bill notes from memoranda",
+    };
     if pending.is_empty() {
-        println!("summarise: no bill notes pending");
+        println!("summarise: no {what} pending");
         return Ok(());
     }
 
@@ -733,15 +865,15 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
         requests += 1;
         if requests > cap {
             println!(
-                "summarise: bill-note cap {cap} reached, {} left for next run",
+                "summarise: {what} cap {cap} reached, {} left for next run",
                 pending.len() - i * BATCH_SIZE
             );
             break;
         }
-        match generate_bill_batch(gemini, batch).await {
+        match generate_bill_batch(gemini, kind, batch).await {
             Ok(results) => {
                 in_a_row = 0;
-                for bill in batch {
+                for (bill, _) in batch {
                     let Some(text) = results.get(&bill.id) else {
                         continue;
                     };
@@ -754,7 +886,8 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
                                 text: text.clone(),
                                 model: gemini.model.clone(),
                                 generated_at: crate::now_iso(),
-                                prompt_version: Some(BILL_NOTE_PROMPT_VERSION),
+                                prompt_version: Some(kind.prompt.version),
+                                source: kind.source,
                             },
                         )
                         .await?;
@@ -766,7 +899,10 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
             Err(err) => {
                 failed += 1;
                 in_a_row += 1;
-                eprintln!("summarise: bill batch at {} failed - {err}", i * BATCH_SIZE);
+                eprintln!(
+                    "summarise: {what} batch at {} failed - {err}",
+                    i * BATCH_SIZE
+                );
                 if in_a_row >= MAX_FAILURES_IN_A_ROW {
                     return Err(anyhow!(
                         "summarise: too many failed bill batches in a row, aborting"
@@ -776,7 +912,7 @@ async fn bill_notes(store: &Store, gemini: &Gemini, bills: &[&Bill]) -> Result<(
         }
     }
     println!(
-        "summarise: wrote {written} bill notes (model {}, {failed} failed batches)",
+        "summarise: wrote {written} {what} (model {}, {failed} failed batches)",
         gemini.model
     );
     Ok(())
@@ -792,22 +928,38 @@ fn bill_block(b: &Bill) -> String {
     )
 }
 
-async fn generate_bill_batch(gemini: &Gemini, batch: &[&Bill]) -> Result<IndexMap<String, String>> {
+/// One bill APH has yet to summarise, as the memorandum prompt gives it: its
+/// title, what kind of bill it is, and the opening of its memorandum.
+fn memorandum_block(b: &Bill, outline: &str) -> String {
+    format!(
+        "<bill id=\"{}\">\nTitle: {}\nType: {}\nExplanatory memorandum (opening):\n{}\n</bill>",
+        b.id,
+        b.title,
+        b.bill_type.as_deref().unwrap_or("not recorded"),
+        outline
+    )
+}
+
+async fn generate_bill_batch(
+    gemini: &Gemini,
+    kind: &BillNoteKind,
+    batch: &[(&Bill, String)],
+) -> Result<IndexMap<String, String>> {
     let items = batch
         .iter()
-        .map(|b| bill_block(b))
+        .map(|(_, block)| block.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let ids: Vec<&str> = batch.iter().map(|b| b.id.as_str()).collect();
+    let ids: Vec<&str> = batch.iter().map(|(b, _)| b.id.as_str()).collect();
     gemini
         .generate(
-            &BILL_NOTES,
-            &BILL_NOTES.fill(&[("items", &items)]),
+            kind.prompt,
+            &kind.prompt.fill(&[("items", &items)]),
             &[
                 ("bills", ids.join(",")),
-                ("prompt_version", BILL_NOTE_PROMPT_VERSION.to_string()),
+                ("prompt_version", kind.prompt.version.to_string()),
             ],
-            |text| parse_batch(text, &ids, "bills", true),
+            |text| parse_batch(text, &ids, "bills", kind.empty_is_an_answer),
         )
         .await
 }
@@ -870,6 +1022,7 @@ async fn division_summaries(
                                 model: gemini.model.clone(),
                                 generated_at: crate::now_iso(),
                                 prompt_version: Some(SUMMARY_PROMPT_VERSION),
+                                source: None,
                             },
                         )
                         .await?;
@@ -1496,6 +1649,7 @@ mod tests {
                     model: "old-model".to_string(),
                     generated_at: "2026-08-01T00:00:00.000Z".to_string(),
                     prompt_version: Some(SUMMARY_PROMPT_VERSION),
+                    source: None,
                 },
             )
             .await
@@ -1521,6 +1675,7 @@ mod tests {
                     model: "old-model".to_string(),
                     generated_at: "2026-08-01T00:00:00.000Z".to_string(),
                     prompt_version: Some(SUMMARY_PROMPT_VERSION - 1),
+                    source: None,
                 },
             )
             .await
@@ -1637,9 +1792,14 @@ mod tests {
         );
         let dense = bill("r2", "Dense Bill 2026", Some("Standing appropriations."));
 
-        bill_notes(&store, &gemini(&server), &[&plain, &dense])
-            .await
-            .expect("bill notes");
+        bill_notes(
+            &store,
+            &gemini(&server),
+            &[&plain, &dense],
+            &IndexMap::new(),
+        )
+        .await
+        .expect("bill notes");
 
         // The empty text is the model's judgement that no note is needed. It is
         // recorded, not discarded, or every run would ask again.
@@ -1658,9 +1818,14 @@ mod tests {
         assert_eq!(written.text, "Plain-English note.", "text is trimmed");
 
         // Second pass: both are at the current version, so nothing is sent.
-        bill_notes(&store, &gemini(&server), &[&plain, &dense])
-            .await
-            .expect("second pass");
+        bill_notes(
+            &store,
+            &gemini(&server),
+            &[&plain, &dense],
+            &IndexMap::new(),
+        )
+        .await
+        .expect("second pass");
         assert_eq!(server.hits(), 1, "recorded notes are not regenerated");
     }
 
@@ -1804,7 +1969,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bill_with_no_official_summary_gets_no_note_and_loses_an_old_one() {
+    async fn a_bill_with_neither_a_summary_nor_a_memorandum_gets_no_note_and_loses_an_old_one() {
         let server = TestServer::start(|req| {
             assert!(
                 !req.body.contains("r3") && !req.body.contains("Untitled"),
@@ -1828,14 +1993,20 @@ mod tests {
                     model: "old-model".to_string(),
                     generated_at: "2026-10-01T00:00:00.000Z".to_string(),
                     prompt_version: Some(BILL_NOTE_PROMPT_VERSION),
+                    source: None,
                 },
             )
             .await
             .unwrap();
 
-        bill_notes(&store, &gemini(&server), &[&dense, &bare, &blank])
-            .await
-            .expect("bill notes");
+        bill_notes(
+            &store,
+            &gemini(&server),
+            &[&dense, &bare, &blank],
+            &IndexMap::new(),
+        )
+        .await
+        .expect("bill notes");
         assert_eq!(server.hits(), 1);
         assert!(
             store
@@ -1858,6 +2029,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_bill_yet_to_be_summarised_is_explained_from_its_memorandum_until_it_is() {
+        let server = TestServer::start(|req| {
+            let answer = if req.body.contains("Explanatory memorandum (opening):") {
+                assert!(
+                    // The body is JSON, so its line breaks arrive escaped.
+                    req.body.contains(
+                        r"Type: Private senator's bill\nExplanatory memorandum (opening):\nThe Bill amends the Example Act."
+                    ),
+                    "the memorandum prompt carries the opening: {}",
+                    req.body
+                );
+                serde_json::json!([
+                    { "id": "r5", "summary": "The bill would change the Example Act." },
+                    { "id": "r6", "summary": "" }
+                ])
+            } else {
+                serde_json::json!([{ "id": "r5", "summary": "From the summary." }])
+            };
+            Response::json(candidate(&answer.to_string()))
+        });
+        let store = new_store("memoranda");
+        let mut unsummarised = bill("r5", "Example Amendment Bill 2026", None);
+        unsummarised.bill_type = Some("Private senator's bill".to_string());
+        let unanswered = bill("r6", "Other Bill 2026", None);
+        let memoranda = IndexMap::from([
+            (
+                "r5".to_string(),
+                "The Bill amends the Example Act.".to_string(),
+            ),
+            ("r6".to_string(), "The Bill does a thing.".to_string()),
+        ]);
+
+        bill_notes(
+            &store,
+            &gemini(&server),
+            &[&unsummarised, &unanswered],
+            &memoranda,
+        )
+        .await
+        .expect("bill notes");
+        assert_eq!(server.hits(), 1);
+        let note: AiSummary = store.get_json(&bill_note_key("r5")).await.unwrap().unwrap();
+        assert_eq!(note.text, "The bill would change the Example Act.");
+        assert_eq!(note.source, Some(NoteSource::Memorandum));
+        assert_eq!(note.prompt_version, Some(MEMORANDUM_NOTE_PROMPT_VERSION));
+        assert!(
+            store
+                .get_json::<AiSummary>(&bill_note_key("r6"))
+                .await
+                .unwrap()
+                .is_none(),
+            "a memorandum always has something to say, so an empty reply is asked again"
+        );
+
+        // A current note is left be.
+        bill_notes(&store, &gemini(&server), &[&unsummarised], &memoranda)
+            .await
+            .expect("bill notes");
+        assert_eq!(server.hits(), 1);
+
+        // Once APH publishes its summary, the note is written from that.
+        let summarised = bill(
+            "r5",
+            "Example Amendment Bill 2026",
+            Some("Amends the Example Act."),
+        );
+        bill_notes(&store, &gemini(&server), &[&summarised], &memoranda)
+            .await
+            .expect("bill notes");
+        assert_eq!(server.hits(), 2);
+        let note: AiSummary = store.get_json(&bill_note_key("r5")).await.unwrap().unwrap();
+        assert_eq!(note.text, "From the summary.");
+        assert_eq!(note.source, None);
+        assert_eq!(note.prompt_version, Some(BILL_NOTE_PROMPT_VERSION));
+    }
+
+    #[tokio::test]
     async fn prompts_are_mirrored_into_langfuse_and_generations_link_to_their_version() {
         let server = TestServer::start(|req| {
             if req.method == "POST" && req.path == "/api/public/v2/prompts" {
@@ -1867,7 +2115,10 @@ mod tests {
                 );
             }
             if req.path.starts_with("/api/public/v2/prompts/") {
-                return if req.path.contains(BILL_NOTES.name) {
+                // Checked first: the bill-notes name is a prefix of this one.
+                return if req.path.contains(MEMORANDUM_NOTES.name) {
+                    Response::status(404, "{}")
+                } else if req.path.contains(BILL_NOTES.name) {
                     // Already mirrored, text unchanged.
                     Response::json(
                         serde_json::json!({ "version": 3, "prompt": BILL_NOTES.template })
@@ -1897,6 +2148,7 @@ mod tests {
             HashMap::from([
                 (BILL_NOTES.name, 3),
                 (DIVISION_CONTEXT.name, 9),
+                (MEMORANDUM_NOTES.name, 9),
                 (MEMBER_NOTE.name, 9),
             ])
         );
@@ -1905,9 +2157,10 @@ mod tests {
             .into_iter()
             .filter(|r| r.method == "POST" && r.path == "/api/public/v2/prompts")
             .collect();
-        assert_eq!(posted.len(), 2, "only the changed and the new are written");
+        assert_eq!(posted.len(), 3, "only the changed and the new are written");
         assert!(posted[0].body.contains(DIVISION_CONTEXT.name));
-        assert!(posted[1].body.contains(MEMBER_NOTE.name));
+        assert!(posted[1].body.contains(MEMORANDUM_NOTES.name));
+        assert!(posted[2].body.contains(MEMBER_NOTE.name));
 
         // Without tracing nothing is registered, and the flow runs unlinked.
         assert!(gemini(&server)
@@ -1917,7 +2170,7 @@ mod tests {
             .is_empty());
 
         let first = bill("r1", "First Bill 2026", Some("Dense."));
-        generate_bill_batch(&registered, &[&first])
+        generate_bill_batch(&registered, &FROM_SUMMARY, &[(&first, bill_block(&first))])
             .await
             .expect("call");
         let export = server
@@ -2294,7 +2547,11 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for (id, summary) in [("r1", Some("Standing appropriations.")), ("r2", None)] {
+        for (id, summary) in [
+            ("r1", Some("Standing appropriations.")),
+            ("r2", None),
+            ("r3", None),
+        ] {
             store
                 .put_json(
                     &format!("canonical/bills/{id}.json"),
@@ -2303,6 +2560,17 @@ mod tests {
                 .await
                 .unwrap();
         }
+        // r3 is yet to be summarised, but its memorandum has been read.
+        store
+            .put_json(
+                &memorandum_key("r3"),
+                &Memorandum {
+                    source: "https://parlinfo.aph.gov.au/em.docx".to_string(),
+                    outline: "The Bill amends the Example Act 2001.".to_string(),
+                },
+            )
+            .await
+            .unwrap();
         (store, member)
     }
 
@@ -2319,6 +2587,10 @@ mod tests {
                 .unwrap();
         assert_eq!(templates["member"]["prompt"], "pollywiki.member-note");
         assert_eq!(templates["bill"]["version"], BILL_NOTE_PROMPT_VERSION);
+        assert_eq!(
+            templates["bill-memorandum"]["prompt"],
+            "pollywiki.bill-notes-memorandum"
+        );
         assert!(templates["division"]["template"]
             .as_str()
             .unwrap()
@@ -2337,21 +2609,26 @@ mod tests {
             keys,
             [
                 ("bill", "r1"),
+                ("bill-memorandum", "r3"),
                 ("division", "representatives/2026-08-12/1"),
                 ("member", "alex-paterson")
             ],
-            "a bill with no official summary is nobody's to write for"
+            "a bill with neither a summary nor a memorandum is nobody's to write for"
         );
         // The inputs are the ones a nightly prompt carries, letter for letter.
         let (_, bills) = load_records(&store).await.unwrap();
         assert_eq!(items[0].input, bill_block(&bills["r1"]));
-        assert!(items[1]
+        assert_eq!(
+            items[1].input,
+            memorandum_block(&bills["r3"], "The Bill amends the Example Act 2001.")
+        );
+        assert!(items[2]
             .input
             .contains("Official record excerpt:\nAlex Paterson"));
-        assert!(items[1]
+        assert!(items[2]
             .input
             .contains("Other divisions in this chamber the same day, in order:"));
-        assert!(items[2]
+        assert!(items[3]
             .input
             .starts_with("Data for Alex Paterson (Example), House of Representatives:"));
     }
@@ -2372,6 +2649,8 @@ mod tests {
             &good,
             lines(&[
                 serde_json::json!({"kind": "bill", "id": "r1", "text": " Plain words. "}),
+                serde_json::json!({"kind": "bill-memorandum", "id": "r3",
+                                   "text": "The bill would amend the Example Act 2001."}),
                 serde_json::json!({"kind": "division", "id": "representatives/2026-08-12/1",
                                    "text": "The motion changed the order of business."}),
                 serde_json::json!({"kind": "member", "id": "alex-paterson",
@@ -2387,6 +2666,14 @@ mod tests {
         assert_eq!(bill_note.text, "Plain words.", "trimmed as a reply is");
         assert_eq!(bill_note.model, "claude-opus-5-5");
         assert_eq!(bill_note.prompt_version, Some(BILL_NOTE_PROMPT_VERSION));
+        assert_eq!(bill_note.source, None);
+        let memorandum_note: AiSummary =
+            store.get_json(&bill_note_key("r3")).await.unwrap().unwrap();
+        assert_eq!(memorandum_note.source, Some(NoteSource::Memorandum));
+        assert_eq!(
+            memorandum_note.prompt_version,
+            Some(MEMORANDUM_NOTE_PROMPT_VERSION)
+        );
         let context: AiSummary = store
             .get_json(&ai_key("representatives/2026-08-12/1"))
             .await
@@ -2412,6 +2699,9 @@ mod tests {
             &bad,
             lines(&[
                 serde_json::json!({"kind": "bill", "id": "r2", "text": "From a title alone."}),
+                serde_json::json!({"kind": "bill", "id": "r3", "text": "As if summarised."}),
+                serde_json::json!({"kind": "bill-memorandum", "id": "r1", "text": "Has a summary."}),
+                serde_json::json!({"kind": "bill-memorandum", "id": "r3", "text": " "}),
                 serde_json::json!({"kind": "division", "id": "representatives/2026-08-12/2",
                                    "text": "Not a transcript division."}),
                 serde_json::json!({"kind": "division", "id": "representatives/2026-08-12/1",
@@ -2426,7 +2716,10 @@ mod tests {
         let err = import(&store, people, &bad, "claude-opus-5-5")
             .await
             .expect_err("rejections fail the command");
-        assert_eq!(err.to_string(), "6 imported texts rejected");
+        assert_eq!(err.to_string(), "9 imported texts rejected");
+        let kept_memorandum: AiSummary =
+            store.get_json(&bill_note_key("r3")).await.unwrap().unwrap();
+        assert_eq!(kept_memorandum.text, memorandum_note.text);
         let kept: AiPersonNote = store
             .get_json(&note_key("alex-paterson"))
             .await
@@ -2473,9 +2766,13 @@ mod tests {
 
         let first = bill("r1", "First Bill 2026", Some("Dense."));
         let second = bill("r2", "Second Bill 2026", Some("Dense."));
-        let notes = generate_bill_batch(&traced, &[&first, &second])
-            .await
-            .expect("a short batch is still used");
+        let notes = generate_bill_batch(
+            &traced,
+            &FROM_SUMMARY,
+            &[(&first, bill_block(&first)), (&second, bill_block(&second))],
+        )
+        .await
+        .expect("a short batch is still used");
         assert_eq!(notes.len(), 1);
 
         let exports: Vec<_> = server

@@ -20,8 +20,8 @@ use crate::markdown;
 use crate::procedures::procedure_for;
 use crate::strip::js_without_comment_lines;
 use pollywiki_schema::{
-    Bill, CandidateResult, ChamberKind, Division, Electorate, House, JsNum, Party, Person,
-    StateBill, StateChamber, StateCode, StateMember, StateParliament, SummaryKind, Vote,
+    Bill, CandidateResult, ChamberKind, Division, Electorate, House, JsNum, NoteSource, Party,
+    Person, StateBill, StateChamber, StateCode, StateMember, StateParliament, SummaryKind, Vote,
 };
 use regex::Regex;
 use std::sync::LazyLock;
@@ -1999,6 +1999,33 @@ fn bill_side(data: &SiteData, bill: &Bill) -> String {
     }
 }
 
+/// Where APH has yet to write a bill's summary, the page says so in the
+/// summary's place and points at the documents that explain the bill, so it
+/// is never left with nothing on what the bill does.
+fn no_summary_lede(bill: &Bill) -> String {
+    let em = bill.links.em.as_deref().map(|url| {
+        format!(
+            "<a href=\"{}\">explanatory memorandum</a> tabled with it",
+            esc_attr(url)
+        )
+    });
+    let digest = bill.links.digest.as_deref().map(|url| {
+        format!(
+            "Parliamentary Library's <a href=\"{}\">Bills Digest</a>",
+            esc_attr(url)
+        )
+    });
+    let pointer = match (em, digest) {
+        (Some(em), Some(digest)) => format!(" The {em} and the {digest} explain what it does."),
+        (Some(em), None) => format!(" The {em} explains what it does."),
+        (None, Some(digest)) => format!(" The {digest} explains what it does."),
+        (None, None) => String::new(),
+    };
+    format!(
+        "<div class=\"lede bill-summary\"><p>The official bill homepage has no summary of this bill yet.{pointer}</p></div>"
+    )
+}
+
 pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     let related: Vec<&Division> = bill
         .division_ids
@@ -2143,11 +2170,18 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
                 "</ul><p class=\"note\">Summary from the official bill homepage.</p></div>",
             );
         }
+    } else {
+        body.push_str(&no_summary_lede(bill));
     }
 
     if let Some(ai) = &bill.ai_summary {
+        // The credit names the official text the note was written from.
+        let grounding = match ai.source {
+            Some(NoteSource::Memorandum) => "Written by AI from the bill's explanatory memorandum while the official summary is unpublished; it says what the bill would do, not why.",
+            None => "Written by AI to explain the official summary in plain terms; specifics come from that summary only.",
+        };
         body.push_str(&format!(
-            "<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">What this bill is about</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>{}</p></div><div class=\"context-credit\">Written by AI to explain the official summary in plain terms; specifics come from that summary only. May contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>",
+            "<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">What this bill is about</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>{}</p></div><div class=\"context-credit\">{grounding} May contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>",
             esc(&ai.text)
         ));
     }
@@ -2157,6 +2191,23 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         for d in &related {
             body.push_str(&ledger_row_labelled(d, bill_division_label(bill, d)));
         }
+        body.push_str("</ul>");
+    }
+
+    let documents: Vec<String> = [
+        (&bill.links.text, "Text of the bill"),
+        (&bill.links.em, "Explanatory memorandum"),
+        (&bill.links.digest, "Bills Digest"),
+    ]
+    .into_iter()
+    .filter_map(|(url, label)| {
+        url.as_deref()
+            .map(|url| format!("<li><a href=\"{}\">{label}</a></li>", esc_attr(url)))
+    })
+    .collect();
+    if !documents.is_empty() {
+        body.push_str("<h2>Documents</h2><ul class=\"doc-links\">");
+        body.push_str(&documents.concat());
         body.push_str("</ul>");
     }
 
@@ -3878,7 +3929,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         Source {
             key: "aph-bills",
             name: "Parliament of Australia",
-            what: "Bills before parliament and their progress.",
+            what: "Bills before parliament, their progress and their documents, and the explanatory memorandum of any bill not yet summarised.",
             licence: "Commonwealth of Australia; reproduced fairly and accurately with acknowledgement",
             link: "https://www.aph.gov.au",
         },
@@ -4062,7 +4113,7 @@ pub fn methodology(data: &SiteData) -> Page {
         "<p>Electorate maps draw the ABS's approximation of each division, built from mesh blocks, simplified to what the map can show. The AEC's own maps show the legal boundary.</p>",
         "<h2>AI summaries and notes</h2>",
         "<p>Machine-written text appears in four places, always labelled \"AI-generated\".</p>",
-        "<p><strong>Bill context.</strong> Each bill's page explains the official summary in plain terms. General knowledge of Australian parliamentary practice is used to explain the mechanism (what an appropriation bill is, for example); anything specific to the bill comes from its official summary only. A bill with no official summary yet gets no note; one is written once APH publishes a summary.</p>",
+        "<p><strong>Bill context.</strong> Each bill's page explains the official summary in plain terms. General knowledge of Australian parliamentary practice is used to explain the mechanism (what an appropriation bill is, for example); anything specific to the bill comes from its official summary only. Until APH publishes a summary, the note is written from the opening of the bill's explanatory memorandum instead, the document tabled with the bill to explain it, and says so. A memorandum makes its sponsor's case, so a note written from one says only what the bill would do, never why, and it is rewritten from the official summary once that appears. A bill with neither gets no note.</p>",
         "<p><strong>Division context.</strong> They Vote For You provides written context for most bill votes; for procedural motions their context field is a raw Hansard excerpt. For those, a one-to-two sentence note explains what the bill, amendment or motion was about and what question was being decided, grounded on that excerpt and the official bill summaries. It never restates the result, which the page already shows, and links to the full record.</p>",
         "<p><strong>Series of divisions.</strong> When a chamber divides on one matter several times in a sitting day, the home page and the divisions index fold those divisions into one entry; the index's counts are still of divisions, not entries. On the home page each vote in a series is labelled with the first sentence of its context: They Vote For You's where volunteers have written it, otherwise the machine-written division note, marked AI. The sequence of amendments put and lost before the question itself then reads as one story. The divisions index names each vote by its official stage, or by its division number, and describes none.</p>",
         "<p><strong>Voting record in brief.</strong> Each member's page carries a short note describing patterns their voting table cannot show at a glance. The arithmetic is done first: every division the member voted in is read for the bill or kind of motion and the stage, and their ayes and noes are counted per bill and per kind. The generator is handed those counts and the divisions where they voted against their own party grouping, and nothing else, so it can phrase the sums but not make them; a note that uses a number the counts do not contain is discarded. It is instructed to describe, never evaluate: no praise, no criticism, no motives, no ideology. A note is rewritten once the member has voted in ten more divisions since it was written, or at once when they vote against their party grouping.</p>",

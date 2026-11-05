@@ -93,6 +93,7 @@ pub async fn derive(store: &Store) -> Result<()> {
                         text: ai.text,
                         model: ai.model,
                         generated_at: ai.generated_at,
+                        source: None,
                     });
                 }
             }
@@ -108,6 +109,7 @@ pub async fn derive(store: &Store) -> Result<()> {
                 text: note.text,
                 model: note.model,
                 generated_at: note.generated_at,
+                source: None,
             });
         }
         if let Some(profile) = store
@@ -136,7 +138,8 @@ pub async fn derive(store: &Store) -> Result<()> {
     for bill in &mut bills {
         bill.act = acts.get(&bill.id.to_lowercase()).cloned();
         // Empty text records the model's judgement that the official summary
-        // is already plain enough; no box renders for those.
+        // is already plain enough; no box renders for those. A note written
+        // from the memorandum says so, wherever the bill now stands.
         if let Some(note) = store
             .get_json::<AiSummary>(&bill_note_key(&bill.id))
             .await?
@@ -146,6 +149,7 @@ pub async fn derive(store: &Store) -> Result<()> {
                     text: note.text,
                     model: note.model,
                     generated_at: note.generated_at,
+                    source: note.source,
                 });
             }
         }

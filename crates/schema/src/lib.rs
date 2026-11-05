@@ -329,6 +329,19 @@ pub struct AiText {
     pub text: String,
     pub model: String,
     pub generated_at: String,
+    /// What a bill's note was written from, where that is not its official
+    /// summary. Absent for every other kind of note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NoteSource>,
+}
+
+/// The official document a bill's note was written from in place of the
+/// summary APH had yet to publish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteSource {
+    /// The explanatory memorandum tabled with the bill.
+    Memorandum,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -667,10 +680,15 @@ pub struct TimelineStep {
 pub struct BillLinks {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aph: Option<String>,
+    /// The bill's latest text: as introduced, as passed, and so on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Its explanatory memorandum, the revised one once there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub em: Option<String>,
+    /// The Parliamentary Library's Bills Digest, once one is published.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parlinfo: Option<String>,
 }
@@ -738,6 +756,16 @@ pub struct Bill {
     pub division_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub act: Option<Act>,
+}
+
+impl Bill {
+    /// Whether APH has published its summary of the bill. Until it does, a
+    /// note on the bill is written from its explanatory memorandum.
+    pub fn has_summary(&self) -> bool {
+        self.summary
+            .as_deref()
+            .is_some_and(|summary| !summary.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
