@@ -758,6 +758,18 @@ pub struct Bill {
     pub act: Option<Act>,
 }
 
+/// An English ordinal: 1st, 2nd, 3rd, 4th, and 11th to 13th, never "42th".
+pub fn ordinal(value: i64) -> String {
+    let suffix = match (value.abs() % 10, value.abs() % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{value}{suffix}")
+}
+
 impl Bill {
     /// Whether APH has published its summary of the bill. Until it does, a
     /// note on the bill is written from its explanatory memorandum.

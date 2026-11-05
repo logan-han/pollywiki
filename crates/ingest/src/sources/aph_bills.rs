@@ -21,6 +21,13 @@ pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_1
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 10;
 
+/// The parliament now sitting, whose bills the nightly run reads.
+pub const CURRENT_PARLIAMENT: i64 = 48;
+
+/// The first parliament whose bills are kept: the 40th, opened in 2002, the
+/// first whose bills APH summarised throughout.
+pub const FIRST_PARLIAMENT: i64 = 40;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ParlWorkBill {
     #[serde(rename = "Id")]
@@ -122,16 +129,20 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoint
     let mut items: Vec<ParlWorkBill> = Vec::new();
     for page in 1..=MAX_PAGES {
         let url = format!(
-            "{}/bills?Take={PAGE_SIZE}&Page={page}&SortOrder=2&Keyword=null&IsTitleSearch=true&DateRangeFrom=null&DateRangeTo=null&StatusFilters=0&BillTypes=0",
+            "{}/bills?Take={PAGE_SIZE}&Page={page}&SortOrder=2&Keyword=null&IsTitleSearch=true&DateRangeFrom=null&DateRangeTo=null&StatusFilters=0&BillTypes=0&ParliamentNumber={parliament}",
             endpoints.parlwork
         );
         let batch_raw: Value = fetch_json(&url, &opts).await?;
         if !batch_raw.is_array() {
             return Err(anyhow!("parlwork: unexpected response shape"));
         }
-        store
-            .put_json(&format!("raw/aph/bills-page-{page}.json"), &batch_raw)
-            .await?;
+        // An earlier parliament's pages are kept apart from the current one's.
+        let raw_key = if parliament == CURRENT_PARLIAMENT {
+            format!("raw/aph/bills-page-{page}.json")
+        } else {
+            format!("raw/aph/parliament-{parliament}/bills-page-{page}.json")
+        };
+        store.put_json(&raw_key, &batch_raw).await?;
         let batch: Vec<ParlWorkBill> = serde_json::from_value(batch_raw)?;
         let batch_len = batch.len();
         items.extend(batch);
@@ -223,6 +234,26 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoint
         .map(|bill| bill.id)
         .collect();
     crate::sources::aph_memoranda::sync_memoranda(store, endpoints, &unsummarised).await
+}
+
+/// Every bill of the parliaments between the first kept and the current one.
+/// Their bills are settled, so this is run by hand rather than nightly, and a
+/// rerun fetches the detail only of a bill whose marker has moved. One
+/// parliament that cannot be read does not stop the others.
+pub async fn sync_aph_history(store: &Store, endpoints: &Endpoints) -> Result<()> {
+    let mut unread = Vec::new();
+    for parliament in FIRST_PARLIAMENT..CURRENT_PARLIAMENT {
+        println!("aph-history: parliament {parliament}");
+        if let Err(err) = sync_aph_bills(store, parliament, endpoints).await {
+            eprintln!("aph-history: parliament {parliament} not read - {err}");
+            unread.push(parliament.to_string());
+        }
+    }
+    if unread.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!("parliaments {} not read", unread.join(", ")))
+    }
 }
 
 /// `{ ...existing, ...toBill(item) }`: fresh list fields win; only the fields
@@ -1266,6 +1297,62 @@ mod tests {
             store.get_raw("canonical/bills/r7538.json").await.unwrap(),
             untouched,
             "a list saying nothing new does not rewrite the record"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_history_reads_each_earlier_parliament_and_keeps_its_pages_apart() {
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                let parliament = req
+                    .query("ParliamentNumber")
+                    .expect("a parliament is asked for");
+                if req.query("Page").as_deref() != Some("1") {
+                    return Response::json("[]");
+                }
+                if parliament == "42" {
+                    return Response::status(500, "down");
+                }
+                return Response::json(
+                    serde_json::json!([list_item(
+                        &format!("r{parliament}"),
+                        "An Old Bill",
+                        "2010-01-01"
+                    )])
+                    .to_string(),
+                );
+            }
+            Response::json(detail_body("Assent").to_string())
+        });
+        let store = new_store("history");
+
+        let err = sync_aph_history(&store, &Endpoints::at(&server.base))
+            .await
+            .expect_err("a parliament that cannot be read is reported");
+        assert_eq!(err.to_string(), "parliaments 42 not read");
+
+        for parliament in (FIRST_PARLIAMENT..CURRENT_PARLIAMENT).filter(|&p| p != 42) {
+            let bill: Bill = store
+                .get_json(&format!("canonical/bills/r{parliament}.json"))
+                .await
+                .unwrap()
+                .expect("each other parliament's bill is stored");
+            assert_eq!(bill.parliament, parliament);
+            assert!(store
+                .get_json::<Value>(&format!(
+                    "raw/aph/parliament-{parliament}/bills-page-1.json"
+                ))
+                .await
+                .unwrap()
+                .is_some());
+        }
+        assert!(
+            store
+                .get_json::<Value>("raw/aph/bills-page-1.json")
+                .await
+                .unwrap()
+                .is_none(),
+            "the current parliament's pages are left alone"
         );
     }
 

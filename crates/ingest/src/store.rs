@@ -11,6 +11,10 @@ pub enum Store {
     S3(S3Store),
 }
 
+/// Reads a bulk load keeps in flight at once. Read one at a time, the
+/// nightly run spent most of its half hour waiting on S3.
+const CONCURRENT_READS: usize = 32;
+
 impl Store {
     pub async fn put_raw(&self, key: &str, body: &[u8]) -> Result<()> {
         match self {
@@ -33,6 +37,19 @@ impl Store {
             Store::S3(_) => serde_json::to_string(value)?,
         };
         self.put_raw(key, body.as_bytes()).await
+    }
+
+    /// Many records at once, in the order asked, each `None` where absent.
+    pub async fn get_json_many<T: DeserializeOwned>(
+        &self,
+        keys: &[String],
+    ) -> Result<Vec<Option<T>>> {
+        use futures::stream::{self, StreamExt, TryStreamExt};
+        stream::iter(keys)
+            .map(|key| self.get_json::<T>(key))
+            .buffered(CONCURRENT_READS)
+            .try_collect()
+            .await
     }
 
     pub async fn get_json<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {

@@ -32,6 +32,14 @@ fn sample_data() -> SiteData {
     SiteData::load(&bundles(), SITE_URL).expect("sample bundles load")
 }
 
+/// The bills the bills index lists: the sitting parliament's.
+fn current_bills(data: &SiteData) -> usize {
+    data.bills
+        .iter()
+        .filter(|b| b.parliament == data.current_parliament())
+        .count()
+}
+
 /// Every page the build emits, in build order.
 fn all_pages(data: &SiteData) -> Vec<Page> {
     let mut list = vec![
@@ -57,6 +65,9 @@ fn all_pages(data: &SiteData) -> Vec<Page> {
     }
     for bill in &data.bills {
         list.push(pages::bill_page(data, bill));
+    }
+    for parliament in data.earlier_parliaments() {
+        list.push(pages::bills_ledger(data, parliament));
     }
     for electorate in &data.electorates {
         list.push(pages::electorate_page(data, electorate));
@@ -1125,7 +1136,7 @@ fn bills_index_reads_newest_activity_first_under_month_dividers() {
     assert_eq!(keys, sorted, "months are not newest first");
     assert_eq!(
         months.iter().map(|(_, n)| n).sum::<usize>(),
-        data.bills.len()
+        current_bills(&data)
     );
 
     // Rows carry the last recorded step, newest first down the whole list.
@@ -1134,7 +1145,7 @@ fn bills_index_reads_newest_activity_first_under_month_dividers() {
         .filter_map(|(i, _)| html[i..].split_once("<time datetime=\""))
         .map(|(_, rest)| rest.split('"').next().expect("date end"))
         .collect();
-    assert_eq!(dates.len(), data.bills.len(), "every row dated");
+    assert_eq!(dates.len(), current_bills(&data), "every row dated");
     let mut newest_first = dates.clone();
     newest_first.sort_by(|a, b| b.cmp(a));
     assert_eq!(dates, newest_first, "bills are not newest first");
@@ -1156,7 +1167,7 @@ fn bills_index_pills_cover_every_row() {
         .match_indices("<li data-status=\"")
         .map(|(i, m)| html[i + m.len()..].split('"').next().expect("bucket"))
         .collect();
-    assert_eq!(row_buckets.len(), data.bills.len());
+    assert_eq!(row_buckets.len(), current_bills(&data));
     for bucket in &row_buckets {
         assert!(
             matches!(*bucket, "open" | "act" | "other"),
@@ -1297,7 +1308,7 @@ fn bills_index_labels_its_columns_and_keys_the_dots_before_the_rows() {
     assert_eq!(
         html.matches("<span class=\"what\"><a href=\"/bills/")
             .count(),
-        data.bills.len()
+        current_bills(&data)
     );
     // The federal page keeps its key under the activity list; the home page,
     // whose rows mix parliaments of one and two chambers, explains the dots
@@ -1642,6 +1653,81 @@ fn bill_summaries_render_in_all_three_grammars() {
         assert!(html.contains("Summary from the official bill homepage."));
         assert!(!html.contains("has no summary"));
     }
+}
+
+#[test]
+fn each_parliament_lists_its_own_bills_and_every_bill_names_its_parliament() {
+    let data = sample_data();
+    assert_eq!(data.current_parliament(), 48);
+    assert_eq!(data.earlier_parliaments(), vec![47]);
+
+    // The bills index keeps to the parliament sitting and links the earlier one.
+    let index = render(&data, &pages::bills_index(&data));
+    assert!(index.contains("6 bills of the 48th Parliament, from the official APH record"));
+    assert!(!index.contains("Earlier Parliament Sample Bill 2023"));
+    assert!(index.contains(
+        "<nav class=\"parliament-nav\" aria-label=\"Bills by parliament\"><span class=\"label\">Parliament</span> \
+         <a aria-current=\"page\" href=\"/bills/\">48th</a> <a href=\"/bills/parliament/47/\">47th</a></nav>"
+    ));
+    assert!(index.contains("data-status=\"open\">Before parliament</button>"));
+
+    // The earlier one has a page of its own, dated by its bills' steps.
+    let page = pages::bills_ledger(&data, 47);
+    assert_eq!(page.path, "/bills/parliament/47/");
+    let earlier = render(&data, &page);
+    assert!(earlier.contains("<h1>Bills of the 47th Parliament</h1>"));
+    assert!(earlier
+        .contains("1 bill of the 47th Parliament, 2023 to 2024, from the official APH record"));
+    assert!(earlier.contains("Earlier Parliament Sample Bill 2023"));
+    assert!(!earlier.contains("Demonstration Data Bill 2025"));
+    assert!(earlier.contains("<a aria-current=\"page\" href=\"/bills/parliament/47/\">47th</a>"));
+    assert!(
+        !earlier.contains("data-status=\"open\""),
+        "a closed parliament has no bills before it"
+    );
+
+    // A bill names its parliament, linked to that parliament's bills.
+    let bill = data.bill_by_id("sample-7").expect("sample bill");
+    let html = render(&data, &pages::bill_page(&data, bill));
+    assert!(html.contains(
+        "<div class=\"meta-line\"><span><a href=\"/bills/parliament/47/\">47th Parliament</a></span>"
+    ));
+    let crumbs: Vec<String> = nodes(&jsonld(&html).expect("json-ld"))[1]["itemListElement"]
+        .as_array()
+        .expect("breadcrumb")
+        .iter()
+        .map(|item| item["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        crumbs,
+        [
+            "pollywiki",
+            "Bills",
+            "47th Parliament",
+            "Earlier Parliament Sample Bill 2023"
+        ]
+    );
+    let current = data.bill_by_id("sample-1").expect("sample bill");
+    assert!(render(&data, &pages::bill_page(&data, current))
+        .contains("<span><a href=\"/bills/\">48th Parliament</a></span>"));
+
+    // A member's bills run across parliaments, newest first, each with its own.
+    let person = data.person_by_slug("alex-paterson").expect("sample person");
+    let profile = render(&data, &pages::person_page(&data, person));
+    let (_, raised) = profile
+        .split_once("<h2 id=\"bills-raised\">Bills raised</h2>")
+        .expect("bills raised");
+    let raised = &raised[..raised.find("</table>").expect("table ends")];
+    assert!(raised.contains("<th scope=\"col\">Parliament</th>"));
+    let newer = raised
+        .find("Demonstration Data Bill 2025")
+        .expect("current bill");
+    let older = raised
+        .find("Earlier Parliament Sample Bill 2023")
+        .expect("earlier bill");
+    assert!(newer < older, "newest first");
+    assert!(raised
+        .contains("Earlier Parliament Sample Bill 2023</a></td><td>47th</td><td>Introduced</td>"));
 }
 
 #[test]
@@ -2583,7 +2669,7 @@ fn index_pages_declare_what_they_collect() {
             "Divisions",
             data.divisions.len(),
         ),
-        (pages::bills_index(&data), "Bills", data.bills.len()),
+        (pages::bills_index(&data), "Bills", current_bills(&data)),
         (
             pages::electorates_index(&data),
             "Electorates",

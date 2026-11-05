@@ -19,7 +19,7 @@ use store::{LocalStore, S3Store, Store};
 
 const USAGE: &str = "usage: pollywiki-ingest <sync|summarise|derive|all> [options]
   --store local|s3       default local (.store/); s3 needs POLLYWIKI_DATA_BUCKET
-  --sources a,b,c        default wikidata,aec-profiles; also: aph,tvfy,handbook,aec,
+  --sources a,b,c        default wikidata,aec-profiles; also: aph,aph-history,tvfy,handbook,aec,
                          legislation,ipea,aec-disclosures,boundaries, states
                          (every parliament) or one of nsw-parliament ... nt-parliament,
                          state-bills or one of nsw-bills ... nt-bills, and state-photos
@@ -244,8 +244,20 @@ async fn sync(
     if has("aph") {
         run_source!(
             "aph-bills",
-            sources::aph_bills::sync_aph_bills(store, 48, endpoints)
+            sources::aph_bills::sync_aph_bills(
+                store,
+                sources::aph_bills::CURRENT_PARLIAMENT,
+                endpoints
+            )
         );
+    }
+    // The earlier parliaments' bills, read once by hand: no nightly run
+    // renews them, so they keep no sync record that would go stale.
+    if has("aph-history") {
+        if let Err(err) = sources::aph_bills::sync_aph_history(store, endpoints).await {
+            failures += 1;
+            eprintln!("aph-history: FAILED - {err}");
+        }
     }
     if has("handbook") {
         if people.is_empty() {

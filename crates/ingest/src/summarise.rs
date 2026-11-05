@@ -427,18 +427,21 @@ pub async fn summarise_with(store: &Store, people: &[Person], gemini: &Gemini) -
 
 /// Every division and bill in the store, the bills by id.
 async fn load_records(store: &Store) -> Result<(Vec<Division>, IndexMap<String, Bill>)> {
-    let mut divisions: Vec<Division> = Vec::new();
-    for key in store.list("canonical/divisions/").await? {
-        if let Some(division) = store.get_json::<Division>(&key).await? {
-            divisions.push(division);
-        }
-    }
-    let mut bills: IndexMap<String, Bill> = IndexMap::new();
-    for key in store.list("canonical/bills/").await? {
-        if let Some(bill) = store.get_json::<Bill>(&key).await? {
-            bills.insert(bill.id.clone(), bill);
-        }
-    }
+    let keys = store.list("canonical/divisions/").await?;
+    let divisions: Vec<Division> = store
+        .get_json_many::<Division>(&keys)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
+    let keys = store.list("canonical/bills/").await?;
+    let bills: IndexMap<String, Bill> = store
+        .get_json_many::<Bill>(&keys)
+        .await?
+        .into_iter()
+        .flatten()
+        .map(|bill| (bill.id.clone(), bill))
+        .collect();
     Ok((divisions, bills))
 }
 
@@ -448,16 +451,17 @@ async fn load_memoranda(
     store: &Store,
     bills: &IndexMap<String, Bill>,
 ) -> Result<IndexMap<String, String>> {
-    let mut memoranda = IndexMap::new();
-    for bill in bills.values().filter(|b| !b.has_summary()) {
-        if let Some(memorandum) = store
-            .get_json::<Memorandum>(&memorandum_key(&bill.id))
-            .await?
-        {
-            memoranda.insert(bill.id.clone(), memorandum.outline);
-        }
-    }
-    Ok(memoranda)
+    let ids: Vec<&String> = bills
+        .values()
+        .filter(|b| !b.has_summary())
+        .map(|b| &b.id)
+        .collect();
+    let keys: Vec<String> = ids.iter().map(|id| memorandum_key(id)).collect();
+    Ok(ids
+        .into_iter()
+        .zip(store.get_json_many::<Memorandum>(&keys).await?)
+        .filter_map(|(id, memorandum)| Some((id.clone(), memorandum?.outline)))
+        .collect())
 }
 
 /// Everything the jobs write for, whether or not it is pending: each bill
@@ -805,8 +809,9 @@ async fn bill_notes(
     let mut from_summary: Vec<(&Bill, String)> = Vec::new();
     let mut from_memorandum: Vec<(&Bill, String)> = Vec::new();
     let mut unexplained = 0;
-    for bill in bills {
-        let existing: Option<AiSummary> = store.get_json(&bill_note_key(&bill.id)).await?;
+    let keys: Vec<String> = bills.iter().map(|b| bill_note_key(&b.id)).collect();
+    let notes = store.get_json_many::<AiSummary>(&keys).await?;
+    for (bill, existing) in bills.iter().zip(notes) {
         let current = |kind: &BillNoteKind| {
             existing.as_ref().is_some_and(|note| {
                 note.source == kind.source && note.prompt_version == Some(kind.prompt.version)
@@ -971,19 +976,24 @@ async fn division_summaries(
     names: &HashSet<String>,
     bills: &IndexMap<String, Bill>,
 ) -> Result<()> {
-    let mut pending: Vec<&Division> = Vec::new();
-    for division in divisions {
-        let Some(summary) = &division.summary else {
-            continue;
-        };
-        if !is_transcript(summary, names) {
-            continue;
-        }
-        let existing: Option<AiSummary> = store.get_json(&ai_key(&division.id)).await?;
-        if existing.map(|e| e.prompt_version) != Some(Some(SUMMARY_PROMPT_VERSION)) {
-            pending.push(division);
-        }
-    }
+    let transcripts: Vec<&Division> = divisions
+        .iter()
+        .filter(|d| {
+            d.summary
+                .as_deref()
+                .is_some_and(|summary| is_transcript(summary, names))
+        })
+        .collect();
+    let keys: Vec<String> = transcripts.iter().map(|d| ai_key(&d.id)).collect();
+    let existing = store.get_json_many::<AiSummary>(&keys).await?;
+    let pending: Vec<&Division> = transcripts
+        .into_iter()
+        .zip(existing)
+        .filter(|(_, existing)| {
+            existing.as_ref().map(|e| e.prompt_version) != Some(Some(SUMMARY_PROMPT_VERSION))
+        })
+        .map(|(division, _)| division)
+        .collect();
     if pending.is_empty() {
         println!("summarise: no divisions pending");
         return Ok(());
@@ -1104,14 +1114,15 @@ async fn person_notes(
     let mut written = 0;
     let mut failed = 0;
     let mut in_a_row = 0;
-    for person in people {
+    let keys: Vec<String> = people.iter().map(|p| note_key(&p.slug)).collect();
+    let notes = store.get_json_many::<AiPersonNote>(&keys).await?;
+    for (person, existing) in people.iter().zip(notes) {
         let empty = Vec::new();
         let votes = votes_by_slug.get(person.slug.as_str()).unwrap_or(&empty);
         if votes.len() < MIN_VOTES_FOR_NOTE {
             continue;
         }
         let crossed = votes.iter().filter(|v| v.crossed).count();
-        let existing: Option<AiPersonNote> = store.get_json(&note_key(&person.slug)).await?;
         // A different model alone is not a reason to rewrite: it would churn
         // every note whenever a quota fallback model runs.
         if existing.is_some_and(|e| note_is_current(&e, votes.len(), crossed)) {

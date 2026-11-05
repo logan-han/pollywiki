@@ -82,10 +82,12 @@ pub async fn sync_legislation(store: &Store, endpoints: &Endpoints) -> Result<()
 /// some of them restored from parliaments years back, have no Act to find.
 async fn first_assent_year(store: &Store, keys: &[String]) -> Result<Option<i32>> {
     let mut first: Option<i32> = None;
-    for key in keys {
-        let Some(bill) = store.get_json::<Bill>(key).await? else {
-            continue;
-        };
+    for bill in store
+        .get_json_many::<Bill>(keys)
+        .await?
+        .into_iter()
+        .flatten()
+    {
         if bill.status != "Act" && bill.status != "Assent" {
             continue;
         }

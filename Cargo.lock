@@ -2740,6 +2740,7 @@ dependencies = [
  "chrono",
  "csv",
  "fastrand",
+ "futures",
  "indexmap 2.14.0",
  "percent-encoding",
  "pollywiki-schema",

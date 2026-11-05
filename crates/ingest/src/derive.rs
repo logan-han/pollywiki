@@ -87,24 +87,40 @@ pub async fn derive(store: &Store) -> Result<()> {
             } else {
                 SummaryKind::Summary
             });
-            if division.summary_kind == Some(SummaryKind::Transcript) {
-                if let Some(ai) = store.get_json::<AiSummary>(&ai_key(&division.id)).await? {
-                    division.ai_summary = Some(AiText {
-                        text: ai.text,
-                        model: ai.model,
-                        generated_at: ai.generated_at,
-                        source: None,
-                    });
-                }
-            }
+        }
+    }
+    // Only a division whose context is a transcript has a note to read.
+    let transcripts: Vec<usize> = (0..divisions.len())
+        .filter(|&i| divisions[i].summary_kind == Some(SummaryKind::Transcript))
+        .collect();
+    let keys: Vec<String> = transcripts
+        .iter()
+        .map(|&i| ai_key(&divisions[i].id))
+        .collect();
+    for (i, ai) in transcripts
+        .into_iter()
+        .zip(store.get_json_many::<AiSummary>(&keys).await?)
+    {
+        if let Some(ai) = ai {
+            divisions[i].ai_summary = Some(AiText {
+                text: ai.text,
+                model: ai.model,
+                generated_at: ai.generated_at,
+                source: None,
+            });
         }
     }
 
-    for person in &mut people {
-        if let Some(note) = store
-            .get_json::<AiPersonNote>(&note_key(&person.slug))
-            .await?
-        {
+    let slugs =
+        |key: fn(&str) -> String| -> Vec<String> { people.iter().map(|p| key(&p.slug)).collect() };
+    let notes = store
+        .get_json_many::<AiPersonNote>(&slugs(note_key))
+        .await?;
+    let profiles = store
+        .get_json_many::<HandbookProfile>(&slugs(|slug| format!("canonical/handbook/{slug}.json")))
+        .await?;
+    for ((person, note), profile) in people.iter_mut().zip(notes).zip(profiles) {
+        if let Some(note) = note {
             person.ai_note = Some(AiText {
                 text: note.text,
                 model: note.model,
@@ -112,10 +128,7 @@ pub async fn derive(store: &Store) -> Result<()> {
                 source: None,
             });
         }
-        if let Some(profile) = store
-            .get_json::<HandbookProfile>(&format!("canonical/handbook/{}.json", person.slug))
-            .await?
-        {
+        if let Some(profile) = profile {
             person.background = Some(profile.background);
             if !profile.positions.is_empty() {
                 person.positions = Some(profile.positions);
@@ -135,15 +148,14 @@ pub async fn derive(store: &Store) -> Result<()> {
         })
         .collect();
     let acts: IndexMap<String, Act> = store.get_json(ACTS_KEY).await?.unwrap_or_default();
-    for bill in &mut bills {
+    let keys: Vec<String> = bills.iter().map(|b| bill_note_key(&b.id)).collect();
+    let notes = store.get_json_many::<AiSummary>(&keys).await?;
+    for (bill, note) in bills.iter_mut().zip(notes) {
         bill.act = acts.get(&bill.id.to_lowercase()).cloned();
         // Empty text records the model's judgement that the official summary
         // is already plain enough; no box renders for those. A note written
         // from the memorandum says so, wherever the bill now stands.
-        if let Some(note) = store
-            .get_json::<AiSummary>(&bill_note_key(&bill.id))
-            .await?
-        {
+        if let Some(note) = note {
             if !note.text.is_empty() {
                 bill.ai_summary = Some(AiText {
                     text: note.text,
@@ -380,13 +392,26 @@ pub async fn derive(store: &Store) -> Result<()> {
 
     let mut quick_search: Vec<QuickSearchEntry> = Vec::new();
     // Bills first: they are the most-searched entity, and the site's dropdown
-    // groups by type anyway. A few hundred entries of the current parliament.
-    for b in &bills {
+    // groups by type anyway. The sitting parliament's lead, so a title an
+    // earlier bill shares finds the current one first; an earlier bill is
+    // labelled with its parliament. The sort is stable within a parliament.
+    let current = bills.iter().map(|b| b.parliament).max().unwrap_or_default();
+    let mut by_parliament: Vec<&Bill> = bills.iter().collect();
+    by_parliament.sort_by_key(|b| std::cmp::Reverse(b.parliament));
+    for b in by_parliament {
         quick_search.push(QuickSearchEntry {
             t: "bill".to_string(),
             slug: b.id.clone(),
             name: b.title.clone(),
-            sub: b.status.clone(),
+            sub: if b.parliament == current {
+                b.status.clone()
+            } else {
+                format!(
+                    "{} Parliament \u{b7} {}",
+                    pollywiki_schema::ordinal(b.parliament),
+                    b.status
+                )
+            },
         });
     }
     for p in &people {
@@ -1114,16 +1139,18 @@ fn build_parties(
 }
 
 async fn load_all<T: serde::de::DeserializeOwned>(store: &Store, prefix: &str) -> Result<Vec<T>> {
-    let mut out = Vec::new();
-    for key in store.list(prefix).await? {
-        if !key.ends_with(".json") {
-            continue;
-        }
-        if let Some(value) = store.get_json::<T>(&key).await? {
-            out.push(value);
-        }
-    }
-    Ok(out)
+    let keys: Vec<String> = store
+        .list(prefix)
+        .await?
+        .into_iter()
+        .filter(|key| key.ends_with(".json"))
+        .collect();
+    Ok(store
+        .get_json_many::<T>(&keys)
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 async fn write_bundle<T: Serialize>(store: &Store, file: &str, records: &[T]) -> Result<()> {
@@ -1250,6 +1277,17 @@ mod tests {
             "id":"r200","title":"Another Bill 2026","parliament":48,"chamber":"senate",
             "status":"Act","links":{},
             "sponsors":[{"name":"Morgan Rossi"},{"name":"Someone Retired"}]}"#,
+        )
+        .await;
+        // And one from an earlier parliament, listed after the current ones.
+        put(
+            &store,
+            "canonical/bills/r050.json",
+            r#"{
+            "id":"r50","title":"An Earlier Bill 2023","parliament":47,"chamber":"representatives",
+            "status":"Act","links":{},
+            "movers":[{"name":"Alex Paterson","phid":"alex1"}],
+            "timeline":[{"date":"2023-03-01","event":"Introduced (House of Representatives)"}]}"#,
         )
         .await;
 
@@ -1403,7 +1441,11 @@ mod tests {
         let bills: Vec<Bill> = lines(&store.get_raw("bundles/bills.jsonl").await.unwrap().unwrap());
         assert_eq!(
             bills.iter().map(|b| b.title.as_str()).collect::<Vec<_>>(),
-            vec!["Another Bill 2026", "Example Bill 2026"]
+            vec![
+                "An Earlier Bill 2023",
+                "Another Bill 2026",
+                "Example Bill 2026"
+            ]
         );
         let example = bills.iter().find(|b| b.id == "r100").unwrap();
         assert_eq!(example.division_ids, vec!["representatives/2026-08-12/2"]);
@@ -1488,12 +1530,16 @@ mod tests {
             vec![
                 "bill",
                 "bill",
+                "bill",
                 "person",
                 "person",
                 "electorate",
                 "electorate"
             ]
         );
+        // The sitting parliament's bills lead; an earlier one says which it was.
+        assert_eq!(quick[2].slug, "r50");
+        assert_eq!(quick[2].sub, "47th Parliament \u{b7} Act");
         let bill_entry = &quick[0];
         assert!(
             bill_entry.slug == "r100" || bill_entry.slug == "r200",

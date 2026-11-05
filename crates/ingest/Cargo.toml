@@ -23,6 +23,8 @@ csv = "1"
 base64 = "0.22"
 fastrand = "2"
 # Deflate only: the AEC register ships its CSVs in plain zips.
+# Concurrent bulk reads from the store.
+futures = "0.3"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 percent-encoding = "2"
 # "rustls" selects the SDK's legacy connector, which pins rustls 0.21 and its

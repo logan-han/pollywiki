@@ -151,6 +151,35 @@ impl SiteData {
         self.bills_by_id.get(id).map(|&i| &self.bills[i])
     }
 
+    /// The parliament now sitting: the newest any bill belongs to.
+    pub fn current_parliament(&self) -> i64 {
+        self.bills.iter().map(|b| b.parliament).max().unwrap_or(48)
+    }
+
+    /// The earlier parliaments with bills on record, newest first.
+    pub fn earlier_parliaments(&self) -> Vec<i64> {
+        let current = self.current_parliament();
+        let mut parliaments: Vec<i64> = self
+            .bills
+            .iter()
+            .map(|b| b.parliament)
+            .filter(|&p| p != current)
+            .collect();
+        parliaments.sort_unstable_by(|a, b| b.cmp(a));
+        parliaments.dedup();
+        parliaments
+    }
+
+    /// Where a parliament's bills are listed: the bills index for the one
+    /// sitting, a page of its own for each earlier one.
+    pub fn parliament_bills_path(&self, parliament: i64) -> String {
+        if parliament == self.current_parliament() {
+            "/bills/".to_string()
+        } else {
+            format!("/bills/parliament/{parliament}/")
+        }
+    }
+
     pub fn division_by_id(&self, id: &str) -> Option<&Division> {
         self.divisions_by_id.get(id).map(|&i| &self.divisions[i])
     }
@@ -851,17 +880,7 @@ pub fn to_fixed(value: f64, digits: usize) -> String {
     }
 }
 
-/// An English ordinal: 1st, 2nd, 3rd, 4th, and 11th to 13th, never "42th".
-pub fn ordinal(value: i64) -> String {
-    let suffix = match (value.abs() % 10, value.abs() % 100) {
-        (_, 11..=13) => "th",
-        (1, _) => "st",
-        (2, _) => "nd",
-        (3, _) => "rd",
-        _ => "th",
-    };
-    format!("{value}{suffix}")
-}
+pub use pollywiki_schema::ordinal;
 
 /// Number.prototype.toLocaleString('en-AU') for integers.
 pub fn locale_int(value: i64) -> String {

@@ -879,7 +879,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         bill: &'b Bill,
         role: &'static str,
     }
-    let raised: Vec<Raised> = data
+    let mut raised: Vec<Raised> = data
         .bills
         .iter()
         .filter_map(|b| {
@@ -905,6 +905,13 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             }
         })
         .collect();
+    // Across parliaments, so newest first: the sort is stable, which keeps
+    // the bundle's order among bills of the same day.
+    raised.sort_by(|a, b| {
+        latest_step(b.bill)
+            .map(|s| s.date.as_str())
+            .cmp(&latest_step(a.bill).map(|s| s.date.as_str()))
+    });
 
     let mut body = String::new();
     body.push_str(&record_article("Person", Some(person.house)));
@@ -1350,12 +1357,13 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if !raised.is_empty() {
         body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
         body.push_str(&table_scroll("Bills raised"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Bill</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Bill</th><th scope=\"col\">Parliament</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
         for r in &raised {
             body.push_str(&format!(
-                "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td></tr>",
+                "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 r.bill.id,
                 esc(&r.bill.title),
+                data::ordinal(r.bill.parliament),
                 r.role,
                 esc(&r.bill.status),
             ));
@@ -1802,20 +1810,85 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
 }
 
 pub fn bills_index(data: &SiteData) -> Page {
+    bills_ledger(data, data.current_parliament())
+}
+
+/// One parliament's bills, newest step first under month dividers: the bills
+/// index for the parliament sitting, and a page of its own for each earlier
+/// one. A row of links joins them.
+pub fn bills_ledger(data: &SiteData, parliament: i64) -> Page {
+    let current = parliament == data.current_parliament();
+    let bills: Vec<&Bill> = data
+        .bills
+        .iter()
+        .filter(|b| b.parliament == parliament)
+        .collect();
+    let name = format!("{} Parliament", data::ordinal(parliament));
+    let path = data.parliament_bills_path(parliament);
+    let title = if current {
+        "Bills".to_string()
+    } else {
+        format!("Bills of the {name}")
+    };
+
     let mut body = String::new();
-    body.push_str("<div class=\"masthead\"><h1>Bills</h1><p class=\"lede\">");
     body.push_str(&format!(
-        "{} bills of the 48th Parliament, from the official APH record, most recent step first.",
-        data.bills.len()
+        "<div class=\"masthead\"><h1>{}</h1><p class=\"lede\">",
+        esc(&title)
     ));
-    body.push_str("</p></div>");
-    body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" enterkeyhint=\"done\" aria-label=\"Filter bills\"></div>");
+    // An earlier parliament is dated by the first and last steps its bills took.
+    let years: Vec<&str> = bills
+        .iter()
+        .flat_map(|b| b.timeline.iter())
+        .filter_map(|step| step.date.get(..4))
+        .collect();
+    let span = match (years.iter().min(), years.iter().max()) {
+        (Some(first), Some(last)) if !current && first != last => {
+            format!(", {first} to {last}")
+        }
+        _ => String::new(),
+    };
+    body.push_str(&format!(
+        "{} {} of the {name}{span}, from the official APH record, most recent step first.",
+        bills.len(),
+        if bills.len() == 1 { "bill" } else { "bills" }
+    ));
+    body.push_str("</p>");
+    let earlier = data.earlier_parliaments();
+    if !earlier.is_empty() {
+        let links: Vec<String> = std::iter::once(data.current_parliament())
+            .chain(earlier)
+            .map(|p| {
+                let label = data::ordinal(p);
+                if p == parliament {
+                    format!(
+                        "<a aria-current=\"page\" href=\"{}\">{label}</a>",
+                        data.parliament_bills_path(p)
+                    )
+                } else {
+                    format!("<a href=\"{}\">{label}</a>", data.parliament_bills_path(p))
+                }
+            })
+            .collect();
+        body.push_str(&format!(
+            "<nav class=\"parliament-nav\" aria-label=\"Bills by parliament\"><span class=\"label\">Parliament</span> {}</nav>",
+            links.join(" ")
+        ));
+    }
+    body.push_str("</div>");
+    // A closed parliament has no bills before it, so it offers no such filter.
+    let open_pill = if current {
+        "<button aria-pressed=\"false\" data-status=\"open\">Before parliament</button>"
+    } else {
+        ""
+    };
+    body.push_str(&format!("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button>{open_pill}<button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title or portfolio\" enterkeyhint=\"done\" aria-label=\"Filter bills\"></div>"));
     body.push_str(&filter_feedback("No bills match these filters."));
-    if !data.bills.is_empty() {
+    if !bills.is_empty() {
         // The bundle arrives alphabetically, so the ledger order is built here.
         // The sort is stable, which keeps that alphabetical order inside a
         // month and among any bills the APH record has yet to date.
-        let mut by_activity: Vec<&Bill> = data.bills.iter().collect();
+        let mut by_activity: Vec<&Bill> = bills.clone();
         by_activity.sort_by(|a, b| {
             latest_step(b)
                 .map(|s| s.date.as_str())
@@ -1859,19 +1932,24 @@ pub fn bills_index(data: &SiteData) -> Page {
     } else {
         body.push_str("<p class=\"note\">No bill records loaded yet. They appear once the APH bills sync runs.</p>");
     }
-    const DESCRIPTION: &str = "Bills before the Australian federal parliament and their progress.";
-    let mut page = Page::new("Bills", Some(DESCRIPTION.to_string()), "/bills/", body);
-    page.lastmod = newest_bill_date(data);
+    let description = if current {
+        "Bills before the Australian federal parliament and their progress.".to_string()
+    } else {
+        format!("Bills of the {name} of Australia and how far each went.")
+    };
+    let mut page = Page::new(title.clone(), Some(description.clone()), path.clone(), body);
+    page.lastmod = bills
+        .iter()
+        .filter_map(|b| latest_step(b).map(|s| s.date.clone()))
+        .max();
     page.page_script = Some(BILL_FILTER_JS.as_str());
+    let mut crumbs: Vec<(&str, &str)> = vec![("pollywiki", "/"), ("Bills", "/bills/")];
+    if !current {
+        crumbs.push((&name, &path));
+    }
     page.jsonld = Some(jsonld_script(vec![
-        collection_page(
-            &data.site_url,
-            "Bills",
-            DESCRIPTION,
-            "/bills/",
-            data.bills.len(),
-        ),
-        breadcrumb(&data.site_url, &[("pollywiki", "/"), ("Bills", "/bills/")]),
+        collection_page(&data.site_url, &title, &description, &path, bills.len()),
+        breadcrumb(&data.site_url, &crumbs),
     ]));
     page
 }
@@ -2089,12 +2167,13 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
         esc(&bill.title)
     ));
 
-    let has_meta_line = bill.bill_type.is_some()
-        || bill.portfolio.is_some()
-        || !bill.sponsors.is_empty()
-        || !bill.movers.is_empty();
-    if has_meta_line {
-        body.push_str("<div class=\"meta-line\">");
+    // Every bill names its parliament, which links to that parliament's bills.
+    {
+        body.push_str(&format!(
+            "<div class=\"meta-line\"><span><a href=\"{}\">{} Parliament</a></span>",
+            data.parliament_bills_path(bill.parliament),
+            data::ordinal(bill.parliament)
+        ));
         if let Some(t) = &bill.bill_type {
             body.push_str(&format!(" <span>{}</span>", esc(t)));
         }
@@ -2252,16 +2331,16 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     let mut page = Page::new(bill.title.clone(), Some(description), path.clone(), body);
     page.og_type = "article";
     page.lastmod = latest_step(bill).map(|step| step.date.clone());
+    let parliament_name = format!("{} Parliament", data::ordinal(bill.parliament));
+    let parliament_path = data.parliament_bills_path(bill.parliament);
+    let mut crumbs: Vec<(&str, &str)> = vec![("pollywiki", "/"), ("Bills", "/bills/")];
+    if bill.parliament != data.current_parliament() {
+        crumbs.push((&parliament_name, &parliament_path));
+    }
+    crumbs.push((&bill.title, &path));
     page.jsonld = Some(jsonld_script(vec![
         legislation,
-        breadcrumb(
-            &data.site_url,
-            &[
-                ("pollywiki", "/"),
-                ("Bills", "/bills/"),
-                (&bill.title, &path),
-            ],
-        ),
+        breadcrumb(&data.site_url, &crumbs),
     ]));
     page
 }
@@ -3929,7 +4008,7 @@ pub fn data_sources(data: &SiteData) -> Page {
         Source {
             key: "aph-bills",
             name: "Parliament of Australia",
-            what: "Bills before parliament, their progress and their documents, and the explanatory memorandum of any bill not yet summarised.",
+            what: "Bills of every parliament since the 40th (2002), their progress and their documents, and the explanatory memorandum of any bill not yet summarised.",
             licence: "Commonwealth of Australia; reproduced fairly and accurately with acknowledgement",
             link: "https://www.aph.gov.au",
         },
@@ -4109,6 +4188,8 @@ pub fn methodology(data: &SiteData) -> Page {
         "<p>Where a parliament's website turns away automated readers, its member list is downloaded by hand from that site about once a month, and its page says so and dates the list by the day it was downloaded. Until a download is filed, its place on the site says why the list cannot be read and links to the parliament's own list.</p>",
         "<p>Each state and territory parliament's bills are read from the official list of them that the parliament or its legislation register publishes: title, the chamber it began in, who introduced it, where it stands and the dated steps it took. How far a bill has come is shown as for federal bills, in four stages for a parliament of two chambers and three for a parliament of one, worked out from those steps and the list's own status. State bills carry no machine-written summaries.</p>",
         "<p>For the states and territories there are no voting records or election results yet: only federal parliament has a source that records every vote in a form this site can read.</p>",
+        "<h2>Bills</h2>",
+        "<p>Federal bills are kept from the 40th Parliament, which opened in 2002, the first whose bills the Parliament summarised throughout. Each bill stays with the parliament it was introduced in: one that lapsed when that parliament was dissolved is shown as the record has it, and a bill introduced again later is a new bill. Divisions, and so members' voting records, run from the opening of the 48th Parliament only.</p>",
         "<h2>Maps</h2>",
         "<p>Electorate maps draw the ABS's approximation of each division, built from mesh blocks, simplified to what the map can show. The AEC's own maps show the legal boundary.</p>",
         "<h2>AI summaries and notes</h2>",

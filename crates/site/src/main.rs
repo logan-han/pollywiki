@@ -130,6 +130,9 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
     for bill in &data.bills {
         page_list.push(pages::bill_page(&data, bill));
     }
+    for parliament in data.earlier_parliaments() {
+        page_list.push(pages::bills_ledger(&data, parliament));
+    }
     for electorate in &data.electorates {
         page_list.push(pages::electorate_page(&data, electorate));
     }
