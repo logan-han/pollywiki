@@ -203,7 +203,7 @@ fn bill_status_key(bill: &Bill) -> &'static str {
 /// How far a bill has come, in the dots key's words, then its official status
 /// while it is still before a chamber; a bill that has finished one way or
 /// another is told by its status alone.
-fn bill_progress_line(bill: &Bill) -> String {
+pub(crate) fn bill_progress_line(bill: &Bill) -> String {
     let stage = match crate::components::bill_stage(bill) {
         1 => "Introduced",
         2 => "Passed 1st house",
@@ -2104,6 +2104,47 @@ fn no_summary_lede(bill: &Bill) -> String {
     )
 }
 
+/// What a link preview says of a bill, in the order a reader wants it: what
+/// it does, where it stands, what kind of bill it is. The official summary
+/// says what it does where APH has written one; otherwise the note on the
+/// page does, labelled as the AI's as it is there.
+fn bill_preview(bill: &Bill) -> String {
+    let what = match (&bill.summary, &bill.ai_summary) {
+        (Some(summary), _) if !summary.trim().is_empty() => {
+            format!("{} ", clip(summary.trim(), 200))
+        }
+        (_, Some(ai)) => format!("AI summary: {} ", clip(ai.text.trim(), 180)),
+        _ => String::new(),
+    };
+    let when = latest_step(bill)
+        .map(|step| format!(", last step {}", format_date(&step.date)))
+        .unwrap_or_default();
+    let kind = match (&bill.bill_type, &bill.portfolio) {
+        (Some(kind), Some(portfolio)) => format!("{kind} bill, {portfolio} portfolio"),
+        (Some(kind), None) if kind.ends_with(" bill") => kind.clone(),
+        (Some(kind), None) => format!("{kind} bill"),
+        (None, _) => "Federal bill".to_string(),
+    };
+    format!(
+        "{what}Status: {}{when}. {kind}, {} Parliament.",
+        bill_progress_line(bill),
+        data::ordinal(bill.parliament)
+    )
+}
+
+/// The text cut at the last word before `max` characters, marked as cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max).collect();
+    let end = cut.rfind(' ').unwrap_or(cut.len());
+    format!(
+        "{}\u{2026}",
+        cut[..end].trim_end_matches([',', ';', ':', ' '])
+    )
+}
+
 pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     let related: Vec<&Division> = bill
         .division_ids
@@ -2309,10 +2350,7 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     }
     body.push_str("</p></div></div></article>");
 
-    let description = format!(
-        "{}. Progress of this bill through the federal parliament.",
-        bill.status
-    );
+    let description = bill_preview(bill);
     let path = format!("/bills/{}/", bill.id);
     let mut legislation = serde_json::json!({
         "@context": "https://schema.org",

@@ -63,6 +63,23 @@ def tracked(draw, xy, text, font, fill, tracking):
     return x
 
 
+def tracked_width(draw, text, font, tracking):
+    """The width tracked() would draw text at."""
+    return sum(draw.textlength(char, font=font) + tracking for char in text) - tracking
+
+
+def centred(draw, y, parts, s):
+    """Draw tracked runs one after another, the whole line centred on the card.
+
+    Each part is (text, font, fill, tracking). Centred, the square a chat app
+    crops the card to keeps the line whole."""
+    total = sum(tracked_width(draw, text, font, tracking) for text, font, _, tracking in parts)
+    total += sum(tracking for _, _, _, tracking in parts[:-1])
+    x = W * s / 2 - total / 2
+    for text, font, fill, tracking in parts:
+        x = tracked(draw, (x, y * s), text, font, fill, tracking)
+
+
 def rule(draw, y, s):
     draw.rectangle([MARGIN * s, y * s, (W - MARGIN) * s, (y + 1.5) * s], fill=INK)
 
@@ -71,28 +88,27 @@ def main():
     image = Image.new("RGB", (W * SCALE, H * SCALE), PAPER)
     draw = ImageDraw.Draw(image)
     s = SCALE
-    left = MARGIN * s
 
     # Mono-caps eyebrow, matching the label recipe used across the site.
-    tracked(draw, (left, 96 * s), "THE AUSTRALIAN PARLIAMENTARY RECORD", mono(22 * s), FAINT, 2.6 * s)
+    centred(draw, 96, [("THE AUSTRALIAN PARLIAMENTARY RECORD", mono(18 * s), FAINT, 2.2 * s)], s)
     rule(draw, 132, s)
 
     # Wordmark, ".au" carried in faint like the header.
-    x = tracked(draw, (left, 312 * s), "pollywiki", serif(156 * s, weight=700), INK, -3 * s)
-    tracked(draw, (x, 312 * s), ".au", serif(156 * s, weight=400), FAINT, -3 * s)
-
-    draw.text(
-        (left, 428 * s),
-        "Every parliament's record, unedited.",
-        font=serif(48 * s, italic=True),
-        fill=MUTED,
-        anchor="ls",
+    centred(
+        draw,
+        318,
+        [
+            ("pollywiki", serif(104 * s, weight=700), INK, -2 * s),
+            (".au", serif(104 * s, weight=400), FAINT, -2 * s),
+        ],
+        s,
     )
+    centred(draw, 412, [("Every parliament's record, unedited.", serif(34 * s, italic=True), MUTED, 0)], s)
 
     # The header's double rule, then the nine parliaments it keeps.
     rule(draw, 500, s)
     rule(draw, 504, s)
-    draw.text((left, 556 * s), "  ".join(PARLIAMENTS), font=mono(24 * s), fill=FAINT, anchor="ls")
+    centred(draw, 556, [("  ".join(PARLIAMENTS), mono(19 * s), FAINT, 0)], s)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     image.resize((W, H), Image.LANCZOS).save(OUT, "PNG", optimize=True)

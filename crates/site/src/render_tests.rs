@@ -1656,6 +1656,34 @@ fn bill_summaries_render_in_all_three_grammars() {
 }
 
 #[test]
+fn a_bill_preview_says_what_it_does_then_where_it_stands() {
+    let data = sample_data();
+    let preview = |id: &str| {
+        let bill = data.bill_by_id(id).expect("sample bill");
+        pages::bill_page(&data, bill)
+            .description
+            .expect("a description")
+    };
+    // The official summary leads where there is one.
+    assert_eq!(
+        preview("sample-1"),
+        "Amends the: Corporations Act 2001 to: require one thing; require another thing; and Privacy Act 1988 to make a single change. \
+         Status: Passed 1st house \u{b7} Before Senate, last step 1 Aug 2025. Government bill, Example Portfolio portfolio, 48th Parliament."
+    );
+    // Otherwise the note does, labelled as the page labels it.
+    assert_eq!(
+        preview("sample-5"),
+        "AI summary: The bill would end two sample measures and repeal the Act that set them up. \
+         Status: Not Proceeding, last step 6 May 2025. Government bill, Example Portfolio portfolio, 48th Parliament."
+    );
+    // With neither, the facts alone.
+    assert_eq!(
+        preview("sample-4"),
+        "Status: Act, last step 3 Mar 2025. Federal bill, 48th Parliament."
+    );
+}
+
+#[test]
 fn each_parliament_lists_its_own_bills_and_every_bill_names_its_parliament() {
     let data = sample_data();
     assert_eq!(data.current_parliament(), 48);

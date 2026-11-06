@@ -110,17 +110,24 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
     for person in &data.people {
         page_list.push(pages::person_page(&data, person));
     }
-    // Per-division share cards. Best-effort: a division with no card falls
-    // back to the site-wide default image.
-    let cards = match og::Cards::load() {
+    // Per-division and per-bill share cards. Best-effort: a page with no
+    // card falls back to the site-wide default image.
+    let (cards, bill_cards) = match og::Cards::load() {
         Some(cards) => {
             cards.write_default(out_dir)?;
-            cards.write_all(out_dir, &data)?
+            (
+                cards.write_all(out_dir, &data)?,
+                cards.write_bills(out_dir, &data)?,
+            )
         }
-        None => std::collections::HashMap::new(),
+        None => Default::default(),
     };
     if !cards.is_empty() {
-        println!("og: {} division cards", cards.len());
+        println!(
+            "og: {} division cards, {} bill cards",
+            cards.len(),
+            bill_cards.len()
+        );
     }
     for division in &data.divisions {
         let mut page = pages::division_page(&data, division);
@@ -128,7 +135,9 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
         page_list.push(page);
     }
     for bill in &data.bills {
-        page_list.push(pages::bill_page(&data, bill));
+        let mut page = pages::bill_page(&data, bill);
+        page.og_image = bill_cards.get(&bill.id).cloned();
+        page_list.push(page);
     }
     for parliament in data.earlier_parliaments() {
         page_list.push(pages::bills_ledger(&data, parliament));

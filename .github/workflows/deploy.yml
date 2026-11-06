@@ -58,8 +58,10 @@ jobs:
             --cache-control "public,max-age=300"
           aws s3 sync dist/_assets "s3://${{ vars.SITE_BUCKET }}/_assets" \
             --delete --cache-control "public,max-age=31536000,immutable"
+          # Cards are rebuilt every time but drawn the same way from the same
+          # record, so one whose size is unchanged is not uploaded again.
           aws s3 sync dist/og "s3://${{ vars.SITE_BUCKET }}/og" \
-            --delete --cache-control "public,max-age=86400"
+            --delete --size-only --cache-control "public,max-age=86400"
 
       # Mirrored member photos live in the data prefix; copy them under the
       # site prefix so CloudFront serves them same-origin. Runs after the
