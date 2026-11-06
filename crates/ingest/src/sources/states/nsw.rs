@@ -42,7 +42,15 @@ pub fn read(drop: &Drop, source: &str) -> Result<Vec<RollChamber>> {
         let surname = column(&["SURNAME", "LAST NAME", "FAMILY NAME"])
             .ok_or_else(|| anyhow!("{name}: no SURNAME column"))?;
         let party = column(&["PARTY"]).ok_or_else(|| anyhow!("{name}: no PARTY column"))?;
-        let given = column(&["PREFERRED NAME", "FIRST NAME", "GIVEN NAMES", "GIVEN NAME"]);
+        // The Parliament's own lists head the given name plain NAME, beside
+        // a SURNAME of its own.
+        let given = column(&[
+            "PREFERRED NAME",
+            "FIRST NAME",
+            "GIVEN NAMES",
+            "GIVEN NAME",
+            "NAME",
+        ]);
         let initials = column(&["INITIALS"]);
         let electorate = column(&["ELECTORATE"]);
         let ministry = column(&["MINISTRY"]);
@@ -190,6 +198,19 @@ mod tests {
         let chambers = read(&drop, "https://example.org").expect("read");
         assert_eq!(chambers[1].members[0].name, "John Ajaka");
         assert!(chambers[0].members.is_empty());
+    }
+
+    #[test]
+    fn the_parliaments_own_name_column_gives_the_first_name() {
+        let council = "INITIALS,NAME,SURNAME,TITLE,POST-NOMINALS,PARTY,ELECTORATE,MINISTRY\n\
+                       M.,Mark,Banasiak,The Hon.,MLC,\"Shooters, Fishers and Farmers Party\",,\n";
+        let drop = drop_of("name", &[("2026-11-06-lc-members.csv", council)]);
+        let chambers = read(&drop, "https://example.org").expect("read");
+        assert_eq!(chambers[1].members[0].name, "Mark Banasiak");
+        assert_eq!(
+            chambers[1].members[0].party,
+            "Shooters, Fishers and Farmers Party"
+        );
     }
 
     #[test]
