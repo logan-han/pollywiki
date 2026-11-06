@@ -126,13 +126,51 @@ pub struct ParlWorkProgressState {
 
 pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoints) -> Result<()> {
     let opts = endpoints.opts(2000).with_header("user-agent", BROWSER_UA);
+    let list_url = |take: usize, page: usize| {
+        format!(
+            "{}/bills?Take={take}&Page={page}&SortOrder=2&Keyword=null&IsTitleSearch=true&DateRangeFrom=null&DateRangeTo=null&StatusFilters=0&BillTypes=0&ParliamentNumber={parliament}",
+            endpoints.parlwork
+        )
+    };
     let mut items: Vec<ParlWorkBill> = Vec::new();
     for page in 1..=MAX_PAGES {
-        let url = format!(
-            "{}/bills?Take={PAGE_SIZE}&Page={page}&SortOrder=2&Keyword=null&IsTitleSearch=true&DateRangeFrom=null&DateRangeTo=null&StatusFilters=0&BillTypes=0&ParliamentNumber={parliament}",
-            endpoints.parlwork
-        );
-        let batch_raw: Value = fetch_json(&url, &opts).await?;
+        let (batch_raw, more): (Value, bool) = match fetch_json::<Value>(
+            &list_url(PAGE_SIZE, page),
+            &opts,
+        )
+        .await
+        {
+            Ok(raw) => {
+                let full = raw.as_array().is_some_and(|rows| rows.len() == PAGE_SIZE);
+                (raw, full)
+            }
+            // ParlWork fails a whole page of an earlier parliament over
+            // one record it cannot serve. That page is read again a bill
+            // at a time, and only a bill that still fails is left out. The
+            // current parliament's list stays all or nothing.
+            Err(err) if parliament != CURRENT_PARLIAMENT => {
+                eprintln!(
+                        "aph-bills: parliament {parliament} page {page} failed, read a bill at a time - {err}"
+                    );
+                let mut rows: Vec<Value> = Vec::new();
+                let mut ended = false;
+                for n in (page - 1) * PAGE_SIZE + 1..=page * PAGE_SIZE {
+                    match fetch_json::<Value>(&list_url(1, n), &opts).await {
+                            Ok(Value::Array(one)) if one.is_empty() => {
+                                ended = true;
+                                break;
+                            }
+                            Ok(Value::Array(one)) => rows.extend(one),
+                            Ok(_) => return Err(anyhow!("parlwork: unexpected response shape")),
+                            Err(err) => eprintln!(
+                                "aph-bills: parliament {parliament} bill {n} of the list left out - {err}"
+                            ),
+                        }
+                }
+                (Value::Array(rows), !ended)
+            }
+            Err(err) => return Err(err),
+        };
         if !batch_raw.is_array() {
             return Err(anyhow!("parlwork: unexpected response shape"));
         }
@@ -144,9 +182,8 @@ pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoint
         };
         store.put_json(&raw_key, &batch_raw).await?;
         let batch: Vec<ParlWorkBill> = serde_json::from_value(batch_raw)?;
-        let batch_len = batch.len();
         items.extend(batch);
-        if batch_len < PAGE_SIZE {
+        if !more {
             break;
         }
     }
@@ -1354,6 +1391,51 @@ mod tests {
                 .is_none(),
             "the current parliament's pages are left alone"
         );
+    }
+
+    #[tokio::test]
+    async fn an_earlier_parliaments_failed_page_is_read_a_bill_at_a_time() {
+        let server = TestServer::start(|req| {
+            if req.path.starts_with("/parlwork/bills?") {
+                let (take, page) = (req.query("Take").unwrap(), req.query("Page").unwrap());
+                return match (take.as_str(), page.as_str()) {
+                    ("100", "1") => Response::status(500, "one record breaks the page"),
+                    ("100", _) => Response::json("[]"),
+                    ("1", "2") => Response::status(500, "the record itself"),
+                    ("1", n @ ("1" | "3")) => Response::json(
+                        serde_json::json!([list_item(
+                            &format!("r4{n}"),
+                            "An Old Bill",
+                            "2008-01-01"
+                        )])
+                        .to_string(),
+                    ),
+                    _ => Response::json("[]"),
+                };
+            }
+            Response::json(detail_body("Assent").to_string())
+        });
+        let store = new_store("singles");
+        sync_aph_bills(&store, 42, &Endpoints::at(&server.base))
+            .await
+            .expect("a page that fails over one bill does not stop the parliament");
+        for id in ["r41", "r43"] {
+            assert!(store
+                .get_json::<Bill>(&format!("canonical/bills/{id}.json"))
+                .await
+                .unwrap()
+                .is_some());
+        }
+        assert!(store
+            .get_json::<Bill>("canonical/bills/r42.json")
+            .await
+            .unwrap()
+            .is_none());
+
+        let err = sync_aph_bills(&store, CURRENT_PARLIAMENT, &Endpoints::at(&server.base))
+            .await
+            .expect_err("the current parliament's list stays all or nothing");
+        assert!(err.to_string().contains("500"), "{err}");
     }
 
     #[tokio::test]
