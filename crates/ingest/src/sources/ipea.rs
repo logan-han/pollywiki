@@ -70,9 +70,12 @@ struct Resource {
     metadata_modified: Option<String>,
 }
 
-static PERIOD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(\d{4})q0?([1-4])_dataextract(?:_transactional)?\.csv$").unwrap()
-});
+/// The quarter in a transaction file's name. IPEA has named the file
+/// "2018q04_dataextract_transactional.csv", "2026q03_dataextract.csv" and
+/// "2026q02_dataextract_expenses.csv", so anything may follow "dataextract";
+/// the resource name, not the file name, says which file holds expenses.
+static PERIOD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\d{4})q0?([1-4])_dataextract[^/]*\.csv$").unwrap());
 
 pub async fn sync_ipea(store: &Store, endpoints: &Endpoints) -> Result<()> {
     let search: Search = fetch_json(
@@ -295,22 +298,28 @@ mod tests {
                     .header("host")
                     .map(|h| format!("http://{h}"))
                     .unwrap_or_default();
-                let package = |q: &str, modified: &str| {
+                let package = |q: &str, file: &str, modified: &str| {
                     serde_json::json!({ "resources": [
-                        { "name": format!("{q} expenses"), "url": format!("{base}/files/{q}_dataextract.csv"),
+                        { "name": format!("{q} expenses"), "url": format!("{base}/files/{q}_{file}"),
                           "last_modified": modified },
                         { "name": format!("{q} repayments"), "url": format!("{base}/files/{q}_dataextract_repayments.csv") }
                     ] })
                 };
+                // Each name IPEA has given the expenses file, old quarters'
+                // older names included.
                 return Response::json(
                     serde_json::json!({ "result": { "results": [
-                        package("2025q02", "a"), package("2025q03", "a"), package("2025q04", "a"),
-                        package("2026q01", "a"), package("2026q02", "a")
+                        package("2018q04", "dataextract_transactional.csv", "a"),
+                        package("2025q02", "dataextract_expenses.csv", "a"),
+                        package("2025q03", "dataextract_expenses.csv", "a"),
+                        package("2025q04", "dataextract_expenses.csv", "a"),
+                        package("2026q01", "dataextract._expenses.csv", "a"),
+                        package("2026q02", "dataextract.csv", "a")
                     ] } })
                     .to_string(),
                 );
             }
-            if req.path.contains("_dataextract.csv") {
+            if req.path.contains("/files/") && !req.path.contains("repayments") {
                 return Response::text(quarter("Sample quarter"));
             }
             Response::status(404, "unexpected path")
@@ -327,9 +336,10 @@ mod tests {
         let keys = store.list(PREFIX).await.unwrap();
         assert_eq!(keys.len(), QUARTERS);
         assert!(keys.iter().any(|k| k.ends_with("2026Q02.json")));
-        assert!(!keys
-            .iter()
-            .any(|k| k.ends_with("2025Q02.json") || k.ends_with("2025Q01.json")));
+        assert!(keys.iter().any(|k| k.ends_with("2026Q01.json")));
+        assert!(!keys.iter().any(|k| k.ends_with("2025Q02.json")
+            || k.ends_with("2025Q01.json")
+            || k.ends_with("2018Q04.json")));
 
         // Unchanged quarters are not downloaded again.
         sync_ipea(&store, &endpoints).await.expect("again");
