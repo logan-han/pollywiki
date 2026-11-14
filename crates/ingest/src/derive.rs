@@ -22,7 +22,6 @@ use pollywiki_schema::{
     BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE, BUNDLE_STATES, STATES,
 };
 use serde::Serialize;
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -61,121 +60,10 @@ pub async fn derive(store: &Store) -> Result<()> {
     let elections = load_all::<ElectorateResult>(store, "canonical/elections/").await?;
     let senate = load_all::<SenateResult>(store, "canonical/senate/").await?;
 
-    let electorate_index: HashMap<String, usize> = electorates
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.slug.clone(), i))
-        .collect();
-    for person in &mut people {
-        if let Some(slug) = &person.electorate {
-            if let Some(&i) = electorate_index.get(slug) {
-                person.state = Some(electorates[i].state);
-                // Only whoever sits for the seat now is its member; a
-                // predecessor keeps the electorate on their own record.
-                if !person.is_former() {
-                    electorates[i].member_slug = Some(person.slug.clone());
-                }
-            }
-        }
-    }
-
-    let member_names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
-    for division in &mut divisions {
-        if let Some(summary) = &division.summary {
-            division.summary_kind = Some(if is_transcript(summary, &member_names) {
-                SummaryKind::Transcript
-            } else {
-                SummaryKind::Summary
-            });
-        }
-    }
-    // Only a division whose context is a transcript has a note to read.
-    let transcripts: Vec<usize> = (0..divisions.len())
-        .filter(|&i| divisions[i].summary_kind == Some(SummaryKind::Transcript))
-        .collect();
-    let keys: Vec<String> = transcripts
-        .iter()
-        .map(|&i| ai_key(&divisions[i].id))
-        .collect();
-    for (i, ai) in transcripts
-        .into_iter()
-        .zip(store.get_json_many::<AiSummary>(&keys).await?)
-    {
-        if let Some(ai) = ai {
-            divisions[i].ai_summary = Some(AiText {
-                text: ai.text,
-                model: ai.model,
-                generated_at: ai.generated_at,
-                source: None,
-            });
-        }
-    }
-
-    let slugs =
-        |key: fn(&str) -> String| -> Vec<String> { people.iter().map(|p| key(&p.slug)).collect() };
-    let notes = store
-        .get_json_many::<AiPersonNote>(&slugs(note_key))
-        .await?;
-    let profiles = store
-        .get_json_many::<HandbookProfile>(&slugs(|slug| format!("canonical/handbook/{slug}.json")))
-        .await?;
-    for ((person, note), profile) in people.iter_mut().zip(notes).zip(profiles) {
-        if let Some(note) = note {
-            person.ai_note = Some(AiText {
-                text: note.text,
-                model: note.model,
-                generated_at: note.generated_at,
-                source: None,
-            });
-        }
-        if let Some(profile) = profile {
-            person.background = Some(profile.background);
-            if !profile.positions.is_empty() {
-                person.positions = Some(profile.positions);
-            }
-            person.committees = profile.committees.filter(|c| !c.is_empty());
-        }
-    }
-
-    let people_slugs: HashSet<String> = people.iter().map(|p| p.slug.clone()).collect();
-    let phid_to_slug: HashMap<String, String> = people
-        .iter()
-        .filter_map(|p| {
-            p.ids
-                .aph
-                .as_ref()
-                .map(|phid| (phid.to_lowercase(), p.slug.clone()))
-        })
-        .collect();
-    let acts: IndexMap<String, Act> = store.get_json(ACTS_KEY).await?.unwrap_or_default();
-    let keys: Vec<String> = bills.iter().map(|b| bill_note_key(&b.id)).collect();
-    let notes = store.get_json_many::<AiSummary>(&keys).await?;
-    for (bill, note) in bills.iter_mut().zip(notes) {
-        bill.act = acts.get(&bill.id.to_lowercase()).cloned();
-        // Empty text records the model's judgement that the official summary
-        // is already plain enough; no box renders for those. A note written
-        // from the memorandum says so, wherever the bill now stands.
-        if let Some(note) = note {
-            if !note.text.is_empty() {
-                bill.ai_summary = Some(AiText {
-                    text: note.text,
-                    model: note.model,
-                    generated_at: note.generated_at,
-                    source: note.source,
-                });
-            }
-        }
-        for raiser in bill.sponsors.iter_mut().chain(bill.movers.iter_mut()) {
-            raiser.slug = raiser
-                .phid
-                .as_ref()
-                .and_then(|phid| phid_to_slug.get(&phid.to_lowercase()).cloned())
-                .or_else(|| {
-                    let slug = slugify(&raiser.name);
-                    people_slugs.contains(&slug).then_some(slug)
-                });
-        }
-    }
+    seat_members(&mut people, &mut electorates);
+    attach_division_context(store, &mut divisions, &people).await?;
+    attach_person_records(store, &mut people).await?;
+    attach_bill_records(store, &mut bills, &people).await?;
 
     // Election history per person: every contest across every ingested event,
     // matched by candidate name (current members only).
@@ -184,119 +72,8 @@ pub async fn derive(store: &Store) -> Result<()> {
         .enumerate()
         .map(|(i, p)| (p.slug.clone(), i))
         .collect();
-    // The share is worked out again here from the votes, over the formal
-    // total, rather than copied: results stored before the ingest set the
-    // informal ballots apart took every share over all ballots cast, and
-    // this corrects them on the next derive without refetching the AEC.
-    for result in &elections {
-        let formal = result.formal_votes() as f64;
-        for candidate in result.first_prefs.iter().filter(|c| !c.is_informal()) {
-            let Some(i) = find_candidate(&people, &slug_to_index, &[&candidate.name], result.state)
-            else {
-                continue;
-            };
-            let person = &mut people[i];
-            person
-                .elections
-                .get_or_insert_with(Vec::new)
-                .push(ElectionContest {
-                    event: result.event_id.clone(),
-                    event_name: result.event_name.clone(),
-                    electorate_slug: result.electorate_slug.clone(),
-                    electorate_name: result.electorate_name.clone(),
-                    party: candidate.party.clone(),
-                    votes: candidate.votes,
-                    pct: pct_of(candidate.votes as f64, formal),
-                    swing: candidate.swing,
-                    elected: candidate.elected,
-                    senate: None,
-                });
-        }
-    }
-    // Senate contests carry the whole group's share: the count is state-wide
-    // and most votes are cast for the group, not the candidate.
-    for result in &senate {
-        for group in &result.groups {
-            for candidate in &group.candidates {
-                let names: Vec<&str> = [Some(&candidate.name), candidate.short_name.as_ref()]
-                    .into_iter()
-                    .flatten()
-                    .map(String::as_str)
-                    .collect();
-                let Some(i) = find_candidate(&people, &slug_to_index, &names, result.state) else {
-                    continue;
-                };
-                if people[i].state != Some(result.state) {
-                    continue;
-                }
-                people[i]
-                    .elections
-                    .get_or_insert_with(Vec::new)
-                    .push(ElectionContest {
-                        event: result.event_id.clone(),
-                        event_name: result.event_name.clone(),
-                        electorate_slug: String::new(),
-                        electorate_name: result.state.as_str().to_string(),
-                        party: candidate.party.clone(),
-                        votes: group.votes,
-                        pct: group.pct,
-                        swing: None,
-                        elected: candidate.elected_order.is_some(),
-                        senate: Some(SenateSeat {
-                            state: result.state,
-                            vacancies: result.vacancies,
-                            elected_order: candidate.elected_order,
-                        }),
-                    });
-            }
-        }
-    }
-    for person in &mut people {
-        if let Some(elections) = &mut person.elections {
-            elections.sort_by(|a, b| js_compare(&b.event, &a.event));
-        }
-    }
-
-    let handbook_electorates = store
-        .get_json::<HandbookElectorates>(ELECTORATES_KEY)
-        .await?
-        .map(|h| h.electorates)
-        .unwrap_or_default();
-    for electorate in &mut electorates {
-        if let Some(profile) = store
-            .get_json::<ElectorateProfile>(&format!(
-                "canonical/electorate-profiles/{}.json",
-                electorate.slug
-            ))
-            .await?
-        {
-            electorate.profile = Some(profile.profile);
-            electorate.enrolment = profile.enrolment;
-        }
-        electorate.boundary = store
-            .get_json::<Boundary>(&format!(
-                "{}{}.json",
-                crate::sources::boundaries::PREFIX,
-                electorate.slug
-            ))
-            .await?;
-        let history: Vec<SeatResult> = elections
-            .iter()
-            .filter(|r| r.electorate_slug == electorate.slug && r.state == electorate.state)
-            .filter_map(|r| seat_result(r, &people))
-            .sorted_newest_first();
-        electorate.history = (!history.is_empty()).then_some(history);
-        // A name can be reused after a division is abolished, so only the
-        // sitting division of that name in that state counts.
-        electorate.established = handbook_electorates
-            .iter()
-            .find(|h| {
-                h.ceased.is_none()
-                    && h.state == electorate.state.as_str()
-                    && slugify(&h.name) == electorate.slug
-            })
-            .and_then(|h| h.established.clone());
-    }
+    attach_elections(&mut people, &slug_to_index, &elections, &senate);
+    attach_electorate_records(store, &mut electorates, &elections, &people).await?;
 
     attach_expenses(store, &mut people).await?;
     compute_vote_stats(&mut people, &divisions);
@@ -316,39 +93,8 @@ pub async fn derive(store: &Store) -> Result<()> {
         }
     }
     attach_person_funding(&mut people, &slug_to_index, &disclosures);
-    let rolls = load_all::<StateRoll>(store, crate::sources::states::PREFIX).await?;
-    let mut state_photos: HashMap<StateCode, Vec<StatePhoto>> = HashMap::new();
-    for roll in &rolls {
-        if let Some(photos) = store.get_json(&photos_key(roll.state)).await? {
-            state_photos.insert(roll.state, photos);
-        }
-    }
-    let bill_rolls = crate::sources::states::bills::load_all(store).await?;
-    let states = state_parliaments(
-        &rolls,
-        &state_photos,
-        &bill_rolls,
-        &crate::sources::states::reference(),
-        &reference,
-    );
-
-    // Each current electorate shows its own most recent contest, so a seat
-    // decided at a by-election displays that result, not the older general.
-    let current_slugs: HashSet<&str> = electorates.iter().map(|e| e.slug.as_str()).collect();
-    let mut latest_by_electorate: IndexMap<String, &ElectorateResult> = IndexMap::new();
-    for result in &elections {
-        if !current_slugs.contains(result.electorate_slug.as_str()) {
-            continue;
-        }
-        match latest_by_electorate.get(&result.electorate_slug) {
-            Some(current) if result.event_id <= current.event_id => {}
-            _ => {
-                latest_by_electorate.insert(result.electorate_slug.clone(), result);
-            }
-        }
-    }
-    let current_elections: Vec<&ElectorateResult> =
-        latest_by_electorate.values().copied().collect();
+    let states = load_state_parliaments(store, &reference).await?;
+    let current_elections = latest_results(&electorates, &elections);
 
     write_bundle(
         store,
@@ -390,6 +136,357 @@ pub async fn derive(store: &Store) -> Result<()> {
     };
     store.put_json("bundles/meta.json", &meta).await?;
 
+    store
+        .put_json(
+            "bundles/quick-search.json",
+            &quick_search(&bills, &people, &electorates, &states),
+        )
+        .await?;
+
+    println!(
+        "derive: {} people ({} former), {} parties, {} electorates, {} divisions, {} bills, {} electorate results, {} state members in {} parliaments",
+        people.len(),
+        people.iter().filter(|p| p.is_former()).count(),
+        parties.len(),
+        electorates.len(),
+        divisions.len(),
+        bills.len(),
+        current_elections.len(),
+        states
+            .iter()
+            .flat_map(|s| &s.chambers)
+            .map(|c| c.members.len())
+            .sum::<usize>(),
+        states.len()
+    );
+    Ok(())
+}
+
+/// Places each member in their electorate's state, and names each seat's
+/// sitting member.
+fn seat_members(people: &mut [Person], electorates: &mut [Electorate]) {
+    let electorate_index: HashMap<String, usize> = electorates
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.slug.clone(), i))
+        .collect();
+    for person in people.iter_mut() {
+        if let Some(slug) = &person.electorate {
+            if let Some(&i) = electorate_index.get(slug) {
+                person.state = Some(electorates[i].state);
+                // Only whoever sits for the seat now is its member; a
+                // predecessor keeps the electorate on their own record.
+                if !person.is_former() {
+                    electorates[i].member_slug = Some(person.slug.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Tells a division's context apart as a summary or a transcript, and gives
+/// a transcript the note written for it.
+async fn attach_division_context(
+    store: &Store,
+    divisions: &mut [Division],
+    people: &[Person],
+) -> Result<()> {
+    let member_names: HashSet<String> = people.iter().map(|p| p.name.clone()).collect();
+    for division in divisions.iter_mut() {
+        if let Some(summary) = &division.summary {
+            division.summary_kind = Some(if is_transcript(summary, &member_names) {
+                SummaryKind::Transcript
+            } else {
+                SummaryKind::Summary
+            });
+        }
+    }
+    // Only a division whose context is a transcript has a note to read.
+    let transcripts: Vec<usize> = (0..divisions.len())
+        .filter(|&i| divisions[i].summary_kind == Some(SummaryKind::Transcript))
+        .collect();
+    let keys: Vec<String> = transcripts
+        .iter()
+        .map(|&i| ai_key(&divisions[i].id))
+        .collect();
+    for (i, ai) in transcripts
+        .into_iter()
+        .zip(store.get_json_many::<AiSummary>(&keys).await?)
+    {
+        if let Some(ai) = ai {
+            divisions[i].ai_summary = Some(AiText {
+                text: ai.text,
+                model: ai.model,
+                generated_at: ai.generated_at,
+                source: None,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Gives each member their written note and their Handbook background,
+/// positions and committees.
+async fn attach_person_records(store: &Store, people: &mut [Person]) -> Result<()> {
+    let slugs =
+        |key: fn(&str) -> String| -> Vec<String> { people.iter().map(|p| key(&p.slug)).collect() };
+    let notes = store
+        .get_json_many::<AiPersonNote>(&slugs(note_key))
+        .await?;
+    let profiles = store
+        .get_json_many::<HandbookProfile>(&slugs(|slug| format!("canonical/handbook/{slug}.json")))
+        .await?;
+    for ((person, note), profile) in people.iter_mut().zip(notes).zip(profiles) {
+        if let Some(note) = note {
+            person.ai_note = Some(AiText {
+                text: note.text,
+                model: note.model,
+                generated_at: note.generated_at,
+                source: None,
+            });
+        }
+        if let Some(profile) = profile {
+            person.background = Some(profile.background);
+            if !profile.positions.is_empty() {
+                person.positions = Some(profile.positions);
+            }
+            person.committees = profile.committees.filter(|c| !c.is_empty());
+        }
+    }
+    Ok(())
+}
+
+/// Gives each bill the Act it became and its written note, and links its
+/// sponsors and movers to their pages.
+async fn attach_bill_records(store: &Store, bills: &mut [Bill], people: &[Person]) -> Result<()> {
+    let people_slugs: HashSet<String> = people.iter().map(|p| p.slug.clone()).collect();
+    let phid_to_slug: HashMap<String, String> = people
+        .iter()
+        .filter_map(|p| {
+            p.ids
+                .aph
+                .as_ref()
+                .map(|phid| (phid.to_lowercase(), p.slug.clone()))
+        })
+        .collect();
+    let acts: IndexMap<String, Act> = store.get_json(ACTS_KEY).await?.unwrap_or_default();
+    let keys: Vec<String> = bills.iter().map(|b| bill_note_key(&b.id)).collect();
+    let notes = store.get_json_many::<AiSummary>(&keys).await?;
+    for (bill, note) in bills.iter_mut().zip(notes) {
+        bill.act = acts.get(&bill.id.to_lowercase()).cloned();
+        // Empty text records the model's judgement that the official summary
+        // is already plain enough; no box renders for those. A note written
+        // from the memorandum says so, wherever the bill now stands.
+        if let Some(note) = note {
+            if !note.text.is_empty() {
+                bill.ai_summary = Some(AiText {
+                    text: note.text,
+                    model: note.model,
+                    generated_at: note.generated_at,
+                    source: note.source,
+                });
+            }
+        }
+        for raiser in bill.sponsors.iter_mut().chain(bill.movers.iter_mut()) {
+            raiser.slug = raiser
+                .phid
+                .as_ref()
+                .and_then(|phid| phid_to_slug.get(&phid.to_lowercase()).cloned())
+                .or_else(|| {
+                    let slug = slugify(&raiser.name);
+                    people_slugs.contains(&slug).then_some(slug)
+                });
+        }
+    }
+    Ok(())
+}
+
+/// Each member's House and Senate contests, the newest event first.
+fn attach_elections(
+    people: &mut [Person],
+    slug_to_index: &HashMap<String, usize>,
+    elections: &[ElectorateResult],
+    senate: &[SenateResult],
+) {
+    // The share is worked out again here from the votes, over the formal
+    // total, rather than copied: results stored before the ingest set the
+    // informal ballots apart took every share over all ballots cast, and
+    // this corrects them on the next derive without refetching the AEC.
+    for result in elections {
+        let formal = result.formal_votes() as f64;
+        for candidate in result.first_prefs.iter().filter(|c| !c.is_informal()) {
+            let Some(i) = find_candidate(people, slug_to_index, &[&candidate.name], result.state)
+            else {
+                continue;
+            };
+            let person = &mut people[i];
+            person
+                .elections
+                .get_or_insert_with(Vec::new)
+                .push(ElectionContest {
+                    event: result.event_id.clone(),
+                    event_name: result.event_name.clone(),
+                    electorate_slug: result.electorate_slug.clone(),
+                    electorate_name: result.electorate_name.clone(),
+                    party: candidate.party.clone(),
+                    votes: candidate.votes,
+                    pct: pct_of(candidate.votes as f64, formal),
+                    swing: candidate.swing,
+                    elected: candidate.elected,
+                    senate: None,
+                });
+        }
+    }
+    // Senate contests carry the whole group's share: the count is state-wide
+    // and most votes are cast for the group, not the candidate.
+    for result in senate {
+        for group in &result.groups {
+            for candidate in &group.candidates {
+                let names: Vec<&str> = [Some(&candidate.name), candidate.short_name.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+                    .collect();
+                let Some(i) = find_candidate(people, slug_to_index, &names, result.state) else {
+                    continue;
+                };
+                if people[i].state != Some(result.state) {
+                    continue;
+                }
+                people[i]
+                    .elections
+                    .get_or_insert_with(Vec::new)
+                    .push(ElectionContest {
+                        event: result.event_id.clone(),
+                        event_name: result.event_name.clone(),
+                        electorate_slug: String::new(),
+                        electorate_name: result.state.as_str().to_string(),
+                        party: candidate.party.clone(),
+                        votes: group.votes,
+                        pct: group.pct,
+                        swing: None,
+                        elected: candidate.elected_order.is_some(),
+                        senate: Some(SenateSeat {
+                            state: result.state,
+                            vacancies: result.vacancies,
+                            elected_order: candidate.elected_order,
+                        }),
+                    });
+            }
+        }
+    }
+    for person in people.iter_mut() {
+        if let Some(elections) = &mut person.elections {
+            elections.sort_by(|a, b| js_compare(&b.event, &a.event));
+        }
+    }
+}
+
+/// Gives each electorate its profile, boundary, results history and the year
+/// it was established.
+async fn attach_electorate_records(
+    store: &Store,
+    electorates: &mut [Electorate],
+    elections: &[ElectorateResult],
+    people: &[Person],
+) -> Result<()> {
+    let handbook_electorates = store
+        .get_json::<HandbookElectorates>(ELECTORATES_KEY)
+        .await?
+        .map(|h| h.electorates)
+        .unwrap_or_default();
+    for electorate in electorates.iter_mut() {
+        if let Some(profile) = store
+            .get_json::<ElectorateProfile>(&format!(
+                "canonical/electorate-profiles/{}.json",
+                electorate.slug
+            ))
+            .await?
+        {
+            electorate.profile = Some(profile.profile);
+            electorate.enrolment = profile.enrolment;
+        }
+        electorate.boundary = store
+            .get_json::<Boundary>(&format!(
+                "{}{}.json",
+                crate::sources::boundaries::PREFIX,
+                electorate.slug
+            ))
+            .await?;
+        let history: Vec<SeatResult> = newest_first(
+            elections
+                .iter()
+                .filter(|r| r.electorate_slug == electorate.slug && r.state == electorate.state)
+                .filter_map(|r| seat_result(r, people)),
+        );
+        electorate.history = (!history.is_empty()).then_some(history);
+        // A name can be reused after a division is abolished, so only the
+        // sitting division of that name in that state counts.
+        electorate.established = handbook_electorates
+            .iter()
+            .find(|h| {
+                h.ceased.is_none()
+                    && h.state == electorate.state.as_str()
+                    && slugify(&h.name) == electorate.slug
+            })
+            .and_then(|h| h.established.clone());
+    }
+    Ok(())
+}
+
+/// The state and territory parliaments, from their stored rolls, photos and
+/// bills.
+async fn load_state_parliaments(
+    store: &Store,
+    reference: &IndexMap<String, PartyReferenceEntry>,
+) -> Result<Vec<StateParliament>> {
+    let rolls = load_all::<StateRoll>(store, crate::sources::states::PREFIX).await?;
+    let mut state_photos: HashMap<StateCode, Vec<StatePhoto>> = HashMap::new();
+    for roll in &rolls {
+        if let Some(photos) = store.get_json(&photos_key(roll.state)).await? {
+            state_photos.insert(roll.state, photos);
+        }
+    }
+    let bill_rolls = crate::sources::states::bills::load_all(store).await?;
+    Ok(state_parliaments(
+        &rolls,
+        &state_photos,
+        &bill_rolls,
+        &crate::sources::states::reference(),
+        reference,
+    ))
+}
+
+/// Each current electorate shows its own most recent contest, so a seat
+/// decided at a by-election displays that result, not the older general.
+fn latest_results<'a>(
+    electorates: &[Electorate],
+    elections: &'a [ElectorateResult],
+) -> Vec<&'a ElectorateResult> {
+    let current_slugs: HashSet<&str> = electorates.iter().map(|e| e.slug.as_str()).collect();
+    let mut latest_by_electorate: IndexMap<String, &ElectorateResult> = IndexMap::new();
+    for result in elections {
+        if !current_slugs.contains(result.electorate_slug.as_str()) {
+            continue;
+        }
+        match latest_by_electorate.get(&result.electorate_slug) {
+            Some(current) if result.event_id <= current.event_id => {}
+            _ => {
+                latest_by_electorate.insert(result.electorate_slug.clone(), result);
+            }
+        }
+    }
+    latest_by_electorate.values().copied().collect()
+}
+
+/// The site's quick search: bills, members and electorates, then state
+/// members and state bills.
+fn quick_search(
+    bills: &[Bill],
+    people: &[Person],
+    electorates: &[Electorate],
+    states: &[StateParliament],
+) -> Vec<QuickSearchEntry> {
     let mut quick_search: Vec<QuickSearchEntry> = Vec::new();
     // Bills first: they are the most-searched entity, and the site's dropdown
     // groups by type anyway. The sitting parliament's lead, so a title an
@@ -414,7 +511,7 @@ pub async fn derive(store: &Store) -> Result<()> {
             },
         });
     }
-    for p in &people {
+    for p in people {
         let seat = match p.house {
             House::Senate => format!(
                 "Senator \u{b7} {}",
@@ -435,7 +532,7 @@ pub async fn derive(store: &Store) -> Result<()> {
             },
         });
     }
-    for e in &electorates {
+    for e in electorates {
         quick_search.push(QuickSearchEntry {
             t: "electorate".to_string(),
             slug: e.slug.clone(),
@@ -445,7 +542,7 @@ pub async fn derive(store: &Store) -> Result<()> {
     }
     // State members last, keyed by their path under /states/, so a name
     // shared with a federal member lands on the right parliament.
-    for parliament in &states {
+    for parliament in states {
         for chamber in &parliament.chambers {
             let house = chamber.name.rsplit(' ').next().unwrap_or(&chamber.name);
             for m in &chamber.members {
@@ -462,7 +559,7 @@ pub async fn derive(store: &Store) -> Result<()> {
         }
     }
     // State bills after them, under each parliament's bills.
-    for parliament in &states {
+    for parliament in states {
         for bill in &parliament.bills {
             quick_search.push(QuickSearchEntry {
                 t: "state-bill".to_string(),
@@ -476,27 +573,7 @@ pub async fn derive(store: &Store) -> Result<()> {
             });
         }
     }
-    store
-        .put_json("bundles/quick-search.json", &quick_search)
-        .await?;
-
-    println!(
-        "derive: {} people ({} former), {} parties, {} electorates, {} divisions, {} bills, {} electorate results, {} state members in {} parliaments",
-        people.len(),
-        people.iter().filter(|p| p.is_former()).count(),
-        parties.len(),
-        electorates.len(),
-        divisions.len(),
-        bills.len(),
-        current_elections.len(),
-        states
-            .iter()
-            .flat_map(|s| &s.chambers)
-            .map(|c| c.members.len())
-            .sum::<usize>(),
-        states.len()
-    );
-    Ok(())
+    quick_search
 }
 
 /// Each parliament's roll joined to its fixed facts: the chambers in the
@@ -1037,16 +1114,11 @@ fn seat_result(result: &ElectorateResult, people: &[Person]) -> Option<SeatResul
     })
 }
 
-trait NewestFirst {
-    fn sorted_newest_first(self) -> Vec<SeatResult>;
-}
-
-impl<I: Iterator<Item = SeatResult>> NewestFirst for I {
-    fn sorted_newest_first(self) -> Vec<SeatResult> {
-        let mut out: Vec<SeatResult> = self.collect();
-        out.sort_by(|a, b| js_compare(&b.event, &a.event));
-        out
-    }
+/// Seat results, the newest event first.
+fn newest_first(results: impl Iterator<Item = SeatResult>) -> Vec<SeatResult> {
+    let mut out: Vec<SeatResult> = results.collect();
+    out.sort_by(|a, b| js_compare(&b.event, &a.event));
+    out
 }
 
 fn compute_vote_stats(people: &mut [Person], divisions: &[Division]) {
@@ -1166,10 +1238,7 @@ async fn write_bundle<T: Serialize>(store: &Store, file: &str, records: &[T]) ->
 
 fn sorted_by<T: Clone>(items: &[T], key: impl Fn(&T) -> String) -> Vec<T> {
     let mut keyed: Vec<(String, T)> = items.iter().map(|i| (key(i), i.clone())).collect();
-    keyed.sort_by(|a, b| match js_compare(&a.0, &b.0) {
-        Ordering::Equal => Ordering::Equal,
-        other => other,
-    });
+    keyed.sort_by(|a, b| js_compare(&a.0, &b.0));
     keyed.into_iter().map(|(_, i)| i).collect()
 }
 
