@@ -21,9 +21,10 @@ use crate::markdown;
 use crate::procedures::procedure_for;
 use crate::strip::js_without_comment_lines;
 use pollywiki_schema::{
-    Bill, CandidateResult, ChamberKind, Division, Electorate, House, JsNum, NoteSource, Party,
-    Person, StateBill, StateChamber, StateCode, StateMember, StateParliament, SummaryKind,
-    TimelineStep, Vote,
+    Background, Bill, CandidateResult, ChamberKind, CommitteeService, Division, ElectionContest,
+    Electorate, ExpenseQuarter, House, JsNum, NoteSource, Party, Person, PersonFunding,
+    PersonStats, PositionRecord, StateBill, StateChamber, StateCode, StateMember, StateParliament,
+    SummaryKind, TimelineStep, Vote,
 };
 use regex::Regex;
 use std::sync::LazyLock;
@@ -803,6 +804,116 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         .electorate
         .as_deref()
         .and_then(|slug| data.electorate_by_slug(slug));
+    let seat = person_seat(person, electorate);
+    let votes = data.votes_for_person(&person.slug);
+    let stats = person.stats.as_ref();
+    let service_years = service_years(person);
+    let raised = bills_raised(data, &person.slug);
+
+    let mut body = String::new();
+    body.push_str(&record_article("Person", Some(person.house)));
+    body.push_str(&profile_head(data, person, electorate, &seat));
+
+    if let Some(until) = &person.until {
+        body.push_str(&format!(
+            "<p class=\"procedure-note\"><strong>Former member:</strong> left the {} on {}. The page stays because the divisions recorded below are permanent.</p>",
+            chamber_word(person.house),
+            esc(&format_date(until))
+        ));
+    }
+
+    if let Some(stats) = stats.filter(|s| s.divisions_eligible > 0) {
+        body.push_str(&stat_strip(stats, service_years.as_deref()));
+    }
+
+    // A long profile opens on a line of links to its sections, in page order,
+    // so the voting record is one step away however much biography sits above
+    // it. It follows the figures' caveat rather than splitting the two.
+    let positions = person.positions.as_deref().filter(|p| !p.is_empty());
+    let committees = person.committees.as_deref().filter(|c| !c.is_empty());
+    let elections = person.elections.as_deref().filter(|e| !e.is_empty());
+    let expenses = person.expenses.as_deref().filter(|e| !e.is_empty());
+    let funding = person
+        .funding
+        .as_ref()
+        .filter(|f| !f.elections.is_empty() || !f.annual.is_empty());
+    // One word each, so a full profile's contents still sit on one line;
+    // the headings they point at carry the full names.
+    let sections: Vec<(&str, &str)> = [
+        ("background", "Background", person.background.is_some()),
+        ("positions", "Positions", positions.is_some()),
+        ("committees", "Committees", committees.is_some()),
+        ("elections", "Elections", elections.is_some()),
+        ("expenses", "Expenses", expenses.is_some()),
+        ("funding", "Funding", funding.is_some()),
+        ("bills-raised", "Bills", !raised.is_empty()),
+        ("voting-record", "Votes", true),
+    ]
+    .into_iter()
+    .filter(|(_, _, present)| *present)
+    .map(|(id, label, _)| (id, label))
+    .collect();
+    body.push_str(&on_page_nav(&sections));
+
+    if let Some(note) = &person.ai_note {
+        body.push_str("<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">Voting record in brief</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
+        body.push_str(&data.link_bill_titles(&note.text));
+        body.push_str("</p></div><div class=\"context-credit\">Written by AI from the voting record below; describes subjects and votes, never merit. May contain errors \u{2014} the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>");
+    }
+
+    if let Some(background) = &person.background {
+        body.push_str(&background_section(background));
+    }
+    if let Some(positions) = positions {
+        body.push_str(&positions_section(positions));
+    }
+    if let Some(committees) = committees {
+        body.push_str(&committees_section(committees));
+    }
+    if let Some(elections) = elections {
+        body.push_str(&elections_section(data, elections));
+    }
+    if let Some(expenses) = expenses {
+        body.push_str(&expenses_section(expenses));
+    }
+    if let Some(funding) = funding {
+        body.push_str(&funding_section(funding));
+    }
+    if !raised.is_empty() {
+        body.push_str(&bills_raised_section(&raised));
+    }
+    body.push_str(&voting_record(&votes));
+    body.push_str(&person_sources(
+        person,
+        expenses.is_some(),
+        funding.is_some(),
+        !votes.is_empty(),
+    ));
+    body.push_str("</article>");
+
+    let description = format!("{seat}. Voting record and service details from official sources.");
+    let path = format!("/people/{}/", person.slug);
+    let person_ld = person_jsonld(data, person, &seat, &path);
+    let mut page = Page::new(person.name.clone(), Some(description), path.clone(), body);
+    page.lastmod = votes.iter().map(|v| v.division.date.clone()).max();
+    page.og_type = "profile";
+    page.jsonld = Some(jsonld_script(vec![
+        person_ld,
+        breadcrumb(
+            &data.site_url,
+            &[
+                ("pollywiki", "/"),
+                ("People", "/people/"),
+                (&person.name, &path),
+            ],
+        ),
+    ]));
+    page
+}
+
+/// The seat a member holds or held, as their profile names it: "Member for
+/// Sampleford", "Senator for Tasmania", led by "Former" once they have left.
+fn person_seat(person: &Person, electorate: Option<&Electorate>) -> String {
     let (role, seat_name) = match person.house {
         House::Senate => (
             "Senator for",
@@ -822,19 +933,22 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             },
         ),
     };
-    let seat = if person.is_former() {
+    if person.is_former() {
         format!("Former {role} {seat_name}")
     } else {
         format!("{role} {seat_name}")
-    };
-    let votes = data.votes_for_person(&person.slug);
-    let stats = person.stats.as_ref();
+    }
+}
+
+/// Years in federal parliament, to one place with a ".0" dropped: from the
+/// start of service to the end of the term, or to today.
+fn service_years(person: &Person) -> Option<String> {
     let service_start = person
         .background
         .as_ref()
         .and_then(|b| b.service_start.as_deref())
         .or(person.since.as_deref());
-    let service_years = service_start.and_then(|start| {
+    service_start.and_then(|start| {
         let start_ms = parse_js_date_millis(start)?;
         // A finished term stops accruing years the day it ended.
         let end_ms = match person.until.as_deref().and_then(parse_js_date_millis) {
@@ -844,29 +958,27 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         let years = (end_ms - start_ms) as f64 / 31_557_600_000.0;
         let fixed = to_fixed(years, 1);
         Some(fixed.strip_suffix(".0").unwrap_or(&fixed).to_string())
-    });
+    })
+}
 
-    struct Raised<'b> {
-        bill: &'b Bill,
-        role: &'static str,
-    }
+/// A bill a member raised, and in which role.
+struct Raised<'b> {
+    bill: &'b Bill,
+    role: &'static str,
+}
+
+/// The bills a member sponsored or introduced, in any parliament.
+fn bills_raised<'d>(data: &'d SiteData, slug: &str) -> Vec<Raised<'d>> {
     let mut raised: Vec<Raised> = data
         .bills
         .iter()
         .filter_map(|b| {
-            if b.sponsors
-                .iter()
-                .any(|s| s.slug.as_deref() == Some(&person.slug))
-            {
+            if b.sponsors.iter().any(|s| s.slug.as_deref() == Some(slug)) {
                 Some(Raised {
                     bill: b,
                     role: "Sponsor",
                 })
-            } else if b
-                .movers
-                .iter()
-                .any(|m| m.slug.as_deref() == Some(&person.slug))
-            {
+            } else if b.movers.iter().any(|m| m.slug.as_deref() == Some(slug)) {
                 Some(Raised {
                     bill: b,
                     role: "Introduced",
@@ -879,16 +991,25 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     // Across parliaments, so newest first: the sort is stable, which keeps
     // the bundle's order among bills of the same day.
     raised.sort_by(|a, b| newest_step_first(a.bill, b.bill));
+    raised
+}
 
+/// The head of a profile: portrait, chamber, seat and term, the name, then
+/// the member's party and links.
+fn profile_head(
+    data: &SiteData,
+    person: &Person,
+    electorate: Option<&Electorate>,
+    seat: &str,
+) -> String {
     let mut body = String::new();
-    body.push_str(&record_article("Person", Some(person.house)));
     body.push_str("<div class=\"profile-head\">");
     body.push_str(&avatar(person, true));
     body.push_str("<div><div class=\"meta-row\"><span class=\"ids\">");
     // The spaces between the identifiers cost nothing in the inline-flex
     // row; they keep the words apart in search excerpts and when copied.
     body.push_str(&chamber_chip(person.house));
-    body.push_str(&format!(" <span class=\"seat\">{}</span>", esc(&seat)));
+    body.push_str(&format!(" <span class=\"seat\">{}</span>", esc(seat)));
     // The term's middot is a span of its own, so the stylesheet can hang it
     // in the gap after the seat and drop it when the term wraps to a line of
     // its own. It stays in the text for excerpts and copying, but a screen
@@ -939,408 +1060,405 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         ));
     }
     body.push_str("</div></div></div>");
+    body
+}
 
-    if let Some(until) = &person.until {
+/// A member's voting figures, with the caveat they are read under.
+fn stat_strip(stats: &PersonStats, years: Option<&str>) -> String {
+    let mut body = String::new();
+    body.push_str("<div class=\"stat-strip\">");
+    // The link is named by its figure and the label beside it, so it
+    // reads as more than "2 / 2" in a list of links.
+    body.push_str(&format!(
+        "<div class=\"stat\"><span class=\"n\"><a id=\"stat-voted\" href=\"#voting-record\" aria-labelledby=\"stat-voted stat-voted-l\">{} / {}</a></span> <span class=\"l\" id=\"stat-voted-l\">divisions voted in this parliament</span></div>",
+        stats.divisions_voted, stats.divisions_eligible
+    ));
+    body.push_str(&format!(
+        "<div class=\"stat\"><span class=\"n\">{}</span> <span class=\"l\">votes against their party's majority position</span></div>",
+        stats.against_group_majority
+    ));
+    if let Some(years) = years {
         body.push_str(&format!(
-            "<p class=\"procedure-note\"><strong>Former member:</strong> left the {} on {}. The page stays because the divisions recorded below are permanent.</p>",
-            chamber_word(person.house),
-            esc(&format_date(until))
+            "<div class=\"stat\"><span class=\"n\">{years}</span> <span class=\"l\">years in federal parliament</span></div>"
         ));
     }
+    body.push_str("</div>");
+    body.push_str("<p class=\"note\">Counted against the divisions held while they sat, not the whole parliament. Absence from a division is not abstention: pairing arrangements, leave and parliamentary duties are not distinguished in the official record. <a href=\"/about/methodology/\">How these figures are computed.</a></p>");
+    body
+}
 
-    if let Some(stats) = stats.filter(|s| s.divisions_eligible > 0) {
-        body.push_str("<div class=\"stat-strip\">");
-        // The link is named by its figure and the label beside it, so it
-        // reads as more than "2 / 2" in a list of links.
-        body.push_str(&format!(
-            "<div class=\"stat\"><span class=\"n\"><a id=\"stat-voted\" href=\"#voting-record\" aria-labelledby=\"stat-voted stat-voted-l\">{} / {}</a></span> <span class=\"l\" id=\"stat-voted-l\">divisions voted in this parliament</span></div>",
-            stats.divisions_voted, stats.divisions_eligible
-        ));
-        body.push_str(&format!(
-            "<div class=\"stat\"><span class=\"n\">{}</span> <span class=\"l\">votes against their party's majority position</span></div>",
-            stats.against_group_majority
-        ));
-        if let Some(years) = &service_years {
-            body.push_str(&format!(
-                "<div class=\"stat\"><span class=\"n\">{years}</span> <span class=\"l\">years in federal parliament</span></div>"
-            ));
-        }
-        body.push_str("</div>");
-        body.push_str("<p class=\"note\">Counted against the divisions held while they sat, not the whole parliament. Absence from a division is not abstention: pairing arrangements, leave and parliamentary duties are not distinguished in the official record. <a href=\"/about/methodology/\">How these figures are computed.</a></p>");
-    }
-
-    // A long profile opens on a line of links to its sections, in page order,
-    // so the voting record is one step away however much biography sits above
-    // it. It follows the figures' caveat rather than splitting the two.
-    let positions = person.positions.as_deref().filter(|p| !p.is_empty());
-    let committees = person.committees.as_deref().filter(|c| !c.is_empty());
-    let elections = person.elections.as_deref().filter(|e| !e.is_empty());
-    let expenses = person.expenses.as_deref().filter(|e| !e.is_empty());
-    let funding = person
-        .funding
-        .as_ref()
-        .filter(|f| !f.elections.is_empty() || !f.annual.is_empty());
-    // One word each, so a full profile's contents still sit on one line;
-    // the headings they point at carry the full names.
-    let sections: Vec<(&str, &str)> = [
-        ("background", "Background", person.background.is_some()),
-        ("positions", "Positions", positions.is_some()),
-        ("committees", "Committees", committees.is_some()),
-        ("elections", "Elections", elections.is_some()),
-        ("expenses", "Expenses", expenses.is_some()),
-        ("funding", "Funding", funding.is_some()),
-        ("bills-raised", "Bills", !raised.is_empty()),
-        ("voting-record", "Votes", true),
-    ]
-    .into_iter()
-    .filter(|(_, _, present)| *present)
-    .map(|(id, label, _)| (id, label))
-    .collect();
+/// The line of links to a profile's sections, when it has more than one.
+fn on_page_nav(sections: &[(&str, &str)]) -> String {
+    let mut body = String::new();
     if sections.len() > 1 {
         body.push_str("<nav class=\"on-page\" aria-labelledby=\"on-page-label\"><span class=\"label\" id=\"on-page-label\">On this page</span>");
-        for (id, label) in &sections {
+        for (id, label) in sections {
             body.push_str(&format!("<a href=\"#{id}\">{label}</a>"));
         }
         body.push_str("</nav>");
     }
+    body
+}
 
-    if let Some(note) = &person.ai_note {
-        body.push_str("<aside class=\"context-box\"><div class=\"context-top\" data-pagefind-ignore><span class=\"context-head\">Voting record in brief</span><span class=\"ai-tag\">AI-generated</span></div><div class=\"context-body\"><p>");
-        body.push_str(&data.link_bill_titles(&note.text));
-        body.push_str("</p></div><div class=\"context-credit\">Written by AI from the voting record below; describes subjects and votes, never merit. May contain errors — the record is authoritative. <a href=\"/about/methodology/\">How this works.</a></div></aside>");
-    }
-
-    if let Some(background) = &person.background {
-        body.push_str("<h2 id=\"background\">Background</h2>");
-        body.push_str(&table_scroll("Background"));
-        body.push_str("<table class=\"facts\"><tbody>");
-        if let Some(born) = &background.born {
-            body.push_str(&format!(
-                "<tr><th class=\"label\" scope=\"row\">Born</th><td>{}{}</td></tr>",
-                esc(&format_date(born)),
-                match &background.birthplace {
-                    Some(birthplace) => esc(&format!(", {birthplace}")),
-                    None => String::new(),
-                }
-            ));
-        }
-        if let Some(start) = &background.service_start {
-            body.push_str(&format!(
-                "<tr><th class=\"label\" scope=\"row\">Entered parliament</th><td>{}</td></tr>",
-                esc(&format_date(start))
-            ));
-        }
-        if !background.parliaments.is_empty() {
-            body.push_str(&format!(
-                "<tr><th class=\"label\" scope=\"row\">Parliaments</th><td>{}</td></tr>",
-                esc(&background
-                    .parliaments
-                    .iter()
-                    .map(|&n| data::ordinal(n))
-                    .collect::<Vec<_>>()
-                    .join(", "))
-            ));
-        }
-        if !background.honours.is_empty() {
-            body.push_str(&format!(
-                "<tr><th class=\"label\" scope=\"row\">Honours</th><td>{}</td></tr>",
-                esc(&background.honours.join("; "))
-            ));
-        }
-        body.push_str("</tbody></table></div>");
-
-        if !background.qualifications.is_empty() {
-            body.push_str(&table_scroll("Qualifications"));
-            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
-            for q in &background.qualifications {
-                let parsed = parse_qualification(q);
-                body.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td></tr>",
-                    esc(&parsed.qual),
-                    esc(&parsed.institution)
-                ));
+/// A member's background: the facts the Handbook gives, their qualifications
+/// and their occupations before parliament.
+fn background_section(background: &Background) -> String {
+    let mut body = String::new();
+    body.push_str("<h2 id=\"background\">Background</h2>");
+    body.push_str(&table_scroll("Background"));
+    body.push_str("<table class=\"facts\"><tbody>");
+    if let Some(born) = &background.born {
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Born</th><td>{}{}</td></tr>",
+            esc(&format_date(born)),
+            match &background.birthplace {
+                Some(birthplace) => esc(&format!(", {birthplace}")),
+                None => String::new(),
             }
-            body.push_str("</tbody></table></div>");
-        }
-        if !background.occupations.is_empty() {
-            let rows: Vec<Occupation> = background
-                .occupations
+        ));
+    }
+    if let Some(start) = &background.service_start {
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Entered parliament</th><td>{}</td></tr>",
+            esc(&format_date(start))
+        ));
+    }
+    if !background.parliaments.is_empty() {
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Parliaments</th><td>{}</td></tr>",
+            esc(&background
+                .parliaments
                 .iter()
-                .map(|o| parse_occupation(o))
-                .collect();
-            // A career of bare titles gets a one-column table, not two empty ones.
-            let has_org = rows.iter().any(|o| !o.org.is_empty());
-            let has_period = rows.iter().any(|o| !o.period.is_empty());
-            body.push_str("<h3>Occupations before parliament</h3>");
-            body.push_str(&table_scroll("Occupations before parliament"));
-            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th>");
-            if has_org {
-                body.push_str("<th scope=\"col\">Organisation</th>");
-            }
-            if has_period {
-                body.push_str("<th class=\"num\" scope=\"col\">Period</th>");
-            }
-            body.push_str("</tr></thead><tbody>");
-            for o in &rows {
-                body.push_str(&format!("<tr><td>{}</td>", esc(&o.role)));
-                if has_org {
-                    body.push_str(&format!("<td>{}</td>", esc(&o.org)));
-                }
-                if has_period {
-                    body.push_str(&format!("<td class=\"num\">{}</td>", esc(&o.period)));
-                }
-                body.push_str("</tr>");
-            }
-            body.push_str("</tbody></table></div>");
-        }
+                .map(|&n| data::ordinal(n))
+                .collect::<Vec<_>>()
+                .join(", "))
+        ));
     }
+    if !background.honours.is_empty() {
+        body.push_str(&format!(
+            "<tr><th class=\"label\" scope=\"row\">Honours</th><td>{}</td></tr>",
+            esc(&background.honours.join("; "))
+        ));
+    }
+    body.push_str("</tbody></table></div>");
 
-    if let Some(positions) = positions {
-        // The Handbook records an office once per ministry, so a minister who
-        // served under Rudd, Gillard and Rudd again holds one office over one
-        // term three times. The table keeps one row per office and term and
-        // names every ministry it spanned; offices still held come first.
-        let mut rows: Vec<(&pollywiki_schema::PositionRecord, Vec<&str>)> = Vec::new();
-        for pos in positions {
-            let existing = rows.iter_mut().find(|(p, _)| {
-                p.role == pos.role && p.kind == pos.kind && p.from == pos.from && p.to == pos.to
-            });
-            match existing {
-                Some((_, ministries)) => {
-                    if let Some(ministry) = pos.ministry.as_deref() {
-                        if !ministries.contains(&ministry) {
-                            ministries.push(ministry);
-                        }
-                    }
-                }
-                None => rows.push((pos, pos.ministry.as_deref().into_iter().collect())),
-            }
-        }
-        rows.sort_by_key(|(p, _)| p.to.is_some());
-        body.push_str("<h2 id=\"positions\">Positions held</h2>");
-        body.push_str(&table_scroll("Positions held"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
-        for (pos, ministries) in &rows {
+    if !background.qualifications.is_empty() {
+        body.push_str(&table_scroll("Qualifications"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Qualification</th><th scope=\"col\">Institution</th></tr></thead><tbody>");
+        for q in &background.qualifications {
+            let parsed = parse_qualification(q);
             body.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-                esc(&pos.role),
-                // A shadow office that says so in its title needs no second
-                // label.
-                if pos.kind == pollywiki_schema::PositionKind::Shadow
-                    && !pos.role.starts_with("Shadow")
-                {
-                    " (shadow)"
-                } else {
-                    ""
-                },
-                esc(&ministries.join("; ")),
-                pos.from.as_deref().map(format_date).map(|d| esc(&d)).unwrap_or_default(),
-                pos.to
-                    .as_deref()
-                    .map(format_date)
-                    .map(|d| esc(&d))
-                    .unwrap_or_else(|| "current".to_string()),
+                "<tr><td>{}</td><td>{}</td></tr>",
+                esc(&parsed.qual),
+                esc(&parsed.institution)
             ));
         }
         body.push_str("</tbody></table></div>");
     }
-
-    if let Some(committees) = committees {
-        body.push_str("<h2 id=\"committees\">Committee service</h2>");
-        body.push_str(&table_scroll("Committee service"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Committee</th><th scope=\"col\">Role</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
-        let date = |d: Option<&str>| d.map(format_date).map(|d| esc(&d));
-        for c in committees {
-            // A role held on dates of its own within the membership says so.
-            let role = match (&c.role, &c.role_from) {
-                (Some(role), Some(from)) => format!(
-                    "{} from {}{}",
-                    esc(role),
-                    esc(&format_date(from)),
-                    date(c.role_to.as_deref())
-                        .map(|to| format!(" to {to}"))
-                        .unwrap_or_default()
-                ),
-                (Some(role), None) => esc(role),
-                (None, _) => "Member".to_string(),
-            };
-            body.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-                esc(&c.name),
-                if c.kind.is_empty() {
-                    String::new()
-                } else {
-                    format!(" <span class=\"sub\">{}</span>", esc(&c.kind))
-                },
-                role,
-                date(c.from.as_deref()).unwrap_or_default(),
-                date(c.to.as_deref()).unwrap_or_else(|| "current".to_string()),
-            ));
+    if !background.occupations.is_empty() {
+        let rows: Vec<Occupation> = background
+            .occupations
+            .iter()
+            .map(|o| parse_occupation(o))
+            .collect();
+        // A career of bare titles gets a one-column table, not two empty ones.
+        let has_org = rows.iter().any(|o| !o.org.is_empty());
+        let has_period = rows.iter().any(|o| !o.period.is_empty());
+        body.push_str("<h3>Occupations before parliament</h3>");
+        body.push_str(&table_scroll("Occupations before parliament"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th>");
+        if has_org {
+            body.push_str("<th scope=\"col\">Organisation</th>");
         }
-        body.push_str("</tbody></table></div><p class=\"note\">Memberships as the Parliamentary Handbook records them; current means no end date is recorded.</p>");
-    }
-
-    if let Some(elections) = elections {
-        body.push_str("<h2 id=\"elections\">Election history</h2>");
-        body.push_str(&table_scroll("Election history"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
-        for e in elections {
-            // A seat abolished at a redistribution has no page of its own; the
-            // contest stays on the record as plain text. A Senate count is the
-            // whole state's.
-            let seat = match (&e.senate, data.electorate_by_slug(&e.electorate_slug)) {
-                (Some(senate), _) => format!(
-                    "Senate, {}",
-                    esc(state_name(senate.state.as_str()).unwrap_or(senate.state.as_str()))
-                ),
-                (None, Some(_)) => format!(
-                    "<a href=\"/electorates/{}/\">{}</a>",
-                    e.electorate_slug,
-                    esc(&e.electorate_name)
-                ),
-                (None, None) => esc(&e.electorate_name),
-            };
-            let result = match (&e.senate, e.elected) {
-                (Some(senate), true) => match senate.elected_order {
-                    Some(order) => {
-                        format!("Elected {} of {}", data::ordinal(order), senate.vacancies)
-                    }
-                    None => "Elected".to_string(),
-                },
-                (_, true) => "Elected".to_string(),
-                (_, false) => "Not elected".to_string(),
-            };
-            body.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
-                esc(&e.event_name),
-                seat,
-                esc(&e.party),
-                to_fixed(e.pct.0, 2),
-                signed(e.swing),
-                result,
-            ));
-        }
-        body.push_str("</tbody></table></div><p class=\"note\">First-preference share of the formal vote at each event, matched by name within the member's state.");
-        if elections.iter().any(|e| e.senate.is_some()) {
-            body.push_str(" A Senate row gives the whole group's share of the state's formal vote, since most Senate votes are cast for a group above the line.");
-        }
-        body.push_str("</p>");
-    }
-
-    if let Some(expenses) = expenses {
-        // Rows are IPEA's own categories, the biggest over the quarters shown
-        // first; columns are quarters, newest first.
-        let quarters = &expenses[..expenses.len().min(4)];
-        let mut categories: Vec<(&str, f64)> = Vec::new();
-        for line in quarters.iter().flat_map(|q| &q.categories) {
-            match categories.iter_mut().find(|(c, _)| *c == line.category) {
-                Some((_, total)) => *total += line.amount.0,
-                None => categories.push((&line.category, line.amount.0)),
-            }
-        }
-        categories.sort_by(|a, b| b.1.total_cmp(&a.1));
-        body.push_str("<h2 id=\"expenses\">Parliamentary expenses</h2>");
-        body.push_str(&table_scroll("Parliamentary expenses"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Category</th>");
-        for q in quarters {
-            body.push_str(&format!(
-                "<th class=\"num\" scope=\"col\">{}</th>",
-                esc(&q.label)
-            ));
+        if has_period {
+            body.push_str("<th class=\"num\" scope=\"col\">Period</th>");
         }
         body.push_str("</tr></thead><tbody>");
-        for (category, _) in &categories {
-            body.push_str(&format!("<tr><td>{}</td>", esc(category)));
-            for q in quarters {
-                match q.categories.iter().find(|l| l.category == *category) {
-                    Some(line) => body.push_str(&format!(
-                        "<td class=\"num\">{}</td>",
-                        dollars(line.amount.0)
-                    )),
-                    None => body.push_str("<td class=\"num zero\">$0</td>"),
-                }
+        for o in &rows {
+            body.push_str(&format!("<tr><td>{}</td>", esc(&o.role)));
+            if has_org {
+                body.push_str(&format!("<td>{}</td>", esc(&o.org)));
+            }
+            if has_period {
+                body.push_str(&format!("<td class=\"num\">{}</td>", esc(&o.period)));
             }
             body.push_str("</tr>");
         }
-        body.push_str("</tbody><tfoot><tr><td>Total</td>");
-        for q in quarters {
-            body.push_str(&format!("<td class=\"num\">{}</td>", dollars(q.total.0)));
-        }
-        body.push_str("</tr></tfoot></table></div>");
-        body.push_str("<p class=\"note\">Expenditure as the Independent Parliamentary Expenses Authority publishes it each quarter, in its own categories, rounded to the dollar. Travel distances, office locations and roles differ, so totals do not compare between members. <a href=\"https://www.ipea.gov.au/reporting\">IPEA's reports and notes.</a></p>");
+        body.push_str("</tbody></table></div>");
     }
+    body
+}
 
-    if let Some(funding) = funding {
-        body.push_str("<h2 id=\"funding\">Funding disclosures</h2>");
-        if !funding.elections.is_empty() {
-            body.push_str(&table_scroll("Election returns"));
-            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th><th class=\"num\" scope=\"col\">Expenditure</th></tr></thead><tbody>");
-            for e in &funding.elections {
-                // A Senate candidate's return names the state as its electorate.
-                let senate = pollywiki_schema::STATES
-                    .iter()
-                    .any(|code| state_name(code) == Some(e.electorate.as_str()));
-                body.push_str(&format!(
-                    "<tr><td>{}</td><td>{}{}</td>{}</tr>",
-                    esc(&e.event),
-                    if senate { "Senate, " } else { "" },
-                    esc(&e.electorate),
-                    if e.nil {
-                        "<td class=\"nil\" colspan=\"3\">Nil return</td>".to_string()
-                    } else {
-                        format!(
-                            "<td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
-                            dollars(e.gifts as f64),
-                            locale_int(e.donors),
-                            dollars(e.expenditure as f64)
-                        )
+/// The offices a member has held, one row per office and term.
+fn positions_section(positions: &[PositionRecord]) -> String {
+    let mut body = String::new();
+    // The Handbook records an office once per ministry, so a minister who
+    // served under Rudd, Gillard and Rudd again holds one office over one
+    // term three times. The table keeps one row per office and term and
+    // names every ministry it spanned; offices still held come first.
+    let mut rows: Vec<(&pollywiki_schema::PositionRecord, Vec<&str>)> = Vec::new();
+    for pos in positions {
+        let existing = rows.iter_mut().find(|(p, _)| {
+            p.role == pos.role && p.kind == pos.kind && p.from == pos.from && p.to == pos.to
+        });
+        match existing {
+            Some((_, ministries)) => {
+                if let Some(ministry) = pos.ministry.as_deref() {
+                    if !ministries.contains(&ministry) {
+                        ministries.push(ministry);
                     }
-                ));
+                }
             }
-            body.push_str("</tbody></table></div>");
+            None => rows.push((pos, pos.ministry.as_deref().into_iter().collect())),
         }
-        if !funding.annual.is_empty() {
-            body.push_str(&table_scroll("Annual returns"));
-            body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Financial year</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th></tr></thead><tbody>");
-            for a in &funding.annual {
-                body.push_str(&format!(
-                    "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
-                    esc(&a.year),
-                    dollars(a.donations as f64),
-                    locale_int(a.donors)
-                ));
-            }
-            body.push_str("</tbody></table></div>");
-        }
-        body.push_str("<p class=\"note\">Returns as lodged with the AEC: a candidate's return covers the gifts received and electoral expenditure for that election, a member's annual return the gifts received in the financial year.");
-        if funding.elections.iter().any(|e| e.nil) {
-            body.push_str(" A nil return records no gifts or spending of the candidate's own. A party-endorsed candidate lodges one when the party or its campaign committee handled the campaign's money, and the party discloses it in its own returns.");
-        }
-        body.push_str(
-            " <a href=\"https://transparency.aec.gov.au\">AEC Transparency Register.</a></p>",
-        );
     }
+    rows.sort_by_key(|(p, _)| p.to.is_some());
+    body.push_str("<h2 id=\"positions\">Positions held</h2>");
+    body.push_str(&table_scroll("Positions held"));
+    body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Role</th><th scope=\"col\">Ministry</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
+    for (pos, ministries) in &rows {
+        body.push_str(&format!(
+            "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            esc(&pos.role),
+            // A shadow office that says so in its title needs no second
+            // label.
+            if pos.kind == pollywiki_schema::PositionKind::Shadow && !pos.role.starts_with("Shadow")
+            {
+                " (shadow)"
+            } else {
+                ""
+            },
+            esc(&ministries.join("; ")),
+            pos.from
+                .as_deref()
+                .map(format_date)
+                .map(|d| esc(&d))
+                .unwrap_or_default(),
+            pos.to
+                .as_deref()
+                .map(format_date)
+                .map(|d| esc(&d))
+                .unwrap_or_else(|| "current".to_string()),
+        ));
+    }
+    body.push_str("</tbody></table></div>");
+    body
+}
 
-    if !raised.is_empty() {
-        body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
-        body.push_str(&table_scroll("Bills raised"));
-        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Bill</th><th scope=\"col\">Parliament</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
-        for r in &raised {
+/// The committees a member has served on, with the role held in each.
+fn committees_section(committees: &[CommitteeService]) -> String {
+    let mut body = String::new();
+    body.push_str("<h2 id=\"committees\">Committee service</h2>");
+    body.push_str(&table_scroll("Committee service"));
+    body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Committee</th><th scope=\"col\">Role</th><th class=\"num\" scope=\"col\">From</th><th class=\"num\" scope=\"col\">To</th></tr></thead><tbody>");
+    let date = |d: Option<&str>| d.map(format_date).map(|d| esc(&d));
+    for c in committees {
+        // A role held on dates of its own within the membership says so.
+        let role = match (&c.role, &c.role_from) {
+            (Some(role), Some(from)) => format!(
+                "{} from {}{}",
+                esc(role),
+                esc(&format_date(from)),
+                date(c.role_to.as_deref())
+                    .map(|to| format!(" to {to}"))
+                    .unwrap_or_default()
+            ),
+            (Some(role), None) => esc(role),
+            (None, _) => "Member".to_string(),
+        };
+        body.push_str(&format!(
+            "<tr><td>{}{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            esc(&c.name),
+            if c.kind.is_empty() {
+                String::new()
+            } else {
+                format!(" <span class=\"sub\">{}</span>", esc(&c.kind))
+            },
+            role,
+            date(c.from.as_deref()).unwrap_or_default(),
+            date(c.to.as_deref()).unwrap_or_else(|| "current".to_string()),
+        ));
+    }
+    body.push_str("</tbody></table></div><p class=\"note\">Memberships as the Parliamentary Handbook records them; current means no end date is recorded.</p>");
+    body
+}
+
+/// Each election a member stood at: the seat, the party, their share of the
+/// first preferences and whether they were elected.
+fn elections_section(data: &SiteData, elections: &[ElectionContest]) -> String {
+    let mut body = String::new();
+    body.push_str("<h2 id=\"elections\">Election history</h2>");
+    body.push_str(&table_scroll("Election history"));
+    body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th scope=\"col\">Party</th><th class=\"num\" scope=\"col\">First pref %</th><th class=\"num\" scope=\"col\">Swing</th><th scope=\"col\">Result</th></tr></thead><tbody>");
+    for e in elections {
+        // A seat abolished at a redistribution has no page of its own; the
+        // contest stays on the record as plain text. A Senate count is the
+        // whole state's.
+        let seat = match (&e.senate, data.electorate_by_slug(&e.electorate_slug)) {
+            (Some(senate), _) => format!(
+                "Senate, {}",
+                esc(state_name(senate.state.as_str()).unwrap_or(senate.state.as_str()))
+            ),
+            (None, Some(_)) => format!(
+                "<a href=\"/electorates/{}/\">{}</a>",
+                e.electorate_slug,
+                esc(&e.electorate_name)
+            ),
+            (None, None) => esc(&e.electorate_name),
+        };
+        let result = match (&e.senate, e.elected) {
+            (Some(senate), true) => match senate.elected_order {
+                Some(order) => {
+                    format!("Elected {} of {}", data::ordinal(order), senate.vacancies)
+                }
+                None => "Elected".to_string(),
+            },
+            (_, true) => "Elected".to_string(),
+            (_, false) => "Not elected".to_string(),
+        };
+        body.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
+            esc(&e.event_name),
+            seat,
+            esc(&e.party),
+            to_fixed(e.pct.0, 2),
+            signed(e.swing),
+            result,
+        ));
+    }
+    body.push_str("</tbody></table></div><p class=\"note\">First-preference share of the formal vote at each event, matched by name within the member's state.");
+    if elections.iter().any(|e| e.senate.is_some()) {
+        body.push_str(" A Senate row gives the whole group's share of the state's formal vote, since most Senate votes are cast for a group above the line.");
+    }
+    body.push_str("</p>");
+    body
+}
+
+/// A member's parliamentary expenses, by IPEA's categories and quarters.
+fn expenses_section(expenses: &[ExpenseQuarter]) -> String {
+    let mut body = String::new();
+    // Rows are IPEA's own categories, the biggest over the quarters shown
+    // first; columns are quarters, newest first.
+    let quarters = &expenses[..expenses.len().min(4)];
+    let mut categories: Vec<(&str, f64)> = Vec::new();
+    for line in quarters.iter().flat_map(|q| &q.categories) {
+        match categories.iter_mut().find(|(c, _)| *c == line.category) {
+            Some((_, total)) => *total += line.amount.0,
+            None => categories.push((&line.category, line.amount.0)),
+        }
+    }
+    categories.sort_by(|a, b| b.1.total_cmp(&a.1));
+    body.push_str("<h2 id=\"expenses\">Parliamentary expenses</h2>");
+    body.push_str(&table_scroll("Parliamentary expenses"));
+    body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Category</th>");
+    for q in quarters {
+        body.push_str(&format!(
+            "<th class=\"num\" scope=\"col\">{}</th>",
+            esc(&q.label)
+        ));
+    }
+    body.push_str("</tr></thead><tbody>");
+    for (category, _) in &categories {
+        body.push_str(&format!("<tr><td>{}</td>", esc(category)));
+        for q in quarters {
+            match q.categories.iter().find(|l| l.category == *category) {
+                Some(line) => body.push_str(&format!(
+                    "<td class=\"num\">{}</td>",
+                    dollars(line.amount.0)
+                )),
+                None => body.push_str("<td class=\"num zero\">$0</td>"),
+            }
+        }
+        body.push_str("</tr>");
+    }
+    body.push_str("</tbody><tfoot><tr><td>Total</td>");
+    for q in quarters {
+        body.push_str(&format!("<td class=\"num\">{}</td>", dollars(q.total.0)));
+    }
+    body.push_str("</tr></tfoot></table></div>");
+    body.push_str("<p class=\"note\">Expenditure as the Independent Parliamentary Expenses Authority publishes it each quarter, in its own categories, rounded to the dollar. Travel distances, office locations and roles differ, so totals do not compare between members. <a href=\"https://www.ipea.gov.au/reporting\">IPEA's reports and notes.</a></p>");
+    body
+}
+
+/// A member's funding disclosures: their election and annual returns.
+fn funding_section(funding: &PersonFunding) -> String {
+    let mut body = String::new();
+    body.push_str("<h2 id=\"funding\">Funding disclosures</h2>");
+    if !funding.elections.is_empty() {
+        body.push_str(&table_scroll("Election returns"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Election</th><th scope=\"col\">Electorate</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th><th class=\"num\" scope=\"col\">Expenditure</th></tr></thead><tbody>");
+        for e in &funding.elections {
+            // A Senate candidate's return names the state as its electorate.
+            let senate = pollywiki_schema::STATES
+                .iter()
+                .any(|code| state_name(code) == Some(e.electorate.as_str()));
             body.push_str(&format!(
-                "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                r.bill.id,
-                esc(&r.bill.title),
-                data::ordinal(r.bill.parliament),
-                r.role,
-                esc(&r.bill.status),
+                "<tr><td>{}</td><td>{}{}</td>{}</tr>",
+                esc(&e.event),
+                if senate { "Senate, " } else { "" },
+                esc(&e.electorate),
+                if e.nil {
+                    "<td class=\"nil\" colspan=\"3\">Nil return</td>".to_string()
+                } else {
+                    format!(
+                        "<td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>",
+                        dollars(e.gifts as f64),
+                        locale_int(e.donors),
+                        dollars(e.expenditure as f64)
+                    )
+                }
             ));
         }
-        body.push_str("</tbody></table></div><p class=\"note\">Sponsor marks the member's own bill; Introduced marks bills they moved, typically as the responsible minister.</p>");
+        body.push_str("</tbody></table></div>");
     }
+    if !funding.annual.is_empty() {
+        body.push_str(&table_scroll("Annual returns"));
+        body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Financial year</th><th class=\"num\" scope=\"col\">Donations</th><th class=\"num\" scope=\"col\">Donors</th></tr></thead><tbody>");
+        for a in &funding.annual {
+            body.push_str(&format!(
+                "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+                esc(&a.year),
+                dollars(a.donations as f64),
+                locale_int(a.donors)
+            ));
+        }
+        body.push_str("</tbody></table></div>");
+    }
+    body.push_str("<p class=\"note\">Returns as lodged with the AEC: a candidate's return covers the gifts received and electoral expenditure for that election, a member's annual return the gifts received in the financial year.");
+    if funding.elections.iter().any(|e| e.nil) {
+        body.push_str(" A nil return records no gifts or spending of the candidate's own. A party-endorsed candidate lodges one when the party or its campaign committee handled the campaign's money, and the party discloses it in its own returns.");
+    }
+    body.push_str(
+        " <a href=\"https://transparency.aec.gov.au\">AEC Transparency Register.</a></p>",
+    );
+    body
+}
 
-    // The record runs newest first under month dividers, as the divisions
-    // index does: each month is its own row group, headed by its name, and a
-    // date drops the year its divider already gives.
+/// The bills a member raised, with their role in each.
+fn bills_raised_section(raised: &[Raised]) -> String {
+    let mut body = String::new();
+    body.push_str("<h2 id=\"bills-raised\">Bills raised</h2>");
+    body.push_str(&table_scroll("Bills raised"));
+    body.push_str("<table><thead data-pagefind-ignore><tr><th scope=\"col\">Bill</th><th scope=\"col\">Parliament</th><th scope=\"col\">Role</th><th scope=\"col\">Status</th></tr></thead><tbody>");
+    for r in raised {
+        body.push_str(&format!(
+            "<tr><td><a href=\"/bills/{}/\">{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            r.bill.id,
+            esc(&r.bill.title),
+            data::ordinal(r.bill.parliament),
+            r.role,
+            esc(&r.bill.status),
+        ));
+    }
+    body.push_str("</tbody></table></div><p class=\"note\">Sponsor marks the member's own bill; Introduced marks bills they moved, typically as the responsible minister.</p>");
+    body
+}
+
+/// The record runs newest first under month dividers, as the divisions
+/// index does: each month is its own row group, headed by its name, and a
+/// date drops the year its divider already gives.
+fn voting_record(votes: &[data::PersonVote]) -> String {
+    let mut body = String::new();
     if votes.is_empty() {
         body.push_str("<h2 id=\"voting-record\">Voting record</h2>");
         body.push_str("<p class=\"note\">No division votes recorded yet for this parliament. Voting records appear once the They Vote For You sync runs.</p>");
@@ -1384,7 +1502,13 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         }
         body.push_str("</table></div>");
     }
+    body
+}
 
+/// A profile's credits: the photo's, then every source the page draws on. The
+/// flags say whether the expenses, funding and voting record are shown.
+fn person_sources(person: &Person, expenses: bool, funding: bool, voted: bool) -> String {
+    let mut body = String::new();
     if let Some(photo) = &person.photo {
         body.push_str(&format!(
             "<p class=\"attribution\">Photo: {} ({}), via Wikimedia Commons.</p>",
@@ -1404,26 +1528,28 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         } else {
             ""
         },
-        if expenses.is_some() {
+        if expenses {
             ", IPEA (CC BY 3.0 AU)"
         } else {
             ""
         },
-        if funding.is_some() {
+        if funding {
             ", AEC disclosures (CC BY 4.0)"
         } else {
             ""
         },
-        if !votes.is_empty() {
+        if voted {
             ", They Vote For You (ODbL)"
         } else {
             ""
         },
     ));
-    body.push_str("</article>");
+    body
+}
 
-    let description = format!("{seat}. Voting record and service details from official sources.");
-    let path = format!("/people/{}/", person.slug);
+/// The member as a schema.org Person, with their photo, party and Wikipedia
+/// page where the record has them.
+fn person_jsonld(data: &SiteData, person: &Person, seat: &str, path: &str) -> serde_json::Value {
     let mut person_ld = serde_json::json!({
         "@context": "https://schema.org",
         "@type": "Person",
@@ -1444,21 +1570,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
     if let Some(wikipedia) = &person.links.wikipedia {
         person_ld["sameAs"] = serde_json::json!(wikipedia);
     }
-    let mut page = Page::new(person.name.clone(), Some(description), path.clone(), body);
-    page.lastmod = votes.iter().map(|v| v.division.date.clone()).max();
-    page.og_type = "profile";
-    page.jsonld = Some(jsonld_script(vec![
-        person_ld,
-        breadcrumb(
-            &data.site_url,
-            &[
-                ("pollywiki", "/"),
-                ("People", "/people/"),
-                (&person.name, &path),
-            ],
-        ),
-    ]));
-    page
+    person_ld
 }
 
 pub fn divisions_index(data: &SiteData) -> Page {
