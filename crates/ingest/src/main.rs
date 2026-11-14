@@ -1,5 +1,6 @@
 mod derive;
 mod endpoints;
+mod html;
 mod http;
 mod js_url;
 mod manifest;

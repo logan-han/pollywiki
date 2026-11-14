@@ -7,8 +7,9 @@
 //! a stored one is kept until ParlWork links a different file.
 
 use crate::endpoints::Endpoints;
-use crate::http::fetch_bytes;
-use crate::sources::aph_bills::{strip_html, whole_memorandum, ParlWorkDetail, BROWSER_UA};
+use crate::html::strip_html;
+use crate::http::{fetch_bytes, BROWSER_UA};
+use crate::sources::aph_bills::{whole_memorandum, ParlWorkDetail};
 use crate::store::Store;
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;

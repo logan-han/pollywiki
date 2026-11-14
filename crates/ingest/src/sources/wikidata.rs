@@ -506,7 +506,7 @@ pub(crate) async fn fetch_commons_licences(
                         .and_then(Value::as_str)
                         .unwrap_or("unknown")
                         .to_string(),
-                    attribution: strip_html(
+                    attribution: commons_attribution(
                         meta.pointer("/Artist/value")
                             .and_then(Value::as_str)
                             .unwrap_or("Wikimedia Commons"),
@@ -518,7 +518,9 @@ pub(crate) async fn fetch_commons_licences(
     Ok(out)
 }
 
-fn strip_html(html: &str) -> String {
+/// A Commons credit as plain text: its tags dropped, or "Wikimedia Commons"
+/// where nothing else is left.
+fn commons_attribution(html: &str) -> String {
     static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
     let stripped = TAGS.replace_all(html, "").trim().to_string();
     if stripped.is_empty() {
@@ -612,9 +614,12 @@ mod tests {
 
     #[test]
     fn attribution_falls_back_when_the_credit_is_only_markup() {
-        assert_eq!(strip_html("<a href=\"x\">Jane Smith</a>"), "Jane Smith");
-        assert_eq!(strip_html("<span></span>"), "Wikimedia Commons");
-        assert_eq!(strip_html("   "), "Wikimedia Commons");
+        assert_eq!(
+            commons_attribution("<a href=\"x\">Jane Smith</a>"),
+            "Jane Smith"
+        );
+        assert_eq!(commons_attribution("<span></span>"), "Wikimedia Commons");
+        assert_eq!(commons_attribution("   "), "Wikimedia Commons");
     }
 
     #[test]

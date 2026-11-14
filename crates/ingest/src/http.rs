@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 const USER_AGENT: &str = "pollywiki/0.1 (https://pollywiki.au; contact: logan@han.life)";
 
+/// A browser's User-Agent, for hosts that refuse an identifying one.
+pub const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
+
 static LAST_REQUEST_AT: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 
 fn client() -> &'static reqwest::Client {

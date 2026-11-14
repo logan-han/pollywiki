@@ -1,5 +1,6 @@
 use crate::endpoints::Endpoints;
-use crate::http::fetch_json;
+use crate::html::strip_html;
+use crate::http::{fetch_json, BROWSER_UA};
 use crate::store::Store;
 use anyhow::{anyhow, Result};
 use pollywiki_schema::{Bill, BillLinks, BillRaiser, House, TimelineStep};
@@ -7,16 +8,6 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::LazyLock;
-
-/// Bills before the federal parliament, from the JSON endpoints behind
-/// ParlWork (parlwork.aph.gov.au), the SPA that powers APH's own bills list.
-///
-/// The APH WAF rejects every non-browser User-Agent, including honest bot
-/// strings with contact details, so this source presents a browser UA. Volume
-/// stays polite: list pages plus detail fetches only for bills whose list
-/// timestamp moved. Endpoints are undocumented and may change; failures are
-/// reported loudly, never written.
-pub(crate) const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 10;
@@ -124,6 +115,14 @@ pub struct ParlWorkProgressState {
     pub update_date: Option<String>,
 }
 
+/// Bills before the federal parliament, from the JSON endpoints behind
+/// ParlWork (parlwork.aph.gov.au), the SPA that powers APH's own bills list.
+///
+/// The APH WAF rejects every non-browser User-Agent, including honest bot
+/// strings with contact details, so this source presents a browser UA. Volume
+/// stays polite: list pages plus detail fetches only for bills whose list
+/// timestamp moved. Endpoints are undocumented and may change; failures are
+/// reported loudly, never written.
 pub async fn sync_aph_bills(store: &Store, parliament: i64, endpoints: &Endpoints) -> Result<()> {
     let opts = endpoints.opts(2000).with_header("user-agent", BROWSER_UA);
     let list_url = |take: usize, page: usize| {
@@ -293,8 +292,6 @@ pub async fn sync_aph_history(store: &Store, endpoints: &Endpoints) -> Result<()
     }
 }
 
-/// `{ ...existing, ...toBill(item) }`: fresh list fields win; only the fields
-/// the list response never carries survive from the stored record.
 /// True when stored prose still carries an HTML entity, so the record predates
 /// the decoding fix and is worth rebuilding from the cached raw response.
 fn carries_html_entity(bill: &Bill) -> bool {
@@ -324,6 +321,8 @@ fn with_list_fields(existing: Bill, fresh: Bill) -> Bill {
     }
 }
 
+/// `{ ...existing, ...toBill(item) }`: fresh list fields win; only the fields
+/// the list response never carries survive from the stored record.
 fn merge_existing(existing: &Bill, fresh: Bill) -> Bill {
     Bill {
         bill_type: existing.bill_type.clone(),
@@ -536,56 +535,6 @@ pub fn dot_net_date(value: Option<&str>) -> Option<String> {
     };
     let adjusted = chrono::DateTime::from_timestamp_millis(millis + offset_minutes * 60_000)?;
     Some(adjusted.format("%Y-%m-%d").to_string())
-}
-
-fn entity_for(name: &str) -> Option<&'static str> {
-    match name.to_lowercase().as_str() {
-        "amp" => Some("&"),
-        "nbsp" => Some(" "),
-        "quot" => Some("\""),
-        "apos" => Some("'"),
-        "lsquo" => Some("\u{2018}"),
-        "rsquo" => Some("\u{2019}"),
-        "ldquo" => Some("\u{201C}"),
-        "rdquo" => Some("\u{201D}"),
-        "ndash" => Some("\u{2013}"),
-        "mdash" => Some("\u{2014}"),
-        "hellip" => Some("\u{2026}"),
-        "lt" => Some("<"),
-        "gt" => Some(">"),
-        _ => None,
-    }
-}
-
-pub fn strip_html(html: &str) -> String {
-    static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
-    static DEC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#(\d+);").unwrap());
-    static HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&#x([0-9a-f]+);").unwrap());
-    static NAMED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)&([a-z]+);").unwrap());
-    static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-
-    let text = TAGS.replace_all(html, " ");
-    let text = DEC.replace_all(&text, |caps: &regex::Captures| {
-        caps[1]
-            .parse::<u32>()
-            .ok()
-            .and_then(char::from_u32)
-            .map(String::from)
-            .unwrap_or_default()
-    });
-    let text = HEX.replace_all(&text, |caps: &regex::Captures| {
-        u32::from_str_radix(&caps[1], 16)
-            .ok()
-            .and_then(char::from_u32)
-            .map(String::from)
-            .unwrap_or_default()
-    });
-    let text = NAMED.replace_all(&text, |caps: &regex::Captures| {
-        entity_for(&caps[1])
-            .map(str::to_string)
-            .unwrap_or_else(|| caps[0].to_string())
-    });
-    SPACES.replace_all(&text, " ").trim().to_string()
 }
 
 #[cfg(test)]
@@ -830,20 +779,6 @@ mod tests {
         );
         assert_eq!(dot_net_date(Some("not a date")), None);
         assert_eq!(dot_net_date(None), None);
-    }
-
-    #[test]
-    fn html_stripping_decodes_named_decimal_and_hex_entities() {
-        assert_eq!(
-            strip_html("<p>A&nbsp;bill &amp; a&#8201;note &#x2013; done</p>"),
-            "A bill & a note \u{2013} done"
-        );
-        assert_eq!(
-            strip_html("<i>Caf&eacute;</i> &unknown;"),
-            "Caf&eacute; &unknown;"
-        );
-        assert_eq!(strip_html("  <b>  spaced  </b>  "), "spaced");
-        assert_eq!(strip_html(""), "");
     }
 
     #[test]

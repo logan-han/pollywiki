@@ -11,8 +11,8 @@
 
 use super::{BillRoll, RollBill};
 use crate::endpoints::Endpoints;
+use crate::html::strip_html;
 use crate::http::{fetch_json, FetchOpts};
-use crate::sources::aph_bills::strip_html;
 use crate::store::Store;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Datelike;

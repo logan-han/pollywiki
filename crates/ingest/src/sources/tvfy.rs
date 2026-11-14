@@ -1,5 +1,5 @@
 use crate::endpoints::Endpoints;
-use crate::http::fetch_json;
+use crate::http::{fetch_json, BROWSER_UA};
 use crate::store::Store;
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
@@ -10,8 +10,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const PAGE_SIZE: usize = 100;
-
-const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 
 /// Per-run request budget; raise via env for a supervised backfill.
 fn request_cap() -> u32 {
