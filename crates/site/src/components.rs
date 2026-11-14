@@ -1,5 +1,5 @@
 use crate::data::{
-    division_key, division_stage, first_sentence, format_date, js_float, plain_text, short_date,
+    division_path, division_stage, first_sentence, format_date, js_float, plain_text, short_date,
     DivisionSeries, SiteData,
 };
 use crate::html::{esc, esc_attr};
@@ -60,6 +60,22 @@ pub fn chamber_chip(house: House) -> String {
     match house {
         House::Senate => "<span class=\"chip senate\">Senate</span>".to_string(),
         House::Representatives => "<span class=\"chip house\">House</span>".to_string(),
+    }
+}
+
+/// A chamber in one word: "House" or "Senate".
+pub fn chamber_word(house: House) -> &'static str {
+    match house {
+        House::Senate => "Senate",
+        House::Representatives => "House",
+    }
+}
+
+/// A chamber's full name.
+pub fn full_chamber(house: House) -> &'static str {
+    match house {
+        House::Senate => "Senate",
+        House::Representatives => "House of Representatives",
     }
 }
 
@@ -179,21 +195,13 @@ pub fn sitting_day_row(division: &Division, current: bool) -> String {
 /// the title itself, which spares the index a fifth of its weight. The label
 /// is what the title column shows; a current row shows it unlinked.
 fn ledger_li(division: &Division, when: &str, label: &str, current: bool) -> String {
-    let chamber = match division.house {
-        House::Senate => "Senate",
-        House::Representatives => "House",
-    };
+    let chamber = chamber_word(division.house);
     let (attrs, what) = if current {
         (" aria-current=\"true\"", esc(label))
     } else {
         (
             "",
-            format!(
-                "<a href=\"/divisions/{}/{}/\">{}</a>",
-                division.house,
-                division_key(division),
-                esc(label)
-            ),
+            format!("<a href=\"{}\">{}</a>", division_path(division), esc(label)),
         )
     };
     format!(
@@ -249,10 +257,7 @@ pub fn series_row_in_month(data: &SiteData, series: &DivisionSeries) -> String {
 /// a credit under the steps; without, a step reads as its stage, or as its
 /// division number when every step shares one.
 fn series_li(data: &SiteData, series: &DivisionSeries, when: &str, describe: bool) -> String {
-    let chamber = match series.house {
-        House::Senate => "Senate",
-        House::Representatives => "House",
-    };
+    let chamber = chamber_word(series.house);
     let carried = series
         .divisions
         .iter()
@@ -301,7 +306,7 @@ fn series_li(data: &SiteData, series: &DivisionSeries, when: &str, describe: boo
     let mut steps = String::new();
     let (mut machine_written, mut volunteer_written) = (false, false);
     for d in &series.divisions {
-        let href = esc_attr(&format!("/divisions/{}/{}/", d.house, division_key(d)));
+        let href = esc_attr(&division_path(d));
         let stage = if shared_stage.is_some() {
             None
         } else {
@@ -601,11 +606,7 @@ pub fn person_card(data: &SiteData, person: &Person) -> String {
 }
 
 pub fn seat_bar(data: &SiteData, house: House) -> String {
-    let chamber = match house {
-        House::Senate => "Senate",
-        House::Representatives => "House of Representatives",
-    };
-    composition_bar(chamber, &federal_segments(data, house), 0)
+    composition_bar(full_chamber(house), &federal_segments(data, house), 0)
 }
 
 /// A federal chamber's parties by seats held, largest first.

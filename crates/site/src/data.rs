@@ -2,12 +2,14 @@
 //! the ingest derive step (BUNDLES_DIR, or the committed sample data) once at
 //! build time and exposes typed lookups. Pages template; they never compute.
 
+use crate::html::esc;
 use anyhow::{Context, Result};
 use indexmap::IndexMap;
 pub use pollywiki_schema::title_from_slug;
 use pollywiki_schema::{
     js_compare, Bill, Division, Electorate, ElectorateResult, House, Meta, Party, Person,
-    StateChamber, StateCode, StateParliament, Vote, VoteCast, BUNDLE_STATES,
+    StateChamber, StateCode, StateParliament, Vote, VoteCast, BUNDLE_BILLS, BUNDLE_DIVISIONS,
+    BUNDLE_ELECTIONS, BUNDLE_ELECTORATES, BUNDLE_PARTIES, BUNDLE_PEOPLE, BUNDLE_STATES,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,17 +57,17 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(dir: &Path, file: &str) -> Result<
 
 impl SiteData {
     pub fn load(bundles_dir: &Path, site_url: &str) -> Result<SiteData> {
-        let people: Vec<Person> = read_jsonl(bundles_dir, "people.jsonl")?;
-        let mut parties: Vec<Party> = read_jsonl(bundles_dir, "parties.jsonl")?;
+        let people: Vec<Person> = read_jsonl(bundles_dir, BUNDLE_PEOPLE)?;
+        let mut parties: Vec<Party> = read_jsonl(bundles_dir, BUNDLE_PARTIES)?;
         parties.sort_by(|a, b| {
             seat_total(b)
                 .cmp(&seat_total(a))
                 .then_with(|| js_compare(&a.name, &b.name))
         });
-        let electorates: Vec<Electorate> = read_jsonl(bundles_dir, "electorates.jsonl")?;
-        let divisions: Vec<Division> = read_jsonl(bundles_dir, "divisions.jsonl")?;
-        let bills: Vec<Bill> = read_jsonl(bundles_dir, "bills.jsonl")?;
-        let elections: Vec<ElectorateResult> = read_jsonl(bundles_dir, "elections.jsonl")?;
+        let electorates: Vec<Electorate> = read_jsonl(bundles_dir, BUNDLE_ELECTORATES)?;
+        let divisions: Vec<Division> = read_jsonl(bundles_dir, BUNDLE_DIVISIONS)?;
+        let bills: Vec<Bill> = read_jsonl(bundles_dir, BUNDLE_BILLS)?;
+        let elections: Vec<ElectorateResult> = read_jsonl(bundles_dir, BUNDLE_ELECTIONS)?;
         let mut states: Vec<StateParliament> = read_jsonl(bundles_dir, BUNDLE_STATES)?;
         states.sort_by_key(|s| {
             pollywiki_schema::STATES
@@ -372,13 +374,13 @@ impl SiteData {
         let mut pos = 0;
         let slice = |from: usize, to: usize| chars[from..to].iter().collect::<String>();
         for span in &spans {
-            out.push_str(&escape_html(&slice(pos, span.start)));
+            out.push_str(&esc(&slice(pos, span.start)));
             out.push_str(&format!("<a href=\"{}\">", span.href));
-            out.push_str(&escape_html(&slice(span.start, span.end)));
+            out.push_str(&esc(&slice(span.start, span.end)));
             out.push_str("</a>");
             pos = span.end;
         }
-        out.push_str(&escape_html(&slice(pos, chars.len())));
+        out.push_str(&esc(&slice(pos, chars.len())));
         out
     }
 }
@@ -465,6 +467,11 @@ pub fn division_key(division: &Division) -> String {
     format!("{}-{}", division.date, division.number)
 }
 
+/// A division's page, under its house.
+pub fn division_path(division: &Division) -> String {
+    format!("/divisions/{}/{}/", division.house, division_key(division))
+}
+
 /// A state or territory parliament's page.
 pub fn state_path(state: StateCode) -> String {
     format!("/states/{}/", state.as_str().to_lowercase())
@@ -488,14 +495,6 @@ pub fn state_bills_path(state: StateCode) -> String {
 /// One state bill's page, under its parliament's bills.
 pub fn state_bill_path(state: StateCode, slug: &str) -> String {
     format!("{}{slug}/", state_bills_path(state))
-}
-
-pub fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 /// Headline size tier by title length, decided at build time so an 80-char
@@ -753,6 +752,11 @@ pub fn parse_qualification(text: &str) -> Qualification {
             institution: text[at + 2..].to_string(),
         },
     }
+}
+
+/// The date part of an ISO timestamp.
+pub fn iso_day(iso: &str) -> String {
+    iso.chars().take(10).collect()
 }
 
 pub fn format_date(iso: &str) -> String {

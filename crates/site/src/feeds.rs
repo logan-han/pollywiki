@@ -2,11 +2,11 @@
 //! and bills as they move. Newest 50 each, built from the same bundles the
 //! pages read.
 
-use crate::data::{division_key, SiteData};
+use crate::components::chamber_word;
+use crate::data::{division_path, SiteData};
 use crate::html::{esc, esc_attr};
 use crate::pages::latest_step;
 use anyhow::Result;
-use pollywiki_schema::House;
 use std::path::Path;
 
 const LIMIT: usize = 50;
@@ -14,13 +14,6 @@ const LIMIT: usize = 50;
 /// Atom wants a timestamp; the record only ever carries a date.
 fn as_timestamp(date: &str) -> String {
     format!("{date}T00:00:00Z")
-}
-
-fn chamber_word(house: House) -> &'static str {
-    match house {
-        House::Senate => "Senate",
-        House::Representatives => "House",
-    }
 }
 
 struct Entry {
@@ -74,8 +67,8 @@ fn write(out_dir: &Path, index_path: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn write_feeds(out_dir: &Path, site_url: &str, data: &SiteData) -> Result<()> {
-    let origin = site_url.trim_end_matches('/');
+pub fn write_feeds(out_dir: &Path, data: &SiteData) -> Result<()> {
+    let origin = &data.site_url;
 
     // Divisions already arrive newest first from the derive step.
     let divisions: Vec<Entry> = data
@@ -84,7 +77,7 @@ pub fn write_feeds(out_dir: &Path, site_url: &str, data: &SiteData) -> Result<()
         .take(LIMIT)
         .map(|d| Entry {
             title: d.name.clone(),
-            path: format!("/divisions/{}/{}/", d.house, division_key(d)),
+            path: division_path(d),
             updated: as_timestamp(&d.date),
             summary: format!(
                 "{} {}\u{2013}{} \u{b7} {}",

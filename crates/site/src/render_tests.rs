@@ -112,7 +112,7 @@ fn plain(html: &str) -> String {
 }
 
 fn render(data: &SiteData, page: &Page) -> String {
-    layout::render(data, SITE_URL, CSS_HREF, page)
+    layout::render(data, CSS_HREF, page)
 }
 
 /// The single JSON-LD block on a page, parsed.
@@ -2177,7 +2177,7 @@ fn seat_bars_mark_the_majority_and_link_each_party() {
 fn feeds_are_well_formed_and_newest_first() {
     let data = sample_data();
     let out = tempdir();
-    feeds::write_feeds(&out, SITE_URL, &data).expect("feeds write");
+    feeds::write_feeds(&out, &data).expect("feeds write");
 
     for (rel, expected_title) in [
         ("divisions/feed.xml", "pollywiki: divisions"),
@@ -2609,7 +2609,7 @@ fn the_sitemap_sorts_naturally_and_dates_what_it_can() {
 fn navigation_pages_ask_not_to_be_indexed() {
     let data = sample_data();
     let robots = |page: &Page| {
-        crate::layout::render(&data, SITE_URL, "/site.css", page)
+        crate::layout::render(&data, "/site.css", page)
             .contains("<meta name=\"robots\" content=\"noindex, follow\">")
     };
     assert!(robots(&pages::search_page()), "search page needs noindex");

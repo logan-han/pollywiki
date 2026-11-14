@@ -179,9 +179,7 @@ impl Cards {
             .map(|(size, _, lines)| (size, lines))
             .unwrap_or_else(|| (40.0, wrap(&serif, &bill.title, 40.0, COLUMN, 6)));
 
-        let mut out = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\"><rect width=\"{W}\" height=\"{H}\" fill=\"{PAPER}\"/>"
-        );
+        let mut out = canvas();
         out.push_str(&format!(
             "<text x=\"{CENTRE}\" y=\"74\" text-anchor=\"middle\" font-family=\"{mono}\" font-size=\"20\" font-weight=\"500\" letter-spacing=\"1.2\" fill=\"{chamber_ink}\">{}</text>",
             esc(&format!(
@@ -250,9 +248,7 @@ impl Cards {
             .map(|(short, _, _)| *short)
             .collect::<Vec<_>>()
             .join("  ");
-        let mut out = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\"><rect width=\"{W}\" height=\"{H}\" fill=\"{PAPER}\"/>"
-        );
+        let mut out = canvas();
         // Centred, so the square a chat app crops to keeps the wordmark whole.
         out.push_str(&format!(
             "<text x=\"{CENTRE}\" y=\"96\" text-anchor=\"middle\" font-family=\"{mono}\" font-size=\"18\" letter-spacing=\"2.2\" fill=\"{FAINT}\">THE AUSTRALIAN PARLIAMENTARY RECORD</text>"
@@ -289,19 +285,7 @@ impl Cards {
     }
 
     fn render(&self, division: &Division) -> Result<Vec<u8>> {
-        let svg = self.svg(division)?;
-        let tree = usvg::Tree::from_str(&svg, &self.options)
-            .map_err(|e| anyhow::anyhow!("usvg parse: {e}"))?;
-        let mut pixmap =
-            tiny_skia::Pixmap::new(W as u32, H as u32).context("allocating the card pixmap")?;
-        resvg::render(
-            &tree,
-            tiny_skia::Transform::identity(),
-            &mut pixmap.as_mut(),
-        );
-        pixmap
-            .encode_png()
-            .map_err(|e| anyhow::anyhow!("png encode: {e}"))
+        self.rasterise(&self.svg(division)?)
     }
 
     fn svg(&self, division: &Division) -> Result<String> {
@@ -330,12 +314,7 @@ impl Cards {
         let aye_width = division.ayes as f64 / total * INNER;
 
         let mut out = String::with_capacity(4 * 1024);
-        out.push_str(&format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\">"
-        ));
-        out.push_str(&format!(
-            "<rect width=\"{W}\" height=\"{H}\" fill=\"{PAPER}\"/>"
-        ));
+        out.push_str(&canvas());
 
         // The chamber in its own colour, as the page's meta line sets it, with
         // the division number and date right-aligned on the same line.
@@ -409,6 +388,13 @@ impl Cards {
         out.push_str("</svg>");
         Ok(out)
     }
+}
+
+/// A card's opening: the SVG at the card's size over a full sheet of paper.
+fn canvas() -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{W}\" height=\"{H}\" viewBox=\"0 0 {W} {H}\"><rect width=\"{W}\" height=\"{H}\" fill=\"{PAPER}\"/>"
+    )
 }
 
 /// A section rule, full ink as the pages draw theirs.

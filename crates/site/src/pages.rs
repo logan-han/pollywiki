@@ -3,13 +3,14 @@
 //! matching an earlier build byte-for-byte no longer applies.
 
 use crate::components::{
-    avatar, bill_dots, chamber_chip, composition_bar, federal_segments, group_chip,
-    group_chip_labelled, ledger_month, ledger_row_labelled, mini_bar, month_jump, month_label,
-    person_card, portrait, result_chip, result_word, seat_bar, series_row, series_row_in_month,
-    sitting_day_row, vote_bar, BarSegment, BILL_DOTS_LEGEND, GROUP_FALLBACK_COLOUR,
+    avatar, bill_dots, chamber_chip, chamber_word, composition_bar, federal_segments, full_chamber,
+    group_chip, group_chip_labelled, ledger_month, ledger_row_labelled, mini_bar, month_jump,
+    month_label, person_card, portrait, result_chip, result_word, seat_bar, series_row,
+    series_row_in_month, sitting_day_row, vote_bar, BarSegment, BILL_DOTS_LEGEND,
+    GROUP_FALLBACK_COLOUR,
 };
 use crate::data::{
-    self, division_key, format_date, locale_int, parse_bill_summary, parse_occupation,
+    self, division_path, format_date, iso_day, locale_int, parse_bill_summary, parse_occupation,
     parse_qualification, short_date, state_bill_path, state_bills_path, state_member_path,
     state_members_path, state_name, state_path, title_from_slug, title_tier, to_fixed, Occupation,
     SiteData,
@@ -171,20 +172,6 @@ fn newest_bill_date(data: &SiteData) -> Option<String> {
         .iter()
         .filter_map(|b| latest_step(b).map(|s| s.date.clone()))
         .max()
-}
-
-fn chamber_word(house: House) -> &'static str {
-    match house {
-        House::Senate => "Senate",
-        House::Representatives => "House",
-    }
-}
-
-fn full_chamber(house: House) -> &'static str {
-    match house {
-        House::Senate => "Senate",
-        House::Representatives => "House of Representatives",
-    }
 }
 
 /// Pill bucket for the bills index: still before a chamber, already law, or
@@ -1395,11 +1382,10 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             ));
             for v in month {
                 body.push_str(&format!(
-                    "<tr><td class=\"date\"><time datetime=\"{}\">{}</time></td><td><a href=\"/divisions/{}/{}/\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
+                    "<tr><td class=\"date\"><time datetime=\"{}\">{}</time></td><td><a href=\"{}\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
                     esc_attr(&v.division.date),
                     esc(&short_date(&v.division.date)),
-                    v.division.house,
-                    division_key(v.division),
+                    division_path(v.division),
                     esc(&v.division.name),
                     match (v.vote, v.against_group_majority) {
                         (Vote::Aye, true) => "vote-chip aye rebel",
@@ -1793,7 +1779,7 @@ pub fn division_page(data: &SiteData, division: &Division) -> Page {
         division.ayes,
         division.noes
     );
-    let path = format!("/divisions/{}/{}/", division.house, division_key(division));
+    let path = division_path(division);
     let mut page = Page::new(division.name.clone(), Some(description), path.clone(), body);
     page.footer_note = footer_note;
     page.og_type = "article";
@@ -2051,12 +2037,7 @@ fn bill_side(data: &SiteData, bill: &Bill) -> String {
             .meta
             .sources
             .get("legislation")
-            .map(|s| {
-                format!(
-                    " at {}",
-                    format_date(&s.last_sync.chars().take(10).collect::<String>())
-                )
-            })
+            .map(|s| format!(" at {}", format_date(&iso_day(&s.last_sync))))
             .unwrap_or_default();
         side.push_str(&format!(
             "<p class=\"attribution\">Sourced from the Federal Register of Legislation{synced}. For the latest information on Australian Government law please go to <a href=\"https://www.legislation.gov.au\">https://www.legislation.gov.au</a>.</p></div>"
@@ -2830,12 +2811,9 @@ pub fn party_page(data: &SiteData, party: &Party) -> Page {
         body.push_str(&table_scroll("Party links"));
         body.push_str("<table class=\"facts\"><tbody>");
         if let Some(website) = &facts.website {
-            let label = WEBSITE_PREFIX.replace(website, "");
-            let label = label.strip_suffix('/').unwrap_or(&label);
             body.push_str(&format!(
-                "<tr><th class=\"label\" scope=\"row\">Website</th><td><a href=\"{}\">{}</a></td></tr>",
-                esc_attr(website),
-                esc(label)
+                "<tr><th class=\"label\" scope=\"row\">Website</th><td>{}</td></tr>",
+                website_link(website)
             ));
         }
         if let Some(wikipedia) = &facts.wikipedia {
@@ -3079,14 +3057,7 @@ pub fn states_index(data: &SiteData) -> Page {
                 "No member list loaded yet. This parliament appears here once its sync runs.",
             );
             let website = match record {
-                Some(p) => {
-                    let label = WEBSITE_PREFIX.replace(&p.url, "");
-                    format!(
-                        " Its members are listed at <a href=\"{}\">{}</a>.",
-                        esc_attr(&p.url),
-                        esc(label.strip_suffix('/').unwrap_or(&label))
-                    )
-                }
+                Some(p) => format!(" Its members are listed at {}.", website_link(&p.url)),
                 None => String::new(),
             };
             body.push_str(&format!(
@@ -3165,7 +3136,7 @@ fn state_members_lede(parliament: &StateParliament) -> String {
     }
 }
 
-/// The parliament's website, named by its host.
+/// A website, named by its host.
 fn website_link(url: &str) -> String {
     let label = WEBSITE_PREFIX.replace(url, "");
     format!(
@@ -3232,7 +3203,7 @@ pub fn state_page(data: &SiteData, parliament: &StateParliament) -> Page {
     if let Some(listed) = &parliament.listed_at {
         body.push_str(&format!(
             "<tr><th class=\"label\" scope=\"row\">Members listed</th><td>{}</td></tr>",
-            esc(&format_date(&listed.chars().take(10).collect::<String>()))
+            esc(&format_date(&iso_day(listed)))
         ));
     }
     body.push_str("</tbody></table></div>");
@@ -3688,7 +3659,7 @@ fn state_bill_activity(parliament: &StateParliament, limit: usize) -> String {
 fn state_bills_attribution(parliament: &StateParliament) -> String {
     match &parliament.bills_source {
         Some(source) => {
-            let read = format_date(&source.listed_at.chars().take(10).collect::<String>());
+            let read = format_date(&iso_day(&source.listed_at));
             format!(
                 "<p class=\"attribution\">Source: {}, <a href=\"{}\">bills list</a>, read {}. Parliamentary material reproduced fairly and accurately with acknowledgement.{} Errors? <a href=\"/about/corrections/\">Request a correction.</a></p>",
                 esc(&source.name),
@@ -3785,7 +3756,7 @@ pub fn state_bill_page(data: &SiteData, parliament: &StateParliament, bill: &Sta
     let mut body = String::new();
     body.push_str(&record_article("Bill", None));
     body.push_str("<div class=\"record\"><div class=\"record-head\"><div class=\"meta-row\"><span class=\"ids\">");
-    if let Some(origin) = &bill.origin {
+    if bill.origin.is_some() {
         body.push_str(&format!(
             "<span class=\"chip {}\">{} {}</span>",
             match bill.origin_kind {
@@ -3793,7 +3764,7 @@ pub fn state_bill_page(data: &SiteData, parliament: &StateParliament, bill: &Sta
                 _ => "house",
             },
             state.short(),
-            esc(origin.rsplit(' ').next().unwrap_or(origin))
+            esc(origin_short(bill))
         ));
     }
     if let Some(number) = &bill.number {
@@ -4101,7 +4072,7 @@ pub fn data_sources(data: &SiteData) -> Page {
     let last_synced = |key: &str| match data.meta.sources.get(key) {
         Some(status) => format!(
             "{}{}",
-            format_date(&status.last_sync.chars().take(10).collect::<String>()),
+            format_date(&iso_day(&status.last_sync)),
             if status.ok { "" } else { " (failed)" }
         ),
         None => "not yet".to_string(),

@@ -1,4 +1,4 @@
-use crate::data::{format_date, state_name, SiteData};
+use crate::data::{format_date, iso_day, state_name, SiteData};
 use crate::html::{esc, esc_attr};
 use crate::strip::js_without_comment_lines;
 use pollywiki_schema::StateCode;
@@ -122,17 +122,12 @@ fn source_label(name: &str) -> &str {
     }
 }
 
-/// The date part of an ISO timestamp.
-fn sync_day(iso: &str) -> String {
-    iso.chars().take(10).collect()
-}
-
 /// The days the sources last synced without failing, each with the sources
 /// that synced on it. The commonest day leads; a tie goes to the newer.
 fn sync_days(data: &SiteData) -> Vec<(String, Vec<&str>)> {
     let mut days: Vec<(String, Vec<&str>)> = Vec::new();
     for (name, status) in data.meta.sources.iter().filter(|(_, s)| s.ok) {
-        let date = sync_day(&status.last_sync);
+        let date = iso_day(&status.last_sync);
         match days.iter_mut().find(|(d, _)| *d == date) {
             Some((_, names)) => names.push(source_label(name)),
             None => days.push((date, vec![source_label(name)])),
@@ -167,7 +162,7 @@ fn freshness(data: &SiteData) -> String {
         out.push_str(&format!(
             "<span class=\"stale\">{} · {} · sync failed</span>",
             esc(source_label(name)),
-            esc(&format_date(&sync_day(&status.last_sync)))
+            esc(&format_date(&iso_day(&status.last_sync)))
         ));
     }
     out
@@ -295,14 +290,14 @@ impl Page {
     }
 }
 
-pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> String {
+pub fn render(data: &SiteData, css_href: &str, page: &Page) -> String {
     let description = page.description.as_deref().unwrap_or(DEFAULT_DESCRIPTION);
     let title_tag = if page.title == "pollywiki" {
         page.title.clone()
     } else {
         format!("{} · pollywiki", page.title)
     };
-    let origin = site_url.trim_end_matches('/');
+    let origin = &data.site_url;
     let og_image = page.og_image.as_deref().unwrap_or(DEFAULT_OG_IMAGE);
     let image_alt = match (&page.og_image_alt, &page.og_image) {
         (Some(alt), _) => alt.clone(),
@@ -415,7 +410,7 @@ pub fn render(data: &SiteData, site_url: &str, css_href: &str, page: &Page) -> S
     out.push_str("<nav aria-label=\"About\"><a href=\"/about/\">About</a><a href=\"/about/data-sources/\">Data sources</a><a href=\"/about/methodology/\">Methodology</a><a href=\"/about/corrections/\">Corrections</a><a href=\"/divisions/feed.xml\">Divisions feed</a><a href=\"/bills/feed.xml\">Bills feed</a><a href=\"https://github.com/logan-han/pollywiki\">Source code</a><a href=\"https://han.life/coffee\" target=\"_blank\" rel=\"noopener\">\u{2615} Buy me a coffee</a></nav><p class=\"legal\">Voting data © <a href=\"https://theyvoteforyou.org.au\">They Vote For You</a> (ODbL). Election data © AEC (CC BY 4.0). Photos via Wikimedia Commons, credited per page.");
     out.push_str(&format!(
         " Built {}.",
-        esc(&format_date(&sync_day(&data.meta.generated_at)))
+        esc(&format_date(&iso_day(&data.meta.generated_at)))
     ));
     out.push_str("</p>");
     let fresh = freshness(data);

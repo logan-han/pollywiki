@@ -169,7 +169,7 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
 
     let mut sitemap_urls: Vec<(String, Option<String>)> = Vec::new();
     for page in &page_list {
-        let html = layout::render(&data, site_url, &css_href, page);
+        let html = layout::render(&data, &css_href, page);
         let rel = page.path.trim_start_matches('/');
         let file = out_dir.join(rel).join("index.html");
         std::fs::create_dir_all(file.parent().unwrap())?;
@@ -184,11 +184,11 @@ fn build_site(out_dir: &Path, bundles: &Path, site_url: &str) -> Result<()> {
     let not_found = pages::not_found();
     std::fs::write(
         out_dir.join("404.html"),
-        layout::render(&data, site_url, &css_href, &not_found),
+        layout::render(&data, &css_href, &not_found),
     )?;
 
     write_sitemap(out_dir, site_url, &sitemap_urls)?;
-    feeds::write_feeds(out_dir, site_url, &data)?;
+    feeds::write_feeds(out_dir, &data)?;
 
     println!(
         "site: {} pages from {}",
