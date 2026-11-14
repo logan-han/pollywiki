@@ -159,19 +159,20 @@ pub fn ledger_row_labelled(division: &Division, label: &str) -> String {
     ledger_li(division, &esc(&format_date(&division.date)), label, false)
 }
 
+/// A row's date under a month divider, which already carries the year: the
+/// day and month, with the full date machine-readable in the <time>.
+pub fn month_day(date: &str) -> String {
+    format!(
+        "<time datetime=\"{}\">{}</time>",
+        esc_attr(date),
+        esc(&short_date(date))
+    )
+}
+
 /// A ledger row under a month divider, which already carries the year: the
 /// date drops it, and the full date stays machine-readable in the <time>.
 pub fn ledger_row_in_month(division: &Division) -> String {
-    ledger_li(
-        division,
-        &format!(
-            "<time datetime=\"{}\">{}</time>",
-            esc_attr(&division.date),
-            esc(&short_date(&division.date))
-        ),
-        &division.name,
-        false,
-    )
+    ledger_li(division, &month_day(&division.date), &division.name, false)
 }
 
 /// A row in a division's sitting day, where every row shares the date: the
@@ -236,16 +237,7 @@ pub fn series_row(data: &SiteData, series: &DivisionSeries) -> String {
 pub fn series_row_in_month(data: &SiteData, series: &DivisionSeries) -> String {
     match series.divisions.as_slice() {
         [single] => ledger_row_in_month(single),
-        _ => series_li(
-            data,
-            series,
-            &format!(
-                "<time datetime=\"{}\">{}</time>",
-                esc_attr(series.date),
-                esc(&short_date(series.date))
-            ),
-            false,
-        ),
+        _ => series_li(data, series, &month_day(series.date), false),
     }
 }
 
@@ -563,11 +555,16 @@ pub fn bill_dots(bill: &Bill) -> String {
         3 => "passed both houses",
         _ => "assented",
     };
+    stage_dots(stage, 4, reached)
+}
+
+/// Progress dots, `filled` of `total`, labelled with the stage `reached`.
+pub fn stage_dots(filled: u8, total: u8, reached: &str) -> String {
     let mut out = format!(
-        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {stage} of 4: {reached}\" title=\"Stage {stage} of 4: {reached}\">"
+        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {filled} of {total}: {reached}\" title=\"Stage {filled} of {total}: {reached}\">"
     );
-    for step in 1..=4u8 {
-        out.push_str(if step <= stage {
+    for step in 1..=total {
+        out.push_str(if step <= filled {
             "<i class=\"on\"></i>"
         } else {
             "<i class=\"off\"></i>"

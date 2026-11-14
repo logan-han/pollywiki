@@ -1177,6 +1177,63 @@ fn bills_index_pills_cover_every_row() {
     assert!(html.contains("class=\"dots-legend\""));
 }
 
+/// The sample carries no bill the record has yet to date, so one is added to
+/// the federal list and one to a state's: each closes its list in a run of
+/// its own, after every month.
+#[test]
+fn a_bill_with_no_dated_step_closes_its_list_in_a_run_of_its_own() {
+    let mut data = sample_data();
+    let mut federal = data
+        .bills
+        .iter()
+        .find(|b| b.parliament == data.current_parliament())
+        .expect("a current bill")
+        .clone();
+    federal.id = "undated-1".to_string();
+    federal.timeline.clear();
+    data.bills.push(federal);
+    let nsw = data
+        .states
+        .iter_mut()
+        .find(|p| p.state == pollywiki_schema::StateCode::NSW)
+        .expect("sample NSW");
+    let mut state = nsw.bills[0].clone();
+    state.slug = "undated-bill".to_string();
+    state.timeline.clear();
+    nsw.bills.push(state);
+    let nsw = data
+        .state_parliament(pollywiki_schema::StateCode::NSW)
+        .expect("sample NSW");
+
+    let undated = "<li class=\"ledger-month\" id=\"m-undated\" data-month=\"undated\"><h2 class=\"m\">undated</h2><span class=\"rule\" aria-hidden=\"true\"></span><span class=\"n\">1 bill</span></li>";
+    for (list, html) in [
+        ("federal", render(&data, &pages::bills_index(&data))),
+        ("NSW", render(&data, &pages::state_bills_index(&data, nsw))),
+    ] {
+        let months: Vec<&str> = html
+            .split("<li class=\"ledger-month\" id=\"m-")
+            .skip(1)
+            .map(|rest| rest.split('"').next().expect("month key"))
+            .collect();
+        assert_eq!(months.last(), Some(&"undated"), "{list}: {months:?}");
+        assert!(
+            months[..months.len() - 1]
+                .iter()
+                .all(|m| m.len() == 7 && m.as_bytes()[4] == b'-'),
+            "{list}: every other run is a month: {months:?}"
+        );
+        let (_, run) = html.split_once(undated).expect(list);
+        let run = &run[..run.find("</ul>").expect("the list closes")];
+        assert_eq!(run.matches("<li data-status=").count(), 1, "{list}");
+        assert!(
+            html.contains(
+                "<a href=\"#m-undated\" data-month=\"undated\">undated <span class=\"n\">1</span>"
+            ),
+            "{list}"
+        );
+    }
+}
+
 #[test]
 fn ledger_rows_split_the_tally_and_drop_the_year_only_under_a_month() {
     let data = sample_data();

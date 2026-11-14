@@ -5,7 +5,6 @@
 use crate::components::chamber_word;
 use crate::data::{division_path, SiteData};
 use crate::html::{esc, esc_attr};
-use crate::pages::latest_step;
 use anyhow::Result;
 use std::path::Path;
 
@@ -98,7 +97,7 @@ pub fn write_feeds(out_dir: &Path, data: &SiteData) -> Result<()> {
     let mut moved: Vec<(&pollywiki_schema::Bill, &pollywiki_schema::TimelineStep)> = data
         .bills
         .iter()
-        .filter_map(|b| latest_step(b).map(|s| (b, s)))
+        .filter_map(|b| b.latest().map(|s| (b, s)))
         .collect();
     moved.sort_by(|a, b| b.1.date.cmp(&a.1.date));
     let bills: Vec<Entry> = moved

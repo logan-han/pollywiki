@@ -778,6 +778,11 @@ impl Bill {
             .as_deref()
             .is_some_and(|summary| !summary.trim().is_empty())
     }
+
+    /// The newest dated step, where the record dates any.
+    pub fn latest(&self) -> Option<&TimelineStep> {
+        self.timeline.iter().max_by(|a, b| a.date.cmp(&b.date))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

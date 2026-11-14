@@ -4,9 +4,9 @@
 
 use crate::components::{
     avatar, bill_dots, chamber_chip, chamber_word, composition_bar, federal_segments, full_chamber,
-    group_chip, group_chip_labelled, ledger_month, ledger_row_labelled, mini_bar, month_jump,
-    month_label, person_card, portrait, result_chip, result_word, seat_bar, series_row,
-    series_row_in_month, sitting_day_row, vote_bar, BarSegment, BILL_DOTS_LEGEND,
+    group_chip, group_chip_labelled, ledger_month, ledger_row_labelled, mini_bar, month_day,
+    month_jump, month_label, person_card, portrait, result_chip, result_word, seat_bar, series_row,
+    series_row_in_month, sitting_day_row, stage_dots, vote_bar, BarSegment, BILL_DOTS_LEGEND,
     GROUP_FALLBACK_COLOUR,
 };
 use crate::data::{
@@ -22,7 +22,8 @@ use crate::procedures::procedure_for;
 use crate::strip::js_without_comment_lines;
 use pollywiki_schema::{
     Bill, CandidateResult, ChamberKind, Division, Electorate, House, JsNum, NoteSource, Party,
-    Person, StateBill, StateChamber, StateCode, StateMember, StateParliament, SummaryKind, Vote,
+    Person, StateBill, StateChamber, StateCode, StateMember, StateParliament, SummaryKind,
+    TimelineStep, Vote,
 };
 use regex::Regex;
 use std::sync::LazyLock;
@@ -170,7 +171,7 @@ fn newest_division_date(data: &SiteData) -> Option<String> {
 fn newest_bill_date(data: &SiteData) -> Option<String> {
     data.bills
         .iter()
-        .filter_map(|b| latest_step(b).map(|s| s.date.clone()))
+        .filter_map(|b| b.latest().map(|s| s.date.clone()))
         .max()
 }
 
@@ -217,37 +218,34 @@ fn event_description(event: &str) -> &str {
     event
 }
 
-/// The most recent recorded step, by date. Bills with no timeline return None.
-pub fn latest_step(bill: &Bill) -> Option<&pollywiki_schema::TimelineStep> {
-    bill.timeline.iter().max_by(|a, b| a.date.cmp(&b.date))
+/// Bills by their newest step, newest first; a bill the record has yet to
+/// date sorts after every dated one.
+fn newest_step_first(a: &Bill, b: &Bill) -> std::cmp::Ordering {
+    b.latest()
+        .map(|s| s.date.as_str())
+        .cmp(&a.latest().map(|s| s.date.as_str()))
 }
 
 /// Index row: when the bill last moved, title, chamber, progress, status. The
 /// date drops its year because the month divider above the run already carries
 /// it; the full date stays machine-readable in the <time> element.
-fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
-    let li = if with_filter_text {
-        format!(
-            "<li data-status=\"{}\" data-text=\"{}\">",
-            bill_status_key(bill),
-            esc_attr(
-                &format!("{} {}", bill.title, bill.portfolio.as_deref().unwrap_or(""))
-                    .to_lowercase()
-            )
+fn bill_row(bill: &Bill) -> String {
+    let li = format!(
+        "<li data-status=\"{}\" data-text=\"{}\">",
+        bill_status_key(bill),
+        esc_attr(
+            &format!("{} {}", bill.title, bill.portfolio.as_deref().unwrap_or("")).to_lowercase()
         )
-    } else {
-        "<li>".to_string()
-    };
-    let when = match latest_step(bill) {
+    );
+    let when = match bill.latest() {
         Some(step) => format!(
-            "<span class=\"when\" title=\"{}\"><time datetime=\"{}\">{}</time></span>",
+            "<span class=\"when\" title=\"{}\">{}</span>",
             esc_attr(&format!(
                 "{} \u{b7} {}",
                 event_description(&step.event),
                 format_date(&step.date)
             )),
-            esc_attr(&step.date),
-            esc(&short_date(&step.date)),
+            month_day(&step.date),
         ),
         None => "<span class=\"when\"></span>".to_string(),
     };
@@ -266,18 +264,11 @@ fn bill_row(bill: &Bill, with_filter_text: bool) -> String {
     )
 }
 
-/// An activity row: when the bill last moved, its title over what that step
-/// was, and its progress dots. The date drops its year, as it does on the
-/// index; the full date stays machine-readable in the <time> and in the
-/// event's title.
-fn bill_activity_row(bill: &Bill) -> String {
-    let (when, event) = match latest_step(bill) {
+/// A bill's latest dated step, else its status, for the activity rows.
+fn bill_event(bill: &Bill) -> (String, String) {
+    match bill.latest() {
         Some(step) => (
-            format!(
-                "<span class=\"when\"><time datetime=\"{}\">{}</time></span>",
-                esc_attr(&step.date),
-                esc(&short_date(&step.date)),
-            ),
+            format!("<span class=\"when\">{}</span>", month_day(&step.date)),
             format!(
                 "<span class=\"event\" title=\"{}\">{}</span>",
                 esc_attr(&format!(
@@ -292,7 +283,15 @@ fn bill_activity_row(bill: &Bill) -> String {
             "<span class=\"when\"></span>".to_string(),
             format!("<span class=\"event\">{}</span>", esc(&bill.status)),
         ),
-    };
+    }
+}
+
+/// An activity row: when the bill last moved, its title over what that step
+/// was, and its progress dots. The date drops its year, as it does on the
+/// index; the full date stays machine-readable in the <time> and in the
+/// event's title.
+fn bill_activity_row(bill: &Bill) -> String {
+    let (when, event) = bill_event(bill);
     format!(
         "<li>{when}<span class=\"what\"><a href=\"/bills/{id}/\">{title}</a> {event}</span><span class=\"dots\">{dots}</span></li>",
         id = bill.id,
@@ -428,11 +427,7 @@ fn latest_bills_section(data: &SiteData, heading: &str) -> String {
         "<div class=\"section-head\"><h2>{heading}</h2><a href=\"/bills/\">All bills →</a></div>"
     );
     let mut by_activity: Vec<&Bill> = data.bills.iter().collect();
-    by_activity.sort_by(|a, b| {
-        latest_step(b)
-            .map(|s| s.date.as_str())
-            .cmp(&latest_step(a).map(|s| s.date.as_str()))
-    });
+    by_activity.sort_by(|a, b| newest_step_first(a, b));
     let recent: Vec<&Bill> = by_activity.into_iter().take(8).collect();
     if !recent.is_empty() {
         out.push_str("<ul class=\"bill-list activity\">");
@@ -459,24 +454,13 @@ fn latest_activity_everywhere(data: &SiteData) -> String {
     }
     let mut rows: Vec<Row> = Vec::new();
     for bill in &data.bills {
-        let step = latest_step(bill);
+        let (_, event) = bill_event(bill);
         rows.push(Row {
-            date: step.map(|s| s.date.clone()),
+            date: bill.latest().map(|s| s.date.clone()),
             tag: "<a class=\"jur\" href=\"/bills/\">Federal</a>".to_string(),
             title: format!("<a href=\"/bills/{}/\">{}</a>", bill.id, esc(&bill.title)),
             dots: bill_dots(bill),
-            event: match step {
-                Some(step) => format!(
-                    "<span class=\"event\" title=\"{}\">{}</span>",
-                    esc_attr(&format!(
-                        "{} \u{b7} {}",
-                        step.event,
-                        format_date(&step.date)
-                    )),
-                    esc(event_description(&step.event)),
-                ),
-                None => format!("<span class=\"event\">{}</span>", esc(&bill.status)),
-            },
+            event,
         });
     }
     for parliament in &data.states {
@@ -894,11 +878,7 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
         .collect();
     // Across parliaments, so newest first: the sort is stable, which keeps
     // the bundle's order among bills of the same day.
-    raised.sort_by(|a, b| {
-        latest_step(b.bill)
-            .map(|s| s.date.as_str())
-            .cmp(&latest_step(a.bill).map(|s| s.date.as_str()))
-    });
+    raised.sort_by(|a, b| newest_step_first(a.bill, b.bill));
 
     let mut body = String::new();
     body.push_str(&record_article("Person", Some(person.house)));
@@ -1382,9 +1362,8 @@ pub fn person_page(data: &SiteData, person: &Person) -> Page {
             ));
             for v in month {
                 body.push_str(&format!(
-                    "<tr><td class=\"date\"><time datetime=\"{}\">{}</time></td><td><a href=\"{}\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
-                    esc_attr(&v.division.date),
-                    esc(&short_date(&v.division.date)),
+                    "<tr><td class=\"date\">{}</td><td><a href=\"{}\">{}</a></td><td><span class=\"{}\">{}{}</span></td><td>{}</td></tr>",
+                    month_day(&v.division.date),
                     division_path(v.division),
                     esc(&v.division.name),
                     match (v.vote, v.against_group_majority) {
@@ -1498,14 +1477,11 @@ pub fn divisions_index(data: &SiteData) -> Page {
         // than fifteen lines told apart only by their tallies. Series sit
         // where their newest division does, so each month is already one
         // run, and its divider counts divisions, not entries.
-        let mut months: Vec<(&str, Vec<data::DivisionSeries>)> = Vec::new();
-        for series in data.latest_series(usize::MAX) {
-            let key = series.date.get(..7).unwrap_or(series.date);
-            match months.last_mut() {
-                Some((month, entries)) if *month == key => entries.push(series),
-                _ => months.push((key, vec![series])),
-            }
-        }
+        let all = data.latest_series(usize::MAX);
+        let months: Vec<(&str, &[data::DivisionSeries])> = all
+            .chunk_by(|a, b| month_key(a.date) == month_key(b.date))
+            .map(|run| (month_key(run[0].date), run))
+            .collect();
         let counts: Vec<(&str, usize)> = months
             .iter()
             .map(|(month, entries)| (*month, entries.iter().map(|s| s.divisions.len()).sum()))
@@ -1514,7 +1490,7 @@ pub fn divisions_index(data: &SiteData) -> Page {
         body.push_str("<ul class=\"ledger\" id=\"division-list\">");
         for ((month, entries), (_, count)) in months.iter().zip(&counts) {
             body.push_str(&ledger_month(month, *count, "division"));
-            for series in entries {
+            for series in *entries {
                 body.push_str(&series_row_in_month(data, series));
             }
         }
@@ -1875,46 +1851,15 @@ pub fn bills_ledger(data: &SiteData, parliament: i64) -> Page {
         // The sort is stable, which keeps that alphabetical order inside a
         // month and among any bills the APH record has yet to date.
         let mut by_activity: Vec<&Bill> = bills.clone();
-        by_activity.sort_by(|a, b| {
-            latest_step(b)
-                .map(|s| s.date.as_str())
-                .cmp(&latest_step(a).map(|s| s.date.as_str()))
-        });
-        // Sorted newest first, so each month is one run. Undated bills land in
-        // a final run of their own; "undated" is not a month key, so it never
-        // collides with one, and month_label passes it through to the divider.
-        let mut months: Vec<(&str, Vec<&Bill>)> = Vec::new();
-        for b in by_activity {
-            let key = latest_step(b)
-                .map(|s| s.date.get(..7).unwrap_or(s.date.as_str()))
-                .unwrap_or("undated");
-            if months.last().map(|(m, _)| *m) == Some(key) {
-                months.last_mut().expect("just matched").1.push(b);
-            } else {
-                months.push((key, vec![b]));
-            }
-        }
-        let counts: Vec<(&str, usize)> = months
-            .iter()
-            .map(|(month, rows)| (*month, rows.len()))
+        by_activity.sort_by(|a, b| newest_step_first(a, b));
+        // Sorted newest first, so each month is one run.
+        let months: Vec<(&str, &[&Bill])> = by_activity
+            .chunk_by(|a, b| bill_month(a.latest()) == bill_month(b.latest()))
+            .map(|run| (bill_month(run[0].latest()), run))
             .collect();
-        body.push_str(&month_jump(&counts, "bill"));
-        // The key comes before the rows it explains, not after the last of them.
-        body.push_str(BILL_DOTS_LEGEND);
-        body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
-        // Column labels for the eye. Each row already says what its cells are
-        // (the date's title, the dots' label), so the header stays out of the
-        // accessibility tree, and with neither data-month nor data-status the
-        // filter passes over it. The date is the bill's latest step, and the
-        // label says so; "Moved" read as the day the bill was introduced.
-        body.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Latest</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
-        for (month, rows) in &months {
-            body.push_str(&ledger_month(month, rows.len(), "bill"));
-            for b in rows {
-                body.push_str(&bill_row(b, true));
-            }
-        }
-        body.push_str("</ul>");
+        body.push_str(&bill_rows_by_month(&months, BILL_DOTS_LEGEND, |b| {
+            bill_row(b)
+        }));
     } else {
         body.push_str("<p class=\"note\">No bill records loaded yet. They appear once the APH bills sync runs.</p>");
     }
@@ -1926,7 +1871,7 @@ pub fn bills_ledger(data: &SiteData, parliament: i64) -> Page {
     let mut page = Page::new(title.clone(), Some(description.clone()), path.clone(), body);
     page.lastmod = bills
         .iter()
-        .filter_map(|b| latest_step(b).map(|s| s.date.clone()))
+        .filter_map(|b| b.latest().map(|s| s.date.clone()))
         .max();
     page.page_script = Some(BILL_FILTER_JS.as_str());
     let mut crumbs: Vec<(&str, &str)> = vec![("pollywiki", "/"), ("Bills", "/bills/")];
@@ -1938,6 +1883,49 @@ pub fn bills_ledger(data: &SiteData, parliament: i64) -> Page {
         breadcrumb(&data.site_url, &crumbs),
     ]));
     page
+}
+
+/// The month an ISO date falls in, "2026-08", as a dated index groups by it.
+fn month_key(date: &str) -> &str {
+    date.get(..7).unwrap_or(date)
+}
+
+/// The run a bill's latest step puts it in on a bills index. Undated bills
+/// land in a final run of their own; "undated" is not a month key, so it never
+/// collides with one, and month_label passes it through to the divider.
+fn bill_month(step: Option<&TimelineStep>) -> &str {
+    step.map_or("undated", |s| month_key(&s.date))
+}
+
+/// A bills index's list: the month strip, the dots key, then each month's
+/// rows under its divider, as the federal and every state index lay it out.
+fn bill_rows_by_month<T>(
+    months: &[(&str, &[T])],
+    legend: &str,
+    row: impl Fn(&T) -> String,
+) -> String {
+    let counts: Vec<(&str, usize)> = months
+        .iter()
+        .map(|(month, rows)| (*month, rows.len()))
+        .collect();
+    let mut out = month_jump(&counts, "bill");
+    // The key comes before the rows it explains, not after the last of them.
+    out.push_str(legend);
+    out.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
+    // Column labels for the eye. Each row already says what its cells are
+    // (the date's title, the dots' label), so the header stays out of the
+    // accessibility tree, and with neither data-month nor data-status the
+    // filter passes over it. The date is the bill's latest step, and the
+    // label says so; "Moved" read as the day the bill was introduced.
+    out.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Latest</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
+    for (month, rows) in months {
+        out.push_str(&ledger_month(month, rows.len(), "bill"));
+        for r in *rows {
+            out.push_str(&row(r));
+        }
+    }
+    out.push_str("</ul>");
+    out
 }
 
 static LEADING_AND_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^and ").unwrap());
@@ -2097,7 +2085,8 @@ fn bill_preview(bill: &Bill) -> String {
         (_, Some(ai)) => format!("AI summary: {} ", clip(ai.text.trim(), 180)),
         _ => String::new(),
     };
-    let when = latest_step(bill)
+    let when = bill
+        .latest()
         .map(|step| format!(", last step {}", format_date(&step.date)))
         .unwrap_or_default();
     let kind = match (&bill.bill_type, &bill.portfolio) {
@@ -2349,7 +2338,7 @@ pub fn bill_page(data: &SiteData, bill: &Bill) -> Page {
     }
     let mut page = Page::new(bill.title.clone(), Some(description), path.clone(), body);
     page.og_type = "article";
-    page.lastmod = latest_step(bill).map(|step| step.date.clone());
+    page.lastmod = bill.latest().map(|step| step.date.clone());
     let parliament_name = format!("{} Parliament", data::ordinal(bill.parliament));
     let parliament_path = data.parliament_bills_path(bill.parliament);
     let mut crumbs: Vec<(&str, &str)> = vec![("pollywiki", "/"), ("Bills", "/bills/")];
@@ -3534,18 +3523,7 @@ fn state_bill_dots(bill: &StateBill, houses: u8) -> String {
             _ => (4, 4, "assented"),
         }
     };
-    let mut out = format!(
-        "<span class=\"bill-dots\" role=\"img\" aria-label=\"Stage {filled} of {total}: {reached}\" title=\"Stage {filled} of {total}: {reached}\">"
-    );
-    for step in 1..=total {
-        out.push_str(if step <= filled {
-            "<i class=\"on\"></i>"
-        } else {
-            "<i class=\"off\"></i>"
-        });
-    }
-    out.push_str("</span>");
-    out
+    stage_dots(filled, total, reached)
 }
 
 /// The key to a state's progress dots: the federal key for a parliament of
@@ -3583,11 +3561,7 @@ fn origin_short(bill: &StateBill) -> &str {
 fn state_bill_event(bill: &StateBill) -> (String, String) {
     match bill.latest() {
         Some(step) => (
-            format!(
-                "<span class=\"when\"><time datetime=\"{}\">{}</time></span>",
-                esc_attr(&step.date),
-                esc(&short_date(&step.date)),
-            ),
+            format!("<span class=\"when\">{}</span>", month_day(&step.date)),
             format!(
                 "<span class=\"event\" title=\"{}\">{}</span>",
                 esc_attr(&format!(
@@ -3610,14 +3584,13 @@ fn state_bill_event(bill: &StateBill) -> (String, String) {
 fn state_bill_row(state: StateCode, bill: &StateBill, houses: u8) -> String {
     let when = match bill.latest() {
         Some(step) => format!(
-            "<span class=\"when\" title=\"{}\"><time datetime=\"{}\">{}</time></span>",
+            "<span class=\"when\" title=\"{}\">{}</span>",
             esc_attr(&format!(
                 "{} \u{b7} {}",
                 step.event,
                 format_date(&step.date)
             )),
-            esc_attr(&step.date),
-            esc(&short_date(&step.date)),
+            month_day(&step.date),
         ),
         None => "<span class=\"when\"></span>".to_string(),
     };
@@ -3694,30 +3667,16 @@ pub fn state_bills_index(data: &SiteData, parliament: &StateParliament) -> Page 
     ));
     body.push_str("<div class=\"filter-bar\"><span class=\"pills\" id=\"bill-status\" role=\"group\" aria-label=\"Filter by status\"><button aria-pressed=\"true\" data-status=\"\">All</button><button aria-pressed=\"false\" data-status=\"open\">Before parliament</button><button aria-pressed=\"false\" data-status=\"act\">Act</button><button aria-pressed=\"false\" data-status=\"other\">Other</button></span><input type=\"search\" id=\"bill-filter\" placeholder=\"Filter by title\" enterkeyhint=\"done\" aria-label=\"Filter bills\"></div>");
     body.push_str(&filter_feedback("No bills match these filters."));
-    let mut months: Vec<(&str, Vec<&StateBill>)> = Vec::new();
-    for bill in &parliament.bills {
-        let key = bill
-            .latest()
-            .map(|s| s.date.get(..7).unwrap_or(s.date.as_str()))
-            .unwrap_or("undated");
-        if months.last().map(|(m, _)| *m) == Some(key) {
-            months.last_mut().expect("just matched").1.push(bill);
-        } else {
-            months.push((key, vec![bill]));
-        }
-    }
-    let counts: Vec<(&str, usize)> = months.iter().map(|(m, rows)| (*m, rows.len())).collect();
-    body.push_str(&month_jump(&counts, "bill"));
-    body.push_str(state_dots_legend(parliament.houses));
-    body.push_str("<ul class=\"bill-list\" id=\"bill-rows\">");
-    body.push_str("<li class=\"bill-head\" aria-hidden=\"true\"><span>Latest</span><span>Bill</span><span>Origin</span><span>Stage</span><span>Status</span></li>");
-    for (month, rows) in &months {
-        body.push_str(&ledger_month(month, rows.len(), "bill"));
-        for bill in rows {
-            body.push_str(&state_bill_row(state, bill, parliament.houses));
-        }
-    }
-    body.push_str("</ul>");
+    let months: Vec<(&str, &[StateBill])> = parliament
+        .bills
+        .chunk_by(|a, b| bill_month(a.latest()) == bill_month(b.latest()))
+        .map(|run| (bill_month(run[0].latest()), run))
+        .collect();
+    body.push_str(&bill_rows_by_month(
+        &months,
+        state_dots_legend(parliament.houses),
+        |bill| state_bill_row(state, bill, parliament.houses),
+    ));
     body.push_str(&state_bills_attribution(parliament));
 
     let description = format!(
@@ -4342,10 +4301,10 @@ mod tests {
                 "timeline":[{"date":"2026-05-01","event":"Assent"},
                             {"date":"2026-01-01","event":"Introduced"}]}"#,
         );
-        assert_eq!(latest_step(&out_of_order).unwrap().event, "Assent");
+        assert_eq!(out_of_order.latest().unwrap().event, "Assent");
         let empty =
             bill(r#"{"id":"c","title":"C","parliament":48,"chamber":"senate","status":"Act"}"#);
-        assert!(latest_step(&empty).is_none());
+        assert!(empty.latest().is_none());
     }
 
     #[test]
