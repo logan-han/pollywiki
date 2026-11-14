@@ -197,39 +197,16 @@ async fn sync(
     let mut people: Vec<Person> = Vec::new();
     let mut failures = 0;
 
-    macro_rules! run_source {
-        ($name:expr, $fut:expr) => {
-            match $fut.await {
-                Ok(()) => {
-                    record_sync(store, $name, true, None).await?;
-                    println!("{}: ok", $name);
-                }
-                Err(err) => {
-                    failures += 1;
-                    let note = err.to_string();
-                    record_sync(store, $name, false, Some(&note)).await?;
-                    eprintln!("{}: FAILED - {note}", $name);
-                }
-            }
-        };
-    }
-
     let has = |name: &str| sources.iter().any(|s| s == name);
 
     if has("wikidata") {
-        match sources::wikidata::sync_wikidata(store, endpoints).await {
-            Ok(result) => {
-                people = result;
-                record_sync(store, "wikidata", true, None).await?;
-                println!("wikidata: ok");
-            }
-            Err(err) => {
-                failures += 1;
-                let note = err.to_string();
-                record_sync(store, "wikidata", false, Some(&note)).await?;
-                eprintln!("wikidata: FAILED - {note}");
-            }
-        }
+        let outcome = sources::wikidata::sync_wikidata(store, endpoints)
+            .await
+            .map(|found| {
+                people = found;
+                true
+            });
+        record_outcome(store, "wikidata", outcome, &mut failures).await?;
     }
     if has("aec") {
         let events = if event == "all" {
@@ -238,18 +215,18 @@ async fn sync(
             event.to_string()
         };
         for id in events.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            run_source!("aec", sources::aec::sync_aec(store, id, endpoints));
+            let outcome = sources::aec::sync_aec(store, id, endpoints).await;
+            record_outcome(store, "aec", outcome.map(|()| true), &mut failures).await?;
         }
     }
     if has("aph") {
-        run_source!(
-            "aph-bills",
-            sources::aph_bills::sync_aph_bills(
-                store,
-                sources::aph_bills::CURRENT_PARLIAMENT,
-                endpoints
-            )
-        );
+        let outcome = sources::aph_bills::sync_aph_bills(
+            store,
+            sources::aph_bills::CURRENT_PARLIAMENT,
+            endpoints,
+        )
+        .await;
+        record_outcome(store, "aph-bills", outcome.map(|()| true), &mut failures).await?;
     }
     // The earlier parliaments' bills, read once by hand: no nightly run
     // renews them, so they keep no sync record that would go stale.
@@ -263,37 +240,34 @@ async fn sync(
         if people.is_empty() {
             people = load_people(store).await?;
         }
-        run_source!(
-            "handbook",
-            sources::handbook::sync_handbook(store, &mut people, endpoints)
-        );
+        let outcome = sources::handbook::sync_handbook(store, &mut people, endpoints).await;
+        record_outcome(store, "handbook", outcome.map(|()| true), &mut failures).await?;
     }
     if has("legislation") {
-        run_source!(
-            "legislation",
-            sources::legislation::sync_legislation(store, endpoints)
-        );
+        let outcome = sources::legislation::sync_legislation(store, endpoints).await;
+        record_outcome(store, "legislation", outcome.map(|()| true), &mut failures).await?;
     }
     if has("aec-disclosures") {
-        run_source!(
+        let outcome = sources::aec_disclosures::sync_aec_disclosures(store, endpoints).await;
+        record_outcome(
+            store,
             "aec-disclosures",
-            sources::aec_disclosures::sync_aec_disclosures(store, endpoints)
-        );
+            outcome.map(|()| true),
+            &mut failures,
+        )
+        .await?;
     }
     if has("boundaries") {
-        run_source!(
-            "boundaries",
-            sources::boundaries::sync_boundaries(store, endpoints)
-        );
+        let outcome = sources::boundaries::sync_boundaries(store, endpoints).await;
+        record_outcome(store, "boundaries", outcome.map(|()| true), &mut failures).await?;
     }
     if has("ipea") {
-        run_source!("ipea", sources::ipea::sync_ipea(store, endpoints));
+        let outcome = sources::ipea::sync_ipea(store, endpoints).await;
+        record_outcome(store, "ipea", outcome.map(|()| true), &mut failures).await?;
     }
     if has("aec-profiles") {
-        run_source!(
-            "aec-profiles",
-            sources::aec_profiles::sync_aec_profiles(store, "31496", endpoints)
-        );
+        let outcome = sources::aec_profiles::sync_aec_profiles(store, "31496", endpoints).await;
+        record_outcome(store, "aec-profiles", outcome.map(|()| true), &mut failures).await?;
     }
     // "states" runs every parliament; each is recorded, and can be run, alone.
     let mut state_reference = None;
@@ -304,21 +278,11 @@ async fn sync(
         let name = sources::states::source_name(state);
         if has("states") || has(&name) {
             let reference = state_reference.get_or_insert_with(sources::states::reference);
-            match sources::states::sync_state(store, state, reference.get(code), endpoints).await {
-                Ok(true) => {
-                    record_sync(store, &name, true, None).await?;
-                    println!("{name}: ok");
-                }
-                // A parliament that cannot be read leaves no sync record, so
-                // nothing claims its list was read.
-                Ok(false) => {}
-                Err(err) => {
-                    failures += 1;
-                    let note = err.to_string();
-                    record_sync(store, &name, false, Some(&note)).await?;
-                    eprintln!("{name}: FAILED - {note}");
-                }
-            }
+            let outcome =
+                sources::states::sync_state(store, state, reference.get(code), endpoints).await;
+            // A parliament that cannot be read leaves no sync record, so
+            // nothing claims its list was read.
+            record_outcome(store, &name, outcome, &mut failures).await?;
         }
     }
     // "state-bills" reads every parliament's bills; each is recorded, and can
@@ -330,51 +294,59 @@ async fn sync(
         let name = sources::states::bills::source_name(state);
         if has("state-bills") || has(&name) {
             let reference = state_reference.get_or_insert_with(sources::states::reference);
-            match sources::states::bills::sync_state_bills(
+            let outcome = sources::states::bills::sync_state_bills(
                 store,
                 state,
                 reference.get(code),
                 endpoints,
             )
-            .await
-            {
-                Ok(true) => {
-                    record_sync(store, &name, true, None).await?;
-                    println!("{name}: ok");
-                }
-                // No reader for this parliament yet: nothing claims a read.
-                Ok(false) => {}
-                Err(err) => {
-                    failures += 1;
-                    let note = err.to_string();
-                    record_sync(store, &name, false, Some(&note)).await?;
-                    eprintln!("{name}: FAILED - {note}");
-                }
-            }
+            .await;
+            // No reader for this parliament yet: nothing claims a read.
+            record_outcome(store, &name, outcome, &mut failures).await?;
         }
     }
     // After the parliaments, so a run that reads both finds today's members.
     if has("state-photos") {
         let reference = state_reference.get_or_insert_with(sources::states::reference);
-        run_source!(
-            "state-photos",
-            sources::states::photos::sync_state_photos(store, reference, endpoints)
-        );
+        let outcome = sources::states::photos::sync_state_photos(store, reference, endpoints).await;
+        record_outcome(store, "state-photos", outcome.map(|()| true), &mut failures).await?;
     }
     if has("tvfy") {
         if std::env::var("TVFY_API_KEY").is_ok() || rebuild {
             if people.is_empty() {
                 people = load_people(store).await?;
             }
-            run_source!(
-                "tvfy",
-                sources::tvfy::sync_tvfy(store, &mut people, rebuild, endpoints)
-            );
+            let outcome = sources::tvfy::sync_tvfy(store, &mut people, rebuild, endpoints).await;
+            record_outcome(store, "tvfy", outcome.map(|()| true), &mut failures).await?;
         } else {
             println!("tvfy: skipped (TVFY_API_KEY not set)");
         }
     }
     Ok(failures)
+}
+
+/// What a source's run leaves: an ok record and line when it read, a failed
+/// record and line when it could not, and nothing when it had nothing to read.
+async fn record_outcome(
+    store: &Store,
+    name: &str,
+    outcome: Result<bool>,
+    failures: &mut usize,
+) -> Result<()> {
+    match outcome {
+        Ok(true) => {
+            record_sync(store, name, true, None).await?;
+            println!("{name}: ok");
+        }
+        Ok(false) => {}
+        Err(err) => {
+            *failures += 1;
+            let note = err.to_string();
+            record_sync(store, name, false, Some(&note)).await?;
+            eprintln!("{name}: FAILED - {note}");
+        }
+    }
+    Ok(())
 }
 
 async fn load_people(store: &Store) -> Result<Vec<Person>> {
